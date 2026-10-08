@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { childEnv, agyAccountError } = require('./launch');
 const cli = require('./cli-platform');
+const { SessionViews } = require('./session-view');
 
 let pty = null;
 try { pty = require('node-pty'); } catch (e) { pty = null; }
@@ -30,9 +31,10 @@ if (pty) fixHelper();
 const MAX_SCROLLBACK = 200000; // 画面を開き直した時に見せる分（文字数）
 
 class Sessions {
-  constructor() {
+  constructor({ viewOptions } = {}) {
     this.map = new Map(); // key: project/task/ai → { proc, buf, watchers, ai, dir, started, exited }
     this.onExit = null; // 終わった時に呼ぶ（project, task, ai, s）。未読の印に使う
+    this.viewOptions = viewOptions;
   }
 
   available() { return Boolean(pty); }
@@ -52,7 +54,7 @@ class Sessions {
   }
 
   // 作業画面を開く。すでに動いていればそれを返す
-  start({ project, task, ai, dir, command, args, env, cols, rows }) {
+  start({ project, task, ai, dir, command, args, env, cols, rows, dirPin }) {
     if (!pty) throw new Error('作業画面の部品（node-pty）が入っていません。setup.sh を実行してください');
     const k = this.key(project, task, ai);
     const cur = this.map.get(k);
@@ -63,14 +65,16 @@ class Sessions {
     let invocation;
     try { invocation = cli.resolve(command, args, fullEnv.PATH); }
     catch (e) { throw new Error(`「${command}」を起動できません：${e.message}`); }
+    const views = new SessionViews(this.viewOptions);
     let proc;
     try {
       const terminal=process.platform==='win32'?require('./managed-pty'):pty;
-      proc = terminal.spawn(invocation.file, invocation.args, { name: 'xterm-256color', cols: cols || 100, rows: rows || 30, cwd: dir, env: fullEnv });
+      proc = terminal.spawn(invocation.file, invocation.args, { name: 'xterm-256color', cols: cols || 100, rows: rows || 30, cwd: dir, env: fullEnv, ...(dirPin?{dirPin}:{}) });
     } catch (e) {
       throw new Error(`作業画面を開けませんでした（${e.message}）`);
     }
-    const s = { proc, startedP:proc.started||Promise.resolve(true), buf: '', watchers: new Set(), ai, dir, started: Date.now(), lastOut: Date.now(), exited: false, code: null };
+    if (cur?.views) cur.views.close();
+    const s = { proc, startedP:proc.started||Promise.resolve(true), buf: '', watchers: new Set(), views, ai, dir, started: Date.now(), lastOut: Date.now(), exited: false, code: null };
     s.finishedP=new Promise(resolve=>s.resolveFinished=resolve);
     proc.onData(d => {
       // 大きさを変えた直後の描き直しは「作業中」に数えない
@@ -81,6 +85,7 @@ class Sessions {
     });
     proc.onExit(({ exitCode }) => {
       s.exited = true; s.code = exitCode;
+      s.views.finish();
       s.resolveFinished();
       for (const w of s.watchers) w({ type: 'exit', code: exitCode });
       if (this.onExit) { try { this.onExit(project, task, ai, s); } catch (e) { /* 無視 */ } }
@@ -115,10 +120,40 @@ class Sessions {
     return true;
   }
 
+  // The methods above also serve internal follow-ups and attachment insertion.
+  // Browser input must use these view methods; never fall back to write/resize
+  // when view credentials are missing or rejected.
+  viewController(project, task, ai) {
+    const s = this.get(project, task, ai);
+    if (!s) { const e = new Error('終端機會話不存在'); e.status = 404; throw e; }
+    return s.views;
+  }
+
+  registerView(project, task, ai) { return this.viewController(project, task, ai).register(); }
+  heartbeatView(project, task, ai, credentials) { return this.viewController(project, task, ai).heartbeat(credentials); }
+  claimView(project, task, ai, credentials) { return this.viewController(project, task, ai).claim(credentials); }
+  disconnectView(project, task, ai, credentials) { return this.viewController(project, task, ai).disconnect(credentials); }
+  viewState(project, task, ai) { return this.viewController(project, task, ai).state(); }
+
+  writeView(project, task, ai, data, credentials) {
+    if (typeof data !== 'string' || Buffer.byteLength(data, 'utf8') > 1024 * 1024) { const e = new Error('終端機輸入須為文字且不得超過 1 MiB'); e.status = 400; throw e; }
+    this.viewController(project, task, ai).assertOwner(credentials);
+    return this.write(project, task, ai, data);
+  }
+
+  resizeView(project, task, ai, cols, rows, credentials) {
+    if (!Number.isSafeInteger(cols) || cols < 20 || cols > 500 || !Number.isSafeInteger(rows) || rows < 5 || rows > 300) {
+      const e = new Error('終端機尺寸須為整數，cols 20–500、rows 5–300'); e.status = 400; throw e;
+    }
+    this.viewController(project, task, ai).assertOwner(credentials);
+    return this.resize(project, task, ai, cols, rows);
+  }
+
   stop(project, task, ai) {
     const s = this.get(project, task, ai);
     if (!s) return false;
     s.stopped = true; // 人が止めた（未読にしない）
+    s.views.finish();
     if (!s.exited) { try { s.proc.kill(); } catch (e) { /* 無視 */ } }
     // Keep the session visible to activity locks until its entire owned Job exits.
     return true;

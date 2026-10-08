@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Windows HTTPS endpoint preview",
+  "type":"object","additionalProperties":false,"required":["host","bindAddress","port","certFile","keyFile"],
+  "properties":{
+    "host":{"type":"string","maxLength":253,"pattern":"^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"},
+    "bindAddress":{"type":"string","format":"ipv4","description":"Exact private IPv4: RFC1918 or CGNAT; localhost/127.0.0.1 only for local preview. No wildcard binding."},
+    "port":{"type":"integer","minimum":1024,"maximum":65535},
+    "certFile":{"type":"string","pattern":"^[A-Za-z]:[\\\\/]","maxLength":32768},
+    "keyFile":{"type":"string","pattern":"^[A-Za-z]:[\\\\/]","maxLength":32768}
+  },
+  "$defs":{"configure":{"type":"object","additionalProperties":false,"required":["token","confirm","origin","certFingerprint"],"properties":{"token":{"type":"string","pattern":"^[A-Za-z0-9_-]{43}$"},"confirm":{"const":true},"origin":{"type":"string","pattern":"^https://"},"certFingerprint":{"type":"string","pattern":"^(?:[A-F0-9]{2}:){31}[A-F0-9]{2}$"}}}}
+}

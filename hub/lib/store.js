@@ -289,8 +289,9 @@ class Store {
     const p = this.readProject(id);
     if (!p) return null;
     const file = path.join(p.dir, 'PROJECT.md');
-    const lines = read(file).split('\n');
+    const original=read(file),eol=original.includes('\r\n')?'\r\n':'\n',lines=original.split(/\r?\n/);
     const end = lines.indexOf('---', 1);
+    if(end<1)throw Error('專案檔案的 frontmatter 不完整，未新增參考資料');
     let i = lines.findIndex((l, k) => k > 0 && k < end && /^folders:/.test(l));
     if (i < 0) { lines.splice(end, 0, 'folders:'); i = end; }
     else if (/^folders:\s*\{\s*\}/.test(lines[i])) lines[i] = 'folders:';
@@ -308,7 +309,7 @@ class Store {
       add.push(`  参考${n}: ${scalar(x)}`);
     }
     lines.splice(j, 0, ...add);
-    fs.writeFileSync(file, lines.join('\n'));
+    fs.writeFileSync(file, lines.join(eol));
     return { project: this.readProject(id), added: add.length };
   }
 
@@ -357,10 +358,11 @@ class Store {
 
   // 手順だけを更新。全部付いても、人の承認までは一覧に残す。
   setStep(projectId, taskId, index, done) {
+    if (!Number.isSafeInteger(index) || index < 0 || typeof done !== 'boolean') return null;
     const file = this.taskFile(projectId, taskId);
     if (!file) return null;
-    const before = read(file), key = `${projectId}/${taskId}`, preserve = this.completion.data.tasks[key]?.hash === hash(before);
-    const lines = before.split('\n');
+    const before = read(file), key = `${projectId}/${taskId}`, preserve = this.completion.data.tasks[key]?.hash === hash(before), eol=before.includes('\r\n')?'\r\n':'\n';
+    const lines = before.split(/\r?\n/);
     let inside = false, n = -1, hit = false;
     for (let i = 0; i < lines.length; i++) {
       if (/^##\s/.test(lines[i])) { inside = /^##\s+手順/.test(lines[i]); continue; }
@@ -371,6 +373,7 @@ class Store {
     const steps = readSteps(parseDoc(text).body);
     const cur = parseDoc(text).data.state;
     if (!steps.every(x => x.done) && cur === '完了') text = setScalar(text, 'state', '実行中');
+    text=text.replace(/\r?\n/g,eol);
     fs.writeFileSync(file, text);
     if (preserve && parseDoc(text).data.state === '完了') this.completion.approveTask(key,text);
     return this.readTask(file);
@@ -381,7 +384,7 @@ class Store {
     const file = this.taskFile(projectId, taskId);
     const item = oneLine(textIn).slice(0, 120);
     if (!file || !item) return null;
-    const lines = read(file).split('\n');
+    const original=read(file),eol=original.includes('\r\n')?'\r\n':'\n',lines=original.split(/\r?\n/);
     const h = lines.findIndex(l => /^##\s+手順/.test(l));
     if (h >= 0) {
       let end = h + 1;
@@ -391,11 +394,12 @@ class Store {
       if (blank >= 0) lines[blank] = `- [ ] ${item}`; else lines.splice(end, 0, `- [ ] ${item}`);
     } else {
       const close = lines.indexOf('---', 1);
+      if(close<1)throw Error('作業檔案的 frontmatter 不完整，未新增步驟');
       lines.splice(close + 1, 0, '## 手順', `- [ ] ${item}`, '');
     }
     let text = setScalar(lines.join('\n'), 'updated', now());
     if (parseDoc(text).data.state === '完了') text = setScalar(text, 'state', '実行中');
-    fs.writeFileSync(file, text);
+    fs.writeFileSync(file, text.replace(/\r?\n/g,eol));
     return this.readTask(file);
   }
 

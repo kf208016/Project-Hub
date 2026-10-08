@@ -7,14 +7,14 @@
     const text = $('#chat-in')?.value || '', images = $('#chat-images');
     const hasDraft = Boolean(text || (images && !images.hidden));
     const button = $('#mobile-compose');
-    if (button) button.textContent = composerOpen ? '閉じる' : '✎ 依頼を書く' + (hasDraft ? ' · 下書きあり' : '');
+    if (button) {const label=window.L||((value)=>value);button.textContent = composerOpen ? label('閉じる') : '✎ '+label('依頼を書く') + (hasDraft ? ' · '+label('下書きあり') : '');}
   }
   function apply() {
     document.body.classList.toggle('mobile-info-open', infoOpen);
     document.body.classList.toggle('mobile-compose-open', composerOpen);
     const button = $('#mobile-info');
     button.textContent = infoOpen ? '▲' : '▼';
-    button.setAttribute('aria-label', infoOpen ? '情報と操作を閉じる' : '情報と操作を開く');
+    button.setAttribute('aria-label', (window.L||((value)=>value))(infoOpen ? '情報と操作を閉じる' : '情報と操作を開く'));
     button.setAttribute('aria-expanded', String(infoOpen));
     const compose = $('#mobile-compose');
     if (compose) compose.setAttribute('aria-expanded', String(composerOpen));

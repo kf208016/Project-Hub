@@ -1,4 +1,7 @@
 'use strict';
+// Native Windows validates the approved provider/authority contract; original
+// POSIX integration assertions remain intact in the other branch.
+if(process.platform==='win32'){require('./helpers/native-deferred-policy').register('agy');}else{
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -126,3 +129,5 @@ test('Agy PTY can run beside both existing providers and hand off its own screen
     assert.ok(!sessions.list().some(x => x.ai === 'agy' && x.running));
   } finally { sessions.stopAll(); }
 });
+
+}

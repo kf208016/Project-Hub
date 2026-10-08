@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Private native image dependency configuration",
+  "type":"object","additionalProperties":false,"required":["version","heicDecoder"],
+  "properties":{
+    "version":{"const":1},
+    "heicDecoder":{"type":"object","additionalProperties":false,"required":["path","sha256","version"],"properties":{
+      "path":{"type":"string","pattern":"^[A-Za-z]:[\\\\/]","maxLength":32768},
+      "sha256":{"const":"3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec"},
+      "version":{"const":"9.0.2-essentials_build-www.gyan.dev"}
+    }}
+  }
+}

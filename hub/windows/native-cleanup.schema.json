@@ -1,0 +1,15 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Private native Removal cleanup record version 1",
+  "description":"Plans are bound before human confirmation. The original Removal fingerprint is separate from native-tree-v1 and is never treated as native FileID evidence. Legacy records cannot be silently upgraded.",
+  "type":"object","additionalProperties":false,
+  "required":["id","at","kind","project","task","title","entries","error","nativeVersion"],
+  "properties":{
+    "id":{"type":"string","pattern":"^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-4[a-fA-F0-9]{3}-[89aAbB][a-fA-F0-9]{3}-[a-fA-F0-9]{12}$"},"at":{"type":"string","format":"date-time"},"kind":{"enum":["project","task"]},"project":{"type":"string","minLength":1,"maxLength":255},"task":{"type":"string","maxLength":255},"title":{"type":"string","maxLength":4096},"error":{"type":"string","maxLength":8192},"nativeVersion":{"const":1},
+    "entries":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","additionalProperties":false,"required":["from","to","fingerprint","moved","restored","native"],"properties":{
+      "from":{"type":"string","minLength":4},"to":{"type":"string","minLength":4},"fingerprint":{"type":"string","pattern":"^[a-f0-9]{64}$"},"moved":{"type":"boolean"},"restored":{"type":"boolean"},"moving":{"type":"boolean"},"restoring":{"type":"boolean"},"native":{"$ref":"rooted-move.schema.json"},"nativeRestore":{"$ref":"rooted-move.schema.json"},"nativeState":{"$ref":"#/$defs/state"},"nativeRestoreState":{"$ref":"#/$defs/state"}
+    }}}
+  },
+  "$defs":{"state":{"enum":["planned","complete","partial","moved-unreceipted","not-moved"]}},
+  "allOf":[{"if":{"properties":{"kind":{"const":"project"}}},"then":{"properties":{"task":{"const":""}}},"else":{"properties":{"task":{"minLength":1}}}}]
+}

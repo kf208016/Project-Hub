@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Windows owned task display mutation admission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "task"],
+  "properties": {
+    "project": {"type": "string", "minLength": 1},
+    "task": {"type": "string", "minLength": 1},
+    "state": {"type": "string", "not": {"const": "完了"}},
+    "question": {"type": "string"},
+    "memo": {"type": "string"}
+  },
+  "anyOf": [
+    {"required": ["state"]},
+    {"required": ["question"]},
+    {"required": ["memo"]}
+  ]
+}

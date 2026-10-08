@@ -1,0 +1,8 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Windows restart signed helper status",
+  "description":"A temporary local status proof made with an operation-specific read-only key. This is not a Hub/MCP credential or external attestation. It binds the operation, five critical source files, and verified Node PID/creation ticks before the UI resumes credentialed requests.",
+  "type":"object","additionalProperties":false,"required":["operation","phase","sourceHash","error"],
+  "properties":{"operation":{"type":"string","format":"uuid"},"phase":{"enum":["starting","ready","failed"]},"sourceHash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"error":{"type":["string","null"]},"pid":{"type":"integer","minimum":1},"createdTicks":{"type":"string","pattern":"^[0-9]{1,19}$"}},
+  "allOf":[{"if":{"properties":{"phase":{"const":"ready"}}},"then":{"required":["pid","createdTicks"],"properties":{"error":{"type":"null"}}}}]
+}

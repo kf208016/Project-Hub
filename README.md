@@ -2,7 +2,9 @@
 
 ## Windows 移植分支
 
-本分支正在移植原生 Windows Codex、審批、程序管理與可回復整理。它尚未達到原版完整功能及正式安裝門檻。Windows 的啟停、安全條件與驗證範圍以 [hub/WINDOWS.md](hub/WINDOWS.md) 為準；下列為上游 macOS 說明，不能套用其中略過沙箱或沒有登入驗證的描述到 Windows。
+本分支以 v4.68.2 為基礎，提供原生 Windows Codex 的 Hub 會話、終端機、審批、Git 工作區／合併、移交／整合、MCP、遠端 TLS、圖片、整理／還原及啟停流程。Windows 介面預設台灣繁體中文，可切換日文；Claude／Agy 的 Windows 隔離執行留待後續處理。
+
+功能、已測邊界與操作方式見 [hub/WINDOWS.md](hub/WINDOWS.md)，版本化安裝見 [安裝文件](hub/windows/INSTALL.md)。此來源說明不表示每份 checkout 已在本機完成安裝；確切 commit、套件 SHA-256、測試結果、安裝位置與實際啟停驗證，以隨本次交付提供的報告為準。下列為上游 macOS 說明，不能套用其中略過沙箱或沒有登入驗證的描述到 Windows。
 
 **開発中の版です（v4.68.2）。** 機能・画面・保存の形は、これからも変わります。大事なデータでは使わず、試せる範囲で使ってください。使ってみた感想、不具合の報告、Pull Request を歓迎します。送り方は [CONTRIBUTING.md](CONTRIBUTING.md) を見てください。
 

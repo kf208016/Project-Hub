@@ -164,8 +164,17 @@ test('すでに追跡された秘密設定の変更は、意図せず追跡解�
   fs.writeFileSync(path.join(main, '.env'), 'LOCAL_TEST_VALUE=old\n');
   sh(main, 'add', '.env'); sh(main, 'commit', '-qm', 'existing tracked setting');
   fs.writeFileSync(path.join(main, '.env'), 'LOCAL_TEST_VALUE=new\n');
-  assert.strictEqual(g.save(main, 'keep existing behavior'), true);
-  assert.match(sh(main, 'show', 'HEAD:.env'), /LOCAL_TEST_VALUE=new/);
+  if (WINDOWS) {
+    const before = sh(main, 'rev-parse', 'HEAD');
+    assert.throws(() => g.save(main, 'requires trusted manual save'), /機密|敏感|人工/);
+    assert.strictEqual(sh(main, 'rev-parse', 'HEAD'), before);
+    assert.match(sh(main, 'show', 'HEAD:.env'), /LOCAL_TEST_VALUE=old/);
+    assert.match(fs.readFileSync(path.join(main, '.env'), 'utf8'), /LOCAL_TEST_VALUE=new/);
+    assert.strictEqual(sh(main, 'ls-files', '--', '.env'), '.env');
+  } else {
+    assert.strictEqual(g.save(main, 'keep existing behavior'), true);
+    assert.match(sh(main, 'show', 'HEAD:.env'), /LOCAL_TEST_VALUE=new/);
+  }
 });
 
 test('初回の保存と未コミットrepoの準備でも秘密設定を追跡しない', () => {

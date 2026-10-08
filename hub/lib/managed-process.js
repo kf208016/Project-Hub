@@ -11,7 +11,8 @@ let binary;
 function ensureRunner() {
   if (binary) return binary;
   const source = path.join(__dirname, '../windows/job-runner.cs');
-  const hash = createHash('sha256').update(fs.readFileSync(source)).digest('hex');
+  const pinSource = path.join(__dirname, '../windows/pinned-root.cs');
+  const hash = createHash('sha256').update(fs.readFileSync(source)).update(fs.readFileSync(pinSource)).digest('hex');
   const dir = path.join(__dirname, '../.runtime');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `job-runner-${hash}.exe`);
@@ -19,7 +20,7 @@ function ensureRunner() {
     const compiler = path.join(process.env.SystemRoot || 'C:\\Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
     const temp = path.join(dir, `job-runner-${randomUUID()}.exe`);
     try {
-      execFileSync(compiler, ['/nologo', '/target:exe', '/optimize+', '/reference:System.Web.Extensions.dll', '/out:' + temp, source], { windowsHide: true, timeout: 30000, stdio: 'pipe' });
+      execFileSync(compiler, ['/nologo', '/target:exe', '/platform:x64', '/optimize+', '/reference:System.Web.Extensions.dll', '/out:' + temp, source, pinSource], { windowsHide: true, timeout: 30000, stdio: 'pipe' });
       fs.renameSync(temp, file);
     } catch (e) {
       fs.rmSync(temp, { force: true });
@@ -35,13 +36,14 @@ function ensureRunner() {
 function managedSpawn(file, args, options = {}) {
   if (process.platform !== 'win32') return spawn(file, args, options);
   if (!path.isAbsolute(file) || /[\0]/.test(file) || !Array.isArray(args) || args.some(x => typeof x !== 'string' || x.includes('\0'))) throw new Error('Invalid managed process invocation');
+  if(options.dirPin && (typeof options.dirPin.root!=='string'||!path.isAbsolute(options.dirPin.root)||options.dirPin.root.includes('\0')||!/^[a-f0-9]{64}$/.test(options.dirPin.rootFingerprint||'')||Object.keys(options.dirPin).some(k=>!['root','rootFingerprint'].includes(k))))throw new Error('Invalid directory pin');
   const runner = ensureRunner();
   const child = new EventEmitter();
   child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
   child.exitCode = null; child.signalCode = null; child.pid = undefined;
   let real, owner, ended = false, ready = false, killed = false, pending = '';
   const pipe = 'project-hub-' + randomUUID(), nonce = randomUUID();
-  const spec = JSON.stringify({ file, args, cwd: options.cwd || process.cwd(), pipe, nonce });
+  const spec = JSON.stringify({ file, args, cwd: options.cwd || process.cwd(), pipe, nonce, ...(options.dirPin?{dirPin:options.dirPin}:{}) });
   if (spec.length > 24000) throw new Error('Windows CLI arguments exceed the managed process limit');
   const server = net.createServer(socket => {
     let hello = '';
@@ -52,6 +54,7 @@ function managedSpawn(file, args, options = {}) {
       if (!hello.endsWith('\n')) return;
       if (hello !== nonce + '\n' || owner) return socket.destroy();
       owner = socket; socket.setTimeout(0); socket.removeListener('data', accept); server.close();
+      if(killed)socket.destroy();
     };
     socket.on('data', accept); socket.on('error', () => {});
   });
@@ -62,7 +65,7 @@ function managedSpawn(file, args, options = {}) {
     if (!ready && !killed) child.emit('error', new Error('Windows 程序管理元件啟動失敗；CLI 未確認啟動。'));
     child.emit('exit', code, signal); child.emit('close', code, signal);
   };
-  child.kill = (signal = 'SIGTERM') => { killed = true; owner?.destroy(); if (real) return real.kill(signal); finish(null, signal); return true; };
+  child.kill = (signal = 'SIGTERM') => { killed = true; owner?.destroy(); if (real) {if(options.dirPin)return true;return real.kill(signal);} if(options.dirPin)return true;finish(null, signal);return true; };
   child.stdin.on('error', () => {});
   const timer = setTimeout(() => { child.emit('error', new Error('Windows 程序啟動逾時')); child.kill(); }, 15000);
   server.on('error', e => { if (!ended) { child.emit('error', e); child.kill(); } });

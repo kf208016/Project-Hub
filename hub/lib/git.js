@@ -7,26 +7,28 @@ const os = require('os');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('child_process');
 const {localPath,localTree}=require('./safe-path');
+const gitPolicy=require('./git-policy');
 const WINDOWS=process.platform==='win32';
+const secretApprovals=new WeakMap();
+function reviewedSecretApproval({base,paths,snapshotHash}){
+  if(!WINDOWS||typeof base!=='string'||!Array.isArray(paths)||paths.some(x=>typeof x!=='string')||!/^[a-f0-9]{64}$/.test(snapshotHash||''))throw Error('工作複本機密供應確認格式無效');
+  const key={};secretApprovals.set(key,{base:path.resolve(base).toLowerCase(),paths:new Set(paths),snapshotHash,at:Date.now()});return key;
+}
 
 const MAX_FILES = 20000;          // これより多いフォルダは自動で保存を始めない
 const MAX_BYTES = 1024 ** 3;      // 1GB
 
 function git(dir, args) {
-  if(WINDOWS)localPath(dir);
-  // 名前が未設定の Mac でも保存できるように、未設定の時だけ仮の名前を使う
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
-  if (!hasIdentity(dir)) Object.assign(env, { GIT_AUTHOR_NAME: 'Project Hub', GIT_AUTHOR_EMAIL: 'hub@localhost', GIT_COMMITTER_NAME: 'Project Hub', GIT_COMMITTER_EMAIL: 'hub@localhost' });
-  return execFileSync('git', ['-C', dir, ...args], { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  return gitPolicy.run(dir,args).trim();
 }
-function tryGit(dir, args) { try { return git(dir, args); } catch (e) { return null; } }
+function tryGit(dir, args) { try { return git(dir, args); } catch (e) { if(!Number.isInteger(e.status))throw e;return null; } }
 
 function hasIdentity(dir) {
-  try { return Boolean(execFileSync('git', ['-C', dir, 'config', 'user.email'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()); } catch (e) { return false; }
+  try { return Boolean(gitPolicy.run(dir,['config','user.email'],{identity:false}).trim()); } catch (e) { return false; }
 }
 
 function available() {
-  try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; } catch (e) { return false; }
+  try {const executable=WINDOWS?require('./git-metadata').trustedGit():'git';execFileSync(executable,['--version'],{stdio:'ignore',env:WINDOWS?gitPolicy.environment():process.env,windowsHide:true,timeout:5000});return true;}catch(e){return false;}
 }
 
 function repoTop(dir) { return fs.existsSync(dir) ? tryGit(dir, ['rev-parse', '--show-toplevel']) : null; }
@@ -39,7 +41,7 @@ function mainOf(dir) {
   return path.dirname(common);
 }
 
-function dirty(dir) { return Boolean(tryGit(dir, ['status', '--porcelain'])); }
+function dirty(dir) { return Boolean(git(dir, ['status', '--porcelain'])); }
 
 // ignore の無いプロジェクトでも、新しい秘密設定は自動保存に含めない。
 // すでに追跡されているファイルは変更せず、例示用の .env は許容する。
@@ -48,9 +50,7 @@ function stageAll(dir) {
   const added = git(dir, ['diff', '--cached', '--name-only', '--diff-filter=A', '--no-renames', '-z'])
     .split('\0').filter(Boolean);
   const secrets = added.filter(f => {
-    const name = path.posix.basename(f);
-    if (name === '.env.example' || name === '.env.sample') return false;
-    return LOCAL_FILES.test(name) || /(^|\/)\.claude\/settings\.local\.json$/.test(f);
+    return isSensitivePath(f);
   });
   for (let i = 0; i < secrets.length; i += 100) {
     git(dir, ['rm', '--cached', '-q', '--', ...secrets.slice(i, i + 100).map(f => `:(top,literal)${f}`)]);
@@ -61,6 +61,8 @@ function stageAll(dir) {
 
 // 変更があれば保存する
 function save(dir, message) {
+  gitPolicy.assertExecution(dir);
+  if(WINDOWS){gitPolicy.assertIndexVisible(dir);assertTrackedSecrets(dir);}
   if (!dirty(dir)) return false;
   if (!stageAll(dir)) return false;
   git(dir, process.platform === 'win32' ? ['commit', '-q', '-m', message] : ['commit', '-q', '--no-verify', '-m', message]);
@@ -114,13 +116,15 @@ function validateWindowsWorktree(top,wt) {
   validateWindowsRepo(top);validateWindowsRepo(wt);
   const common=d=>git(d,['rev-parse','--path-format=absolute','--git-common-dir']).toLowerCase();
   if(common(top)!==common(wt)||path.resolve(top).toLowerCase()===path.resolve(wt).toLowerCase())throw Error('既有作業目錄不屬於此 Git 儲存庫的工作複本');
+  const sourceBranch=git(wt,['rev-parse','--abbrev-ref','HEAD']),targetBranch=git(top,['rev-parse','--abbrev-ref','HEAD']);
+  if(sourceBranch!=='HEAD'&&sourceBranch===targetBranch)throw Error('來源工作複本與目標共用同一個 branch；請用獨立分支工作複本');
   const registered=git(top,['worktree','list','--porcelain','-z']).split('\0').filter(x=>x.startsWith('worktree ')).map(x=>path.resolve(x.slice(9)).toLowerCase());
   if(!registered.includes(path.resolve(wt).toLowerCase()))throw Error('工作複本未登錄在此 Git 儲存庫');
 }
 
 // 作業を始める前の準備。作業する場所と、何をしたかを返す
 //   base: 本体のフォルダ / workRoot: AI-Workspace/Work/<プロジェクト>
-function prepare({ base, workRoot, taskId, direct }) {
+function prepare({ base, workRoot, taskId, direct, secretApproval }) {
   if(WINDOWS) {
     localPath(base);localPath(workRoot,{allowMissing:true});
     if(typeof taskId!=='string'||!taskId||taskId==='.'||taskId==='..'||/[\\/]/.test(taskId))throw Error('工作複本識別不能包含路徑');
@@ -132,6 +136,11 @@ function prepare({ base, workRoot, taskId, direct }) {
   }
   if (process.platform === 'win32' && direct) throw new Error('Windows 版不允許 AI 直接修改專案本體');
   let top = repoTop(base);
+  if(top)gitPolicy.assertExecution(top);
+  if(WINDOWS&&top&&tryGit(top,['rev-parse','--verify','HEAD'])) {
+    const secrets=git(top,['ls-tree','-rz','--name-only','HEAD']).split('\0').filter(Boolean).filter(isSensitivePath);
+    if(secrets.length){const permit=secretApprovals.get(secretApproval);secretApprovals.delete(secretApproval);if(!permit||permit.base!==path.resolve(top).toLowerCase()||Date.now()<permit.at||Date.now()-permit.at>600000||secrets.some(x=>!permit.paths.has(x))||rawContent(top)!==permit.snapshotHash)throw Error('Git HEAD 已追蹤可能機密檔案；需要使用者明確核准完整檔名及 Git 歷史可讀範圍：'+secrets.join(' / '));}
+  }
   if(top)validateWindowsRepo(top);
   // 台帳のフォルダが別の Git の中にある時は、台帳だけの保存を始める
   if (top && direct && real(top) !== real(base)) top = null;
@@ -156,8 +165,9 @@ function prepare({ base, workRoot, taskId, direct }) {
   const rel = path.relative(top, base);
   if (fs.existsSync(wt)) {validateWindowsWorktree(top,wt);return { dir: path.join(wt, rel), worktree: wt };}
   fs.mkdirSync(workRoot, { recursive: true });
-  const branch = branchName(taskId);
-  const exists = tryGit(top, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  let branch = branchName(taskId);
+  let exists = tryGit(top, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  if(WINDOWS&&exists){const stem=branch+'-'+require('node:crypto').createHash('sha256').update(path.resolve(workRoot).toLowerCase()).digest('hex').slice(0,10);let count=0;do{branch=stem+(count?'-'+count:'');exists=tryGit(top,['rev-parse','--verify','--quiet',`refs/heads/${branch}`]);if(++count>128)throw Error('同名工作分支過多，請先覆核保留的工作複本');}while(exists);}
   git(top, exists ? ['worktree', 'add', '-q', wt, branch] : ['worktree', 'add', '-q', '-b', branch, wt, 'HEAD']);
   validateWindowsWorktree(top,wt);
   const copied = copyLocalFiles(top, wt);
@@ -166,6 +176,22 @@ function prepare({ base, workRoot, taskId, direct }) {
 
 // Git に入っていない手元の設定（.env など）を作業用コピーにも写す。無いと AI のテストが動かないため
 const LOCAL_FILES = /^(\.env(\..*)?|\.dev\.vars(\..*)?|\.npmrc)$/;
+function isSensitivePath(f) {
+  const name=path.posix.basename(String(f).replace(/\\/g,'/')).toLowerCase();
+  if(name==='.env.example'||name==='.env.sample')return false;
+  return LOCAL_FILES.test(name)||/^(\.netrc|\.pypirc|id_rsa|id_ed25519)$/.test(name)||/\.(pem|key|p12|pfx)$/.test(name)||/(^|\/)\.claude\/settings\.local\.json$/i.test(f);
+}
+function assertTrackedSecrets(dir) {
+  const tracked=new Set(git(dir,['ls-tree','-rz','--name-only','HEAD']).split('\0').filter(Boolean).filter(isSensitivePath));
+  const changed=git(dir,['diff','--name-only','-z','HEAD']).split('\0').filter(f=>tracked.has(f));
+  if(changed.length)throw Error('已追蹤的可能機密檔案有未提交變更；Hub 不會自動保存，請用人工可信 Git 流程確認：'+changed.join(' / '));
+}
+function assertMergeSecrets(source,target) {
+  if(!WINDOWS)return;
+  const base=git(source,['merge-base',git(target,['rev-parse','HEAD']),'HEAD']);
+  const changed=git(source,['diff','--name-only','-z',base,'HEAD']).split('\0').filter(isSensitivePath);
+  if(changed.length)throw Error('來源 commit 含可能機密檔案變更；Hub 不會自動合併，請用人工可信 Git 流程確認：'+changed.join(' / '));
+}
 function copyLocalFiles(top, wt) {
   if (process.platform === 'win32') return []; // Never copy local credentials into an AI worktree.
   const copied = [];
@@ -191,22 +217,26 @@ function preview({ dir, workRoot, target }) {
   const wt = repoTop(dir);
   const main = target ? repoTop(target) : wt && mainOf(wt);
   if (!wt || !main) return null;
+  gitPolicy.assertMergeExecution(wt,main);
   const inside = path.relative(workRoot, wt);
   if (!inside || inside.startsWith('..') || path.isAbsolute(inside)) return null;
   const mainHead = tryGit(main, ['rev-parse', 'HEAD']);
   const base = mainHead && tryGit(wt, ['merge-base', mainHead, 'HEAD']);
   if (!base) return null;
-  const stat = tryGit(wt, ['diff', '--shortstat', base]) || '';
+  assertMergeSecrets(wt,main);
+  const stat = git(wt, ['diff', '--no-ext-diff', '--no-textconv', '--shortstat', base]);
   const num = re => Number((stat.match(re) || [0, 0])[1]);
-  const untracked = (tryGit(wt, ['ls-files', '--others', '--exclude-standard']) || '').split('\n').filter(Boolean).length;
-  const files = num(/(\d+) files? changed/) + untracked;
+  const untrackedPaths = git(wt, ['ls-files', '--others', '--exclude-standard','-z']).split('\0').filter(Boolean);
+  const notStagedSecrets=[...new Set([...untrackedPaths,...git(wt,['diff','--cached','--name-only','--diff-filter=A','-z']).split('\0').filter(Boolean)].filter(isSensitivePath))];
+  const paths=[...new Set([...git(wt, ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', base]).split('\0').filter(Boolean),...untrackedPaths])].filter(f=>!notStagedSecrets.includes(f)).sort();
+  const files=paths.length;
   let conflict = false;
   // 保存済みの変更どうしで試しに合わせてみる（git 2.38 以上。使えなければ判定しない）
   if (tryGit(wt, ['rev-parse', 'HEAD']) !== base) {
     try { git(main, ['merge-tree', '--write-tree', '--name-only', '--no-messages', mainHead, tryGit(wt, ['rev-parse', 'HEAD'])]); }
-    catch (e) { conflict = e.status === 1; }
+    catch (e) { if(e.status!==1)throw Error('無法預演 Git 合併，未判定無衝突：'+String(e.stderr||e.message).slice(0,1000));conflict = true; }
   }
-  return { files, added: num(/(\d+) insertions?/), removed: num(/(\d+) deletions?/), conflict, mainDirty: dirty(main), paths: (tryGit(wt, ['diff', '--name-only', '-z', base]) || '').split('\0').filter(Boolean) };
+  return { files, added: num(/(\d+) insertions?/), removed: num(/(\d+) deletions?/), conflict, mainDirty: dirty(main), paths,notStagedSecrets };
 }
 
 // ゴミ箱へ移す（完全には消さない）
@@ -238,6 +268,8 @@ function merge({ dir, workRoot, title, target, cleanup = true }) {
   if (!main) return { ok: false, error: 'Git の作業用コピーではありません' };
   if (!origin || main === wt || git(main, ['rev-parse', '--path-format=absolute', '--git-common-dir']) !== git(wt, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) return { ok: false, error: '統合先は同じ本体の別の作業用コピーにしてください' };
   if(WINDOWS){validateWindowsWorktree(main,wt);localTree(wt);localTree(main);}
+  gitPolicy.assertMergeExecution(wt,main);
+  assertMergeSecrets(wt,main);
   const branch = git(wt, ['rev-parse', '--abbrev-ref', 'HEAD']);
   save(wt, `${title}（作業の保存）`);
   save(main, '取り込み前の保存');
@@ -256,16 +288,44 @@ function merge({ dir, workRoot, title, target, cleanup = true }) {
   return { ok: true, main, trashed, commit, files, already, branch };
 }
 function isAncestor(dir, commit) { return /^[a-f0-9]{40,64}$/.test(commit || '') && tryGit(dir, ['merge-base', '--is-ancestor', commit, 'HEAD']) !== null; }
+// Hash actual bytes rather than Git's filtered/normalized representation. The
+// same bounded tree hash is used before saving and after reversible cleanup.
+function rawContent(dir) {
+  localPath(dir);const digest=createHash('sha256');let count=0,bytes=0;
+  const walk=(file,rel)=>{
+    if(++count>MAX_FILES)throw Error('來源內容超過確認項目上限');localPath(file);
+    const st=fs.lstatSync(file);if(!st.isDirectory()&&!st.isFile())throw Error('來源含連結或特殊檔案');
+    digest.update(JSON.stringify([rel,st.isDirectory()?'d':'f']));
+    if(st.isDirectory()){for(const n of fs.readdirSync(file).sort()){if(!rel&&n==='.git')continue;walk(path.join(file,n),rel?rel+'/'+n:n);}}
+    else {if((bytes+=st.size)>256*1024*1024)throw Error('來源內容超過確認大小上限');digest.update(String(st.size)+':').update(fs.readFileSync(file));}
+  };walk(dir,'');return digest.digest('hex');
+}
 function inspect(dir) {
-  if(WINDOWS)validateWindowsRepo(dir);
+  if(WINDOWS) {
+    // Each invocation still has fresh local metadata preflight. Combine the
+    // pure rev-parse queries; status alone needs the external-helper review.
+    const refs=tryGit(dir,['rev-parse','--path-format=absolute','--show-toplevel','--git-dir','--git-common-dir','HEAD','--abbrev-ref','HEAD']);
+    if(refs===null)return null;
+    const [wt,own,common,head,branch,...extra]=refs.split(/\r?\n/);
+    if(extra.length||!/^[a-f0-9]{40,64}$/.test(head)||!branch)throw Error('無法確認 Git 快照參照');
+    for(const file of [wt,own,common,path.join(wt,'.git')])localPath(file);
+    const status=git(wt,['status','--porcelain']);
+    // Stage records contain each path, flags, stage, blob ID and Git mode. Unlike
+    // raw index bytes they are stable across incidental index-stat refreshes.
+    const index=gitPolicy.indexSnapshot(wt);
+    gitPolicy.assertIndexVisible(wt,index);
+    const allContent=rawContent(wt),digest=createHash('sha256');
+    digest.update(String(index.length)+':').update(index).update(allContent);
+    return {head,branch,status,content:digest.digest('hex'),allContent};
+  }
   const wt = repoTop(dir); if (!wt) return null;
   // porcelainの同じ変更マークでも、中身・ステージ・未追跡ファイルが変われば拒否する。
   const digest = createHash('sha256');
   for (const args of [['diff','--binary','--no-ext-diff','--no-textconv','HEAD'], ['diff','--cached','--binary','--no-ext-diff','--no-textconv']]) {
-    const data = execFileSync('git', ['-C',wt,...args], {maxBuffer:256*1024*1024,stdio:['ignore','pipe','pipe']});
+    const data = gitPolicy.run(wt,args,{encoding:null});
     digest.update(String(data.length)+':').update(data);
   }
-  const files = execFileSync('git',['-C',wt,'ls-files','--others','--exclude-standard','-z'],{encoding:'utf8',stdio:['ignore','pipe','pipe']}).split('\0').filter(Boolean).sort();
+  const files = gitPolicy.run(wt,['ls-files','--others','--exclude-standard','-z']).split('\0').filter(Boolean).sort();
   let bytes=0;if(files.length>MAX_FILES)throw Error('未追跡ファイルが多すぎて照合できません');
   for (const f of files) {
     const file=path.join(wt,f),st=fs.lstatSync(file);
@@ -333,6 +393,7 @@ function remoteInfo(dir, { fresh } = {}) {
 }
 
 function hasOrigin(dir) { remoteInfo(dir); return Boolean(remoteInfoCache.get(dir)?.hasOrigin); }
+function readSummary(dir,options={}){try{if(WINDOWS&&dir&&fs.existsSync(dir))require('./git-metadata').assertLocalMetadata(dir);const remote=remoteInfo(dir,options);return{state:'known',hasOrigin:Boolean(remoteInfoCache.get(dir)?.hasOrigin),remote,error:''};}catch(error){const code=/^[A-Z0-9_]{1,64}$/.test(error.code||'')?error.code:'GIT_READ_FAILED';return{state:'unknown',hasOrigin:null,remote:null,error:'無法確認 Git 中繼資料（'+code+'）；Git 修改操作仍保留拒絕'};}}
 
 function integrationReceipt(dir, record, task) {
   // 旧版の成功ログにはこの3項目が無い。名前と時刻が一意に合う本体履歴だけで補う。
@@ -356,4 +417,4 @@ function integrationReceipt(dir, record, task) {
   if (tryGit(dir, ['merge-base', '--is-ancestor', record.commit, 'HEAD']) === null) return null;
   return {dir, commit:record.commit, files:record.files, github:remoteInfo(dir)};
 }
-module.exports = { hasOrigin, tooBig, integrationReceipt, available, repoTop, mainOf, save, init, prepare, merge, preview, toTrash, cleanupCopy, finishCleanupCopy, inspect, isAncestor, countCopies, dirty, copyLocalFiles, remoteInfo, remoteInfoCache, webUrl };
+module.exports = { readSummary, reviewedSecretApproval, isSensitivePath, assertTrackedSecrets, hasOrigin, tooBig, integrationReceipt, available, repoTop, mainOf, save, init, prepare, merge, preview, toTrash, cleanupCopy, finishCleanupCopy, inspect, rawContent, isAncestor, countCopies, dirty, copyLocalFiles, remoteInfo, remoteInfoCache, webUrl };

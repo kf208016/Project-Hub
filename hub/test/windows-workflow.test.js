@@ -10,7 +10,7 @@ const { Store } = require('../lib/store');
 const chat = require('../lib/chat');
 
 const winOnly = process.platform === 'win32' ? test : test.skip;
-winOnly('Windows API starts Codex only in a Git worktree and rejects a non-Git body', async t => {
+winOnly('Windows API requires reviewed workspace consent before Git and non-Git Codex starts',{timeout:180000},async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-win-flow-'));
   const repo = path.join(root, 'source'), plain = path.join(root, 'plain');
   const bin = path.join(root, 'bin');
@@ -29,7 +29,8 @@ winOnly('Windows API starts Codex only in a Git worktree and rejects a non-Git b
   const port = listener.address().port;
   await new Promise(resolve => listener.close(resolve));
   const secret = 'D'.repeat(43);
-  const child = spawn(process.execPath, ['server.js'], { cwd: path.join(__dirname, '..'),
+  const preload=path.join(root,'server-fixture.cjs'),hub=path.join(__dirname,'..');fs.writeFileSync(preload,`const pw=require(${JSON.stringify(path.join(hub,'lib/procwatch'))}),create=pw.create;pw.create=o=>create({...o,exec:async()=>JSON.stringify([{pid:process.pid,ppid:0,since:new Date().toISOString(),name:'node.exe',command:'synthetic fixture controller'}])});const {server,PORT}=require(${JSON.stringify(path.join(hub,'server.js'))});server.listen(PORT,'127.0.0.1');`);
+  const child = spawn(process.execPath, [preload], { cwd: path.join(__dirname, '..'),
     env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, HUB_ROOT: root, HUB_TRASH: path.join(root, '_hub', 'Trash'),
       HUB_AI_HOME: path.join(root, 'empty-home'), HUB_PORT: String(port), HUB_LOCAL_TOKEN: secret }, stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
@@ -53,9 +54,10 @@ winOnly('Windows API starts Codex only in a Git worktree and rejects a non-Git b
   assert.equal((await post('/api/project/new', { name: 'isolated', body: repo })).status, 200);
   assert.equal((await post('/api/project/new', { name: 'no-git', body: plain })).status, 200);
   const denied = await post('/api/start', { project: 'no-git', ai: 'codex', model: 'GPT-6.1-Sol', effort: '高', text: 'test', images: [] });
-  assert.equal(denied.status, 409, await denied.text());
+  assert.equal(denied.status, 409, await denied.clone().text());
   assert.equal(fs.existsSync(path.join(plain, '.git')), false);
-  const accepted = await post('/api/start', { project: 'isolated', ai: 'codex', model: 'GPT-6.1-Sol', effort: '高', text: 'test', images: [] });
+  const freshStart=async request=>{const first=await post('/api/start',request);assert.equal(first.status,409,await first.clone().text());const needed=await first.json();assert.equal(needed.code,'WORKSPACE_REQUIRED');const scope={project:request.project,task:needed.task},preview=await post('/api/task/workspace/preview',{...scope,secrets:[]});assert.equal(preview.status,200,await preview.clone().text());const pv=await preview.json(),prepared=await post('/api/task/workspace/prepare',{...scope,token:pv.token,confirm:true,ackReadLimits:true,ackNetworkLimits:true});assert.equal(prepared.status,200,await prepared.clone().text());return post('/api/start',{...request,task:scope.task,workspacePermit:(await prepared.json()).permit});};
+  const accepted = await freshStart({ project: 'isolated', ai: 'codex', model: 'GPT-6.1-Sol', effort: '高', text: 'test', images: [] });
   assert.equal(accepted.status, 200, await accepted.clone().text());
   const task = (await accepted.json()).task;
   const store = new Store(root);
@@ -71,4 +73,5 @@ winOnly('Windows API starts Codex only in a Git worktree and rejects a non-Git b
   }
   assert.equal(reply?.text, 'fixture reply');
   assert.equal(reply?.error, '');
+  const deniedValue=await denied.json();assert.equal(deniedValue.code,'WORKSPACE_REQUIRED');const scope={project:'no-git',task:deniedValue.task},pv=await(await post('/api/task/workspace/preview',{...scope,secrets:[]})).json(),prepared=await post('/api/task/workspace/prepare',{...scope,token:pv.token,confirm:true,ackReadLimits:true,ackNetworkLimits:true});assert.equal(prepared.status,200,await prepared.clone().text());const nongit=await post('/api/start',{...scope,ai:'codex',model:'GPT-6.1-Sol',effort:'高',text:'test',images:[],workspacePermit:(await prepared.json()).permit});assert.equal(nongit.status,200,await nongit.clone().text());assert.equal(fs.existsSync(path.join(plain,'.git')),true);assert.equal(store.readProject('no-git').tasks.length,1);assert.equal(store.readProject('isolated').tasks.length,1);
 });

@@ -1,0 +1,15 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "title":"Local owner-controlled Project Hub version selection",
+ "type":"object","additionalProperties":false,
+ "required":["version","installBase","dataRoot","port","release","previous"],
+ "properties":{
+  "version":{"const":1},
+  "installBase":{"type":"string","pattern":"^[A-Za-z]:\\\\","maxLength":32768},
+  "dataRoot":{"type":"string","pattern":"^[A-Za-z]:\\\\","maxLength":32768},
+  "port":{"type":"integer","minimum":1024,"maximum":65535},
+  "release":{"$ref":"#/$defs/slot"},
+  "previous":{"anyOf":[{"type":"null"},{"$ref":"#/$defs/slot"}]}
+ },
+ "$defs":{"slot":{"type":"object","additionalProperties":false,"required":["id","manifestSha256"],"properties":{"id":{"type":"string","pattern":"^4\\.68\\.2-windows-codex-[a-f0-9]{12}$"},"manifestSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}}}
+}

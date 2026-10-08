@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const chat = require('../lib/chat');
+const { install, codexServer } = require('./helpers/portable-cli');
 const { LimitEvidence } = require('../lib/limit-evidence');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-limit-integration-'));
 const NOW = Date.parse('2026-10-06T00:00:00Z'), iso = n => new Date(n).toISOString();
@@ -58,26 +59,31 @@ test('失敗した事前交代の再開は期限を再判定し、旧user行の�
 });
 
 for (const invalidation of ['expired', 'manual-clear']) {
-  test(`事前Astra起動失敗を修復後、${invalidation}でFableへ再送しても正式上限で1回交代する`, async () => {
+  test(`事前Astra起動失敗を修復後、${invalidation}でFableへ再送しても正式上限で1回交代する`, async t => {
     const dir = path.join(tmp, 'retry-limit-' + invalidation); fs.mkdirSync(dir);
     const limit = "You've reached your Fable limit. Switch to another model.";
-    fs.writeFileSync(path.join(dir, 'fable.cjs'), `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'result',is_error:true,result:${JSON.stringify(limit)}}));process.exitCode=1;});`);
-    fs.writeFileSync(path.join(dir, 'astra.cjs'), `#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(process.argv.slice(2))}}));console.log(JSON.stringify({type:'turn.completed'}));});`, { mode: 0o755 });
-    let now = NOW, perm = './missing-astra';
+    const fable = install(dir, `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'result',is_error:true,result:${JSON.stringify(limit)}}));process.exitCode=1;});`);
+    const astra = install(dir, 'process.exit(1);', 'codex');
+    const fixtureEnv = { ...fable.env, PATH: [fable.bin, astra.bin].join(path.delimiter) };
+    let now = NOW, perm = process.platform === 'win32' ? astra.command : './missing-astra';
     const state = new LimitEvidence(path.join(dir, 'limits.json'), { now: () => now });
     state.record({}); state.observe(full(NOW + 1, NOW + 100));
     const runner = new chat.ChatRunner({ dirOf: () => dir, limitPreflight: () => state.active(),
-      onLimit: o => state.record(o), limitBackup: () => ({ ...backup, perm }) });
-    const o = { project: 'p', task: 'retry', pdir: dir, dir, ai: 'claude', model: 'Fable 5.1', text: 'original', request: 'same', perm: process.execPath + ' fable.cjs' };
+      onLimit: o => state.record(o), limitBackup: () => ({ ...backup, perm, env: fixtureEnv }) });
+    const o = { project: 'p', task: 'retry', pdir: dir, dir, ai: 'claude', model: 'Fable 5.1', text: 'original', request: 'same', perm: fable.command, env: fixtureEnv };
     const idle = async () => {
-      for (let i = 0; i < 200; i++) { if (!runner.busy('p', 'retry')) return; await new Promise(r => setTimeout(r, 10)); }
+      for (let i = 0; i < 1000; i++) { if (!runner.busy('p', 'retry')) return; await new Promise(r => setTimeout(r, 10)); }
       assert.fail('fake CLI did not finish');
     };
     const first = runner.send(o); assert.equal(await first.started, false); await idle();
     const rows = () => chat.read(dir, 'retry');
     assert.equal(rows().filter(r => r.role === 'assistant').length, 1);
     assert.deepEqual(runner.queue('p', 'retry'), []); // 起動失敗の自動再試行はしない。
-    perm = './astra.cjs'; // 起動原因を修復してから人の再送に相当するsendを行う。
+    t.after(async () => { runner.stopAll(); await idle(); fs.rmSync(dir, { recursive: true, force: true }); });
+    // Repair the failing synthetic entry; never retry against an installed CLI.
+    if (process.platform === 'win32') codexServer(dir, { echo: true });
+    else install(dir, `process.stdin.resume();process.stdin.on('end',()=>{console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:JSON.stringify(process.argv.slice(2))}}));console.log(JSON.stringify({type:'turn.completed'}));});`, 'codex');
+    perm = astra.command;
     now += invalidation === 'expired' ? 100 : 10;
     if (invalidation === 'manual-clear') state.clear();
     assert.equal(state.active(), null);
@@ -87,7 +93,11 @@ for (const invalidation of ['expired', 'manual-clear']) {
     assert.deepEqual(assistants.map(r => r.ai), ['codex', 'claude', 'codex']);
     assert.match(assistants[1].error, /^You've reached your Fable limit/);
     assert.equal(assistants[2].error, ''); assert.equal(assistants[2].request, 'limit-same');
-    const args = JSON.parse(assistants[2].text); assert.equal(args[args.indexOf('--model') + 1], 'gpt-6-astra');
+    const received = JSON.parse(assistants[2].text);
+    if (process.platform === 'win32') {
+      assert.equal(received.settings.model, 'gpt-6-astra'); assert.equal(received.turn.model, 'gpt-6-astra');
+      assert.deepEqual(received.args.slice(0, 3), ['app-server', '--listen', 'stdio://']);
+    } else assert.equal(received[received.indexOf('--model') + 1], 'gpt-6-astra');
     assert.equal(rows().filter(r => r.role === 'user' && r.request === 'same').length, 1);
     assert.equal(rows().filter(r => r.role === 'user' && r.request === 'limit-same').length, 1);
     const events = rows().filter(r => r.role === 'event' && r.limitSwitch);

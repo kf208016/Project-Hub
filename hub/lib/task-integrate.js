@@ -4,6 +4,7 @@ const fs = require('node:fs'), path = require('node:path'), os = require('node:o
 const { randomUUID, createHash } = require('node:crypto');
 const graph = require('../public/project-order'), git = require('./git');
 const { noLinks, exists, snapshot } = require('./remove');
+const journal=require('./local-journal');
 const hash = s => createHash('sha256').update(s).digest('hex');
 const key = x => x.project + '\0' + x.task;
 const expand = s => s?.startsWith('~/') ? path.join(os.homedir(),s.slice(2)) : s;
@@ -11,15 +12,27 @@ class TaskIntegrate {
   constructor({store,transfer,removal,baseOf=p=>p.dir,gitw=git}) {
     Object.assign(this,{store,transfer,removal,baseOf,gitw});this.tokens=new Map();
     this.dir=path.join(store.root,'_hub/task-integrations');
-    transfer.beforeCleanup=r=>this.cleanupCopy(r);
+    this.nativeContexts=new Map();this.nativeCount=0;
+    if(process.platform==='win32')this.reviewed=new (require('./reviewed-merge').ReviewedMerge)({root:store.root,deferCleanup:true,busy:(project,task)=>removal.busy(project,task)||removal.locked(project),resolve:(project,task)=>{const d=this.nativeContexts.get(key({project,task}));if(!d)throw Error('No private hierarchy merge authority');const current=store.readProject(project)?.tasks.find(t=>t.id===task);if(current&&current.completionHash!==d.taskHash)throw Error('Hierarchy source task changed');return d;}});
+    transfer.beforeCleanup=r=>process.platform==='win32'&&r.nativeCleanup?this.cleanupCopyAsync(r):this.cleanupCopy(r);
   }
-  file(project,task){return path.join(this.dir,hash(project+'\0'+task)+'.json');}
-  read(project,task){const f=this.file(project,task);noLinks(f);return exists(f)?JSON.parse(fs.readFileSync(f,'utf8')):null;}
-  save(r){const f=this.file(r.project,r.task);noLinks(f);fs.mkdirSync(this.dir,{recursive:true});fs.writeFileSync(f+'.tmp',JSON.stringify(r,null,2));fs.renameSync(f+'.tmp',f);}
+  file(project,task){for(const value of [project,task])if(typeof value!=='string'||!value||value.length>255||/[\\/\0]|^\.{1,2}$/.test(value))throw Error('Invalid hierarchy task identity');return path.join(this.dir,hash(project+'\0'+task)+'.json');}
+  validate(r){
+    const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    if(!r||typeof r!=='object'||Array.isArray(r)||!uuid.test(r.id||'')||typeof r.complete!=='boolean'||typeof r.target!=='string'||!path.isAbsolute(r.target)||typeof r.at!=='string'||!Number.isFinite(Date.parse(r.at))||!Array.isArray(r.items)||!r.items.length||r.items.length>100||r.nativeVersion!==undefined&&r.nativeVersion!==1||r.error!==undefined&&typeof r.error!=='string')throw Error('Invalid hierarchy integration record');
+    this.file(r.project,r.task);noLinks(r.target);const seen=new Set(),recordFields=new Set('id project task target items at complete error nativeVersion nativeDestination'.split(' ')),itemFields=new Set('project task title taskHash route depth handedUp files selected copy source preview integrated descendants blockers move optional keep overlaps branch state nativeCleanup gitExecution sourceSnapshot sourceHead copyTrashPlanned copyTrashed receipt mergeRecordId'.split(' '));
+    if(r.nativeVersion===1&&(Object.keys(r).some(k=>!recordFields.has(k))||!r.nativeDestination||Object.keys(r.nativeDestination).sort().join(',')!=='root,rootFingerprint'||r.nativeDestination.root!==path.join(this.store.product,r.project)||!/^[a-f0-9]{64}$/.test(r.nativeDestination.rootFingerprint)))throw Error('Invalid confirmed hierarchy destination');
+    for(const i of r.items){this.file(i.project,i.task);if(seen.has(key(i))||typeof i.title!=='string'||!['待ち','衝突','取り込み済み','片付け済み'].includes(i.state)||!Array.isArray(i.files)||!Array.isArray(i.optional)||!Array.isArray(i.descendants)||typeof i.taskHash!=='string')throw Error('Invalid hierarchy item');seen.add(key(i));this.transfer.validate({id:r.id,project:i.project,task:i.task,files:i.files,optional:i.optional});
+      if(r.nativeVersion===1){if(Object.keys(i).some(k=>!itemFields.has(k))||!i.nativeCleanup||i.mergeRecordId!==undefined&&!uuid.test(i.mergeRecordId)||i.copy!==null&&(typeof i.copy!=='string'||!path.isAbsolute(i.copy))||i.copy&&['取り込み済み','片付け済み'].includes(i.state)&&!i.mergeRecordId)throw Error('Missing confirmed native hierarchy cleanup');this.removal.validateNativeRecord(i.nativeCleanup);if(i.nativeCleanup.project!==i.project||i.nativeCleanup.task!==i.task)throw Error('Native hierarchy cleanup belongs to another task');if(i.files.some(f=>!f.native))throw Error('Missing confirmed hierarchy artifact FileID');}
+    }
+    if(r.complete&&r.items.some(i=>i.state!=='片付け済み'))throw Error('Hierarchy record claims completion before cleanup');return r;
+  }
+  read(project,task){const r=journal.read(this.file(project,task));if(!r)return null;this.validate(r);if(r.project!==project||r.task!==task)throw Error('Hierarchy record identity mismatch');return r;}
+  save(r){this.validate(r);journal.save(this.file(r.project,r.task),r);}
   pending(){
     if(!exists(this.dir))return [];noLinks(this.dir);
     return fs.readdirSync(this.dir).filter(n=>/^[a-f0-9]{64}\.json$/.test(n)).flatMap(n=>{
-      try{const f=path.join(this.dir,n);noLinks(f);const r=JSON.parse(fs.readFileSync(f,'utf8'));return r.complete?[]:[{project:r.project,task:r.task,id:r.id,items:r.items.map(x=>({project:x.project,task:x.task,title:x.title,state:x.state}))}];}catch{return [];}
+      try{const f=path.join(this.dir,n);noLinks(f);const r=this.validate(journal.read(f));if(this.file(r.project,r.task)!==f)throw Error('Hierarchy record identity mismatch');return r.complete?[]:[{project:r.project,task:r.task,id:r.id,items:r.items.map(x=>({project:x.project,task:x.task,title:x.title,state:x.state}))}];}catch(error){if(process.platform==='win32')throw error;return [];}
     });
   }
   ancestor(project,task){
@@ -100,6 +113,7 @@ class TaskIntegrate {
         if(!t||t.completionHash!==i.taskHash||!graph.canIntegrate({project:a.p,task:a.t},p,t,a.all))throw Error('確認中に子作業・祖先の関係が変わりました');
         const now=this.details(a,p,t);if(now.blockers.length)throw Error(now.blockers.join(' / '));
         if(JSON.stringify(now.source)!==JSON.stringify(i.source))throw Error('確認中に子の変更が変わりました');
+        if(!i.copy&&JSON.stringify(now.integrated)!==JSON.stringify(i.integrated))throw Error('確認中に既存の取り込み記録が変わりました');
         const ids=s.files===undefined?i.selected:s.files;
         if(!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!i.files.some(f=>f.id===id)))throw Error('成果ファイルの選択が不正です');
         const optional=s.optional||[];if(!Array.isArray(optional)||new Set(optional).size!==optional.length||optional.some(id=>!i.optional.some(f=>f.id===id)))throw Error('片付ける専用フォルダが不正です');
@@ -169,4 +183,62 @@ class TaskIntegrate {
     i.copyTrashed=out.trashed;this.save(r);
   }
 }
+TaskIntegrate.prototype.nativeActive=function(){return this.nativeCount;};
+TaskIntegrate.prototype.nativeBusy=function(project,task){
+ if(!this.nativeCount||!this.nativeScope)return false;const scope=[{project:this.nativeScope.project,task:this.nativeScope.task},...(this.nativeScope.items||[])];if(scope.some(x=>x.project===project&&(!task||x.task===task)))return true;const p=this.store.readProject(project);if(!p)return false;const canonical=value=>path.resolve(value).toLowerCase(),base=canonical(this.baseOf(p));return scope.some(x=>{const q=this.store.readProject(x.project);return q&&canonical(this.baseOf(q))===base;})||typeof this.nativeScope.target==='string'&&canonical(this.nativeScope.target)===base;
+};
+TaskIntegrate.prototype.bindNativeMerge=function(i,target){
+ const p=this.store.readProject(i.project);if(!p)throw Error('Hierarchy source project is missing');const d={project:i.project,task:i.task,title:i.title,taskHash:i.taskHash,dir:i.copy,workRoot:this.removal.workRoot(p),target};this.nativeContexts.set(key(i),d);return d;
+};
+TaskIntegrate.prototype.previewAsync=async function(project,task,only) {
+ if(process.platform!=='win32')return this.preview(project,task,only);if(this.nativeCount)throw Error('Hierarchy integration is active');this.nativeCount++;this.nativeScope={project,task};
+ let base;try{base=this.preview(project,task,only);const entry=this.tokens.get(base.token);this.tokens.delete(base.token);const d=entry.value,grants=new Map();this.nativeScope=d;if(d.resume&&this.read(project,task)?.nativeVersion!==1)throw Error('Legacy hierarchy cleanup requires an explicit manual recovery review');
+  for(const i of d.items){if(i.state==='片付け済み'||i.blockers?.length)continue;
+   if(!d.resume){const p=this.store.readProject(i.project),t=p?.tasks.find(t=>t.id===i.task);if(!t||t.completionHash!==i.taskHash)throw Error('Hierarchy source changed during native preview');i.nativeCleanup=await this.transfer.planNativeCleanup(p,t,[...i.move,...i.optional]);const scoped=require('./scoped-file'),artifact=require('./scoped-artifact');for(const f of i.files){const root=f.location==='body'?this.baseOf(p):p.dir,relative=path.relative(root,f.path).split(path.sep).join('/');if(!relative||path.isAbsolute(relative)||relative.split('/').some(x=>!x||x==='.'||x==='..'))throw Error('Hierarchy artifact is outside its confirmed source');const rootFingerprint=(await scoped.identity(root)).rootFingerprint,value=await artifact.inspect({root,rootFingerprint,path:relative});if(snapshot(f.path)!==f.fingerprint)throw Error('Hierarchy artifact changed during native preview');f.native={root,rootFingerprint,path:relative,sha256:value.sha256,fileFingerprint:value.fileFingerprint};}}
+   else this.removal.validateNativeRecord(i.nativeCleanup);
+   if(i.copy){this.bindNativeMerge(i,d.target);if(!d.resume||i.state==='待ち'||i.state==='衝突'){const merged=await this.reviewed.previewAsync(i.project,i.task);grants.set(key(i),merged.token);i.gitExecution=merged.gitExecution;}}
+  }
+  const destinationRoot=path.join(this.store.product,project);d.nativeDestination=d.resume?this.read(project,task).nativeDestination:{root:destinationRoot,rootFingerprint:(await require('./scoped-file').identity(destinationRoot)).rootFingerprint};if(!d.nativeDestination||d.nativeDestination.root!==destinationRoot)throw Error('Missing confirmed hierarchy destination');d.nativeVersion=1;d.nativeGrants=grants;d.targetSnapshot=this.gitw.inspect(d.target);const token=randomUUID();this.tokens.set(token,{at:Date.now(),value:d});return {...d,token,nativeGrants:undefined,items:d.items.map(i=>{const {nativeCleanup,...visible}=i;return {...visible,nativeCleanup:nativeCleanup?{id:nativeCleanup.id,entries:nativeCleanup.entries.map(e=>({from:e.from,to:e.to,objectId:e.native.objectId,treeHash:e.native.treeHash}))}:undefined};}),requiresSkipHooksConfirmation:d.items.some(i=>i.gitExecution?.requiresSkipHooksConfirmation)};
+ }catch(error){if(base)this.tokens.delete(base.token);throw error;}finally{this.nativeScope=null;this.nativeCount--;}
+};
+TaskIntegrate.prototype.applyAsync=async function(input) {
+ if(process.platform!=='win32')return this.apply(input);if(this.nativeCount)throw Error('Hierarchy integration is active');const saved=this.tokens.get(input?.token);this.tokens.delete(input?.token);if(!saved||saved.value.nativeVersion!==1||input.confirm!==true||saved.value.project!==input.project||saved.value.task!==input.task||Date.now()<saved.at||Date.now()-saved.at>600000)throw Error('Please preview and confirm this hierarchy integration again');
+ this.nativeCount++;const d=saved.value;this.nativeScope=d;try{const a=this.ancestor(input.project,input.task);if(a.t.completionHash!==d.ancestorHash||JSON.stringify(this.gitw.inspect(a.target))!==JSON.stringify(d.targetSnapshot))throw Error('Hierarchy ancestor or target changed since preview');}catch(error){this.nativeScope=null;this.nativeCount--;throw error;}
+ const privateToken=randomUUID(),originalRun=this.run,originalSave=this.save;let r;this.tokens.set(privateToken,{at:saved.at,value:d});this.run=value=>value;
+ this.save=value=>{if(!value.nativeVersion){value.nativeVersion=1;value.nativeDestination=d.nativeDestination;for(const i of value.items){const original=d.items.find(x=>key(x)===key(i)),paths=new Set([...i.move,...original.optional.filter(x=>i.optional.includes(x.id))].map(x=>x.path));i.nativeCleanup={...i.nativeCleanup,entries:i.nativeCleanup.entries.filter(e=>paths.has(e.from))};}}return originalSave.call(this,value);};
+ try{r=this.apply({...input,token:privateToken});}catch(error){this.nativeScope=null;this.nativeCount--;throw error;}finally{this.run=originalRun;this.save=originalSave;this.tokens.delete(privateToken);}
+ this.active=r;try{return await this.runAsync(r,d.nativeGrants,input.skipHooks===true);}catch(error){r.error=error.message;this.save(r);throw error;}finally{this.active=null;this.nativeScope=null;this.nativeCount--;}
+};
+TaskIntegrate.prototype.runAsync=async function(r,grants,skipHooks) {
+ this.validate(r);if(r.nativeVersion!==1)throw Error('Missing native hierarchy authority');const a=this.ancestor(r.project,r.task);
+ for(const i of r.items){if(i.state==='片付け済み')continue;const receipt=this.transfer.read(i.project,i.task);if(receipt?.integrating&&receipt.integrating!==r.id)throw Error('Another ancestor reserved this child');if(!receipt?.integrating){if(receipt?.complete||receipt?.destination)throw Error('Child receipt changed');this.transfer.save({...receipt,id:receipt?.id||randomUUID(),project:i.project,task:i.task,title:i.title,integrating:r.id});}}
+ // Merge all confirmed sources first. Receipt notifications alter Product
+ // metadata, so they run only after the complete Git target receipt chain.
+ for(const i of r.items){if(i.state==='片付け済み')continue;const receipt=this.transfer.read(i.project,i.task);if(receipt?.integrating!==r.id)throw Error('Hierarchy child reservation changed');if(i.copy)this.bindNativeMerge(i,r.target);
+  if(i.state==='取り込み済み'){if(i.copy){const merged=this.reviewed.read(i.project,i.task);if(!merged||merged.id!==i.mergeRecordId||merged.commit!==i.integrated?.commit||!this.reviewed.proof(merged))throw Error('Existing hierarchy merge evidence changed');}continue;}
+  if(receipt.receiving||receipt.complete)throw Error('Receipt preceded verified hierarchy merge');const current=this.ancestor(r.project,r.task),p=current.all.find(p=>p.id===i.project),t=p?.tasks.find(t=>t.id===i.task);if(!t||t.completionHash!==i.taskHash||!graph.canIntegrate({project:current.p,task:current.t},p,t,current.all))throw Error('Hierarchy source relationship changed');const details=this.details(current,p,t,r.id);if(details.blockers.length)throw Error(details.blockers.join(' / '));for(const f of i.files)if(snapshot(f.path)!==f.fingerprint)throw Error('Hierarchy artifact changed');
+  if(i.copy){const token=grants?.get(key(i));if(!token)throw Error('Missing fresh confirmed hierarchy merge preview');const merged=await this.reviewed.applyAsync({project:i.project,task:i.task,token,confirm:true,skipHooks});if(merged.conflict){i.state='衝突';this.save(r);this.store.updateTask(r.project,r.task,{state:'返事待ち',question:`子作業「${i.title}」の Git 合併が衝突しました。保存されたブランチと統合先で解決し、もう一度［統合…］から確認してください`});return {ok:false,conflict:true,complete:false,error:merged.error,items:r.items.map(x=>({title:x.title,state:x.state}))};}if(!merged.ok||!merged.merged)throw Error(merged.error||'Hierarchy merge has no complete merge evidence');i.mergeRecordId=merged.recordId;i.integrated={dir:r.target,commit:merged.commit,files:merged.files};i.sourceHead=merged.sourceHead;i.sourceSnapshot=this.gitw.inspect(i.copy);
+   for(const next of r.items){if(key(next)===key(i)||!next.copy||!['待ち','衝突'].includes(next.state))continue;const pending=grants?.get(key(next));if(pending)this.reviewed.advanceTarget(pending,merged.recordId);}
+  }
+  i.state='取り込み済み';this.save(r);
+ }
+ for(const i of r.items){if(i.state==='片付け済み')continue;if(i.state!=='取り込み済み')throw Error('Hierarchy merge phase is incomplete');const out=await this.transfer.receiveIntegratedAsync({project:i.project,task:i.task,targetProject:r.project,targetTask:r.task,integrating:r.id,files:i.files,integrated:i.integrated,optional:i.optional,nativeCleanup:i.nativeCleanup,nativeDestination:r.nativeDestination});const receipt=this.transfer.read(i.project,i.task);if(!out.ok||receipt?.complete!==true||receipt.integrating!==r.id)throw Error('Hierarchy receive/cleanup is incomplete');i.receipt=out.record;i.state='片付け済み';this.save(r);}
+ r.complete=true;r.error='';this.save(r);return {ok:true,complete:true,items:r.items.map(x=>({title:x.title,state:x.state})),parentProject:a.p.id,parent:a.t.id};
+};
+TaskIntegrate.prototype.cleanupCopyAsync=async function(receipt) {
+ const r=this.active?.id===receipt.integrating?this.active:this.read(receipt.targetProject,receipt.targetTask),i=r?.items.find(x=>x.project===receipt.project&&x.task===receipt.task);if(!r||r.nativeVersion!==1||r.id!==receipt.integrating||!i)throw Error('Native hierarchy cleanup record is missing');if(!i.copy)return;this.bindNativeMerge(i,r.target);const record=this.reviewed.read(i.project,i.task);if(!record||record.id!==i.mergeRecordId||record.commit!==i.integrated?.commit)throw Error('Native hierarchy copy receipt changed');const out=await this.reviewed.cleanupAsync(i.project,i.task,{confirmedResume:this.active?.id===r.id});if(!out.ok||out.state!=='complete'||!out.trashed)throw Error(out.error||'Hierarchy copy cleanup needs recovery review');i.copyTrashed=out.trashed;this.save(r);
+};
+TaskIntegrate.prototype.verifyCompletedAsync=async function(r) {
+ this.validate(r);if(r.nativeVersion!==1||!r.complete)throw Error('Hierarchy has no complete native evidence');const artifact=require('./scoped-artifact'),rooted=require('./rooted-move');
+ for(const i of r.items){const receipt=this.transfer.read(i.project,i.task);if(!receipt?.complete||receipt.integrating!==r.id||receipt.targetProject!==r.project||receipt.targetTask!==r.task||receipt.cleanup!==i.receipt||receipt.cleanup!==i.nativeCleanup.id||!receipt.nativeDestination)throw Error('Completed hierarchy receive evidence changed');const cleanup=this.removal.nativeRecord(receipt.cleanup);for(const e of cleanup.entries){this.transfer.assertNativeCleanupEntry(receipt,cleanup,e);if(!e.moved||e.moving||e.restored||e.restoring||(await rooted.recover(e.native)).state!=='complete')throw Error('Completed hierarchy cleanup evidence changed');}
+  for(const f of receipt.files){if(!f.copyReceipt)throw Error('Missing completed hierarchy artifact evidence');const relative=path.relative(receipt.nativeDestination.root,f.to).split(path.sep).join('/'),current=await artifact.inspect({root:receipt.nativeDestination.root,rootFingerprint:receipt.nativeDestination.rootFingerprint,path:relative});if(current.sha256!==f.digest||current.sha256!==f.copyReceipt.sha256||current.fileFingerprint!==f.copyReceipt.fileFingerprint)throw Error('Completed hierarchy artifact changed');}
+  if(i.copy){this.bindNativeMerge(i,r.target);const merged=await this.reviewed.receiptAsync(i.project,i.task);if(!merged||merged.recordId!==i.mergeRecordId||merged.trashed!==i.copyTrashed)throw Error('Completed hierarchy Work receipt changed');}
+ }
+ return true;
+};
+TaskIntegrate.prototype.pendingAsync=async function() {
+ if(process.platform!=='win32')return this.pending();if(!exists(this.dir))return [];noLinks(this.dir);const names=fs.readdirSync(this.dir).filter(n=>/^[a-f0-9]{64}\.json$/.test(n));if(names.length>10000)throw Error('Hierarchy journal exceeds the review limit');const pending=[];
+ for(const name of names){const file=path.join(this.dir,name),r=this.validate(journal.read(file));if(this.file(r.project,r.task)!==file)throw Error('Hierarchy record identity mismatch');if(r.complete)await this.verifyCompletedAsync(r);else pending.push({project:r.project,task:r.task,id:r.id,items:r.items.map(x=>({project:x.project,task:x.task,title:x.title,state:x.state}))});}
+ return pending;
+};
 module.exports={TaskIntegrate};

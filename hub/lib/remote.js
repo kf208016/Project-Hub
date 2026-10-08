@@ -21,7 +21,7 @@ const whoOf = req => String(req.headers['tailscale-user-login'] || String(req.he
 function cookieOf(req, name = COOKIE) {
   for (const part of String(req.headers.cookie || '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+    if (i > 0 && part.slice(0, i).trim() === name) { try { return decodeURIComponent(part.slice(i + 1).trim()); } catch { return ''; } }
   }
   return '';
 }
@@ -30,27 +30,43 @@ const clearCookie = () => `${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; M
 
 const hashOf = (pass, salt) => crypto.scryptSync(String(pass), Buffer.from(salt, 'hex'), 32).toString('hex');
 const idOf = token => crypto.createHash('sha256').update(String(token)).digest('hex');
+const text = (value, max) => typeof value === 'string' && value.length <= max && !/[\x00-\x1f\x7f]/.test(value);
+const hostOk = host => host === '' || (text(host, 200) && /^(?=.{1,200}$)(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?::[1-9][0-9]{0,4})?$/i.test(host) && (!host.includes(':') || Number(host.split(':').at(-1)) <= 65535));
+const dateOf = value => { if (typeof value !== 'string') return NaN; const date = Date.parse(value); return Number.isFinite(date) && new Date(date).toISOString() === value ? date : NaN; };
+const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const validSession = (session, now) => plain(session) && Object.keys(session).every(k => ['id', 'createdAt', 'lastSeen', 'ua'].includes(k)) && /^[a-f0-9]{64}$/.test(session.id) && text(session.ua, 200) &&
+  Number.isFinite(dateOf(session.createdAt)) && Number.isFinite(dateOf(session.lastSeen)) && dateOf(session.createdAt) >= 0 && dateOf(session.createdAt) <= dateOf(session.lastSeen) && dateOf(session.lastSeen) <= now;
+const validFailure = (failure, now) => plain(failure) && Object.keys(failure).every(k => ['at', 'who'].includes(k)) && Number.isSafeInteger(failure.at) && failure.at >= 0 && failure.at <= now && text(failure.who, 200) && failure.who.length > 0;
+const emptySettings = () => ({ enabled: false, passcodeHash: '', salt: '', host: '', sessions: [], failures: [] });
+function normalizeSettings(raw, now) {
+  if (!plain(raw) || Object.keys(raw).some(k => !['enabled', 'passcodeHash', 'salt', 'host', 'sessions', 'failures'].includes(k))) throw Error('Remote settings are invalid');
+  const d = { ...emptySettings(), ...raw };
+  if (typeof d.enabled !== 'boolean' || !hostOk(d.host) || !((d.passcodeHash === '' && d.salt === '') || (/^[a-f0-9]{64}$/.test(d.passcodeHash) && /^[a-f0-9]{32}$/.test(d.salt))) || (d.enabled && !d.passcodeHash) ||
+      !Array.isArray(d.sessions) || d.sessions.length > MAX_SESSIONS || d.sessions.some(s => !validSession(s, now)) || new Set(d.sessions.map(s => s.id)).size !== d.sessions.length ||
+      !Array.isArray(d.failures) || d.failures.length > 1000 || d.failures.some(f => !validFailure(f, now))) throw Error('Remote settings are invalid');
+  return d;
+}
 
 class Remote {
-  constructor({ file, now = () => Date.now() }) { this.file = file; this.now = now; this.data = null; }
+  constructor({ file, now = () => Date.now() }) { this.file = file; this.now = now; this.data = null; this.invalid = false; }
   load() {
     if (this.data) return this.data;
-    let d = {};
-    try { d = JSON.parse(fs.readFileSync(this.file, 'utf8')) || {}; } catch (e) { d = {}; }
-    this.data = { enabled: d.enabled === true, passcodeHash: typeof d.passcodeHash === 'string' ? d.passcodeHash : '', salt: typeof d.salt === 'string' ? d.salt : '', host: typeof d.host === 'string' ? d.host : '',
-      sessions: Array.isArray(d.sessions) ? d.sessions.filter(s => s && typeof s.id === 'string') : [], failures: Array.isArray(d.failures) ? d.failures.filter(f => f && typeof f.at === 'number') : [] };
+    try { const stat = fs.statSync(this.file); if (!stat.isFile() || stat.size > 256 * 1024) throw Error('invalid'); this.data = normalizeSettings(JSON.parse(fs.readFileSync(this.file, 'utf8')), this.now()); }
+    catch (error) { this.invalid = error.code !== 'ENOENT'; this.data = emptySettings(); }
     return this.data;
   }
   save() { // 書きかけを読まないよう、別の名前に書いてから置き換える。合言葉の元が入るので本人だけ読める
+    if (this.invalid) throw Error('Remote settings cannot be read safely');
+    normalizeSettings(this.data, this.now());
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, this.file);
+    const tmp = `${this.file}.${crypto.randomUUID()}.tmp`;
+    try { fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600, flag: 'wx' }); fs.renameSync(tmp, this.file); }
+    finally { try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; } }
   }
   prune() {
     const d = this.load(), t = this.now();
-    d.sessions = d.sessions.filter(s => t - Date.parse(s.createdAt) < DAYS30);
-    d.failures = d.failures.filter(f => t - f.at < LOCK_MS);
+    d.sessions = d.sessions.filter(s => validSession(s, t) && t - dateOf(s.createdAt) < DAYS30);
+    d.failures = d.failures.filter(f => validFailure(f, t) && t - f.at < LOCK_MS);
     return d;
   }
   // 画面に出す物（合言葉の元は出さない）
@@ -61,8 +77,13 @@ class Remote {
   }
   enabled() { return this.load().enabled; }
   // 設定を変える。合言葉を変えたら、前の合言葉で入った端末はすべて出す
-  update({ enabled, passcode }) {
+  update(input) {
+    if (!plain(input) || Object.keys(input).some(k => !['enabled', 'passcode'].includes(k))) return { error: '形式が違います' };
+    const { enabled, passcode } = input;
     const d = this.load();
+    if (this.invalid) return { error: 'Remote settings cannot be read safely' };
+    if (enabled !== undefined && typeof enabled !== 'boolean') return { error: '形式が違います' };
+    const before = structuredClone(d);
     if (passcode !== undefined) {
       if (typeof passcode !== 'string' || [...passcode].length < MIN_PASS || passcode.length > 200) return { error: `合言葉は${MIN_PASS}文字以上にしてください` };
       d.salt = crypto.randomBytes(16).toString('hex');
@@ -74,7 +95,7 @@ class Remote {
       if (enabled && !d.passcodeHash) return { error: '先に合言葉を決めてください' };
       d.enabled = enabled;
     }
-    this.prune(); this.save();
+    try { this.prune(); this.save(); } catch (error) { this.data = before; throw error; }
     return { ok: true };
   }
   locked(who) {
@@ -84,6 +105,7 @@ class Remote {
   // ログイン：成功したら札（token）を返す
   login(passcode, who, ua) {
     const d = this.prune();
+    if (!text(who, 200) || !who.length || (ua !== undefined && !text(ua, 200))) return { status: 400, error: '形式が違います' };
     if (!d.enabled) return { status: 403, error: '外からの利用はオフです' };
     if (this.locked(who)) return { status: 423, error: '15分待ってください' };
     let ok = false;
@@ -96,24 +118,24 @@ class Remote {
       this.save();
       return this.locked(who) ? { status: 423, error: '15分待ってください' } : { status: 401, error: '合言葉が違います' };
     }
-    const token = crypto.randomBytes(32).toString('base64url'), at = new Date(this.now()).toISOString();
+    const before = structuredClone(d), token = crypto.randomBytes(32).toString('base64url'), at = new Date(this.now()).toISOString();
     d.failures = d.failures.filter(f => f.who !== who);
     d.sessions.push({ id: idOf(token), createdAt: at, lastSeen: at, ua: String(ua || '').slice(0, 200) });
     d.sessions = d.sessions.slice(-MAX_SESSIONS);
-    this.save();
+    try { this.save(); } catch (error) { this.data = before; throw error; }
     return { ok: true, token };
   }
   // 札が生きているか。最後に使った時刻は1分に1回だけ書く
   check(token) {
-    if (!token) return null;
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
     const d = this.load(), id = idOf(token), s = d.sessions.find(x => x.id === id);
-    if (!s || this.now() - Date.parse(s.createdAt) >= DAYS30) return null;
-    if (this.now() - Date.parse(s.lastSeen || 0) > 60000) { s.lastSeen = new Date(this.now()).toISOString(); try { this.save(); } catch (e) { /* 書けなくても続ける */ } }
+    if (!d.enabled || !s || !validSession(s, this.now()) || this.now() - dateOf(s.createdAt) >= DAYS30) return null;
+    if (this.now() - dateOf(s.lastSeen) > 60000) { const previous = s.lastSeen; s.lastSeen = new Date(this.now()).toISOString(); try { this.save(); } catch { s.lastSeen = previous; return null; } }
     return s;
   }
   logout(token) { const d = this.load(), id = idOf(token), n = d.sessions.length; d.sessions = d.sessions.filter(x => x.id !== id); if (d.sessions.length !== n) this.save(); }
   logoutAll() { const d = this.load(), n = d.sessions.length; d.sessions = []; this.save(); return n; }
-  noteHost(host) { const d = this.load(), h = String(host || '').slice(0, 200); if (h && /^[\w.-]+(:\d+)?$/.test(h) && d.host !== h) { d.host = h; try { this.save(); } catch (e) { /* 続ける */ } } }
+  noteHost(host) { const d = this.load(); if (host && hostOk(host) && d.host !== host) { const previous = d.host; d.host = host; try { this.save(); } catch { d.host = previous; } } }
 }
 
 // 外から見る小さな画面（ログイン・オフの知らせ）。本体の画面とは別に、これだけで動く

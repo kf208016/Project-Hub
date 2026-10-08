@@ -10,9 +10,10 @@ const store = new Store(root);
 const key = {project:'回答の見本',task:'answer'};
 const file = path.join(dir,'.ai/tasks/answer.md');
 const question = 'どちらで進めますか？';
+const fixtureWorkspace=require('./helpers/reviewed-workspace'),initialPath=process.env.PATH;
 const read = () => store.readTask(file);
 const post = (route,body={}) => fetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json',Connection:'close'},body:JSON.stringify({...key,...body})});
-const send = body => post('/api/chat/send',{ai:'codex',model:'gpt-6.1-sol',text:'回答A',answerQuestion:question,...body});
+const send = body => fixtureWorkspace.startReviewedFixture(post,'/api/chat/send',{...key,ai:'codex',model:'gpt-6.1-sol',text:'回答A',answerQuestion:question,...body});
 function reset() {
   fs.writeFileSync(file,`---\nid: answer\ntitle: 回答の見本\nowner: codex\nmodel: GPT-6.1-Sol\nworkspaceMode: direct\nstate: 返事待ち\nquestion: ${question}\n---\n## 手順\n- [ ] 見本の確認\n`);
 }
@@ -21,8 +22,9 @@ test.before(async()=>{
  fs.copyFileSync(path.join(__dirname,'../../docs/project-hub/templates/_hub/roles.yaml'),path.join(root,'_hub/roles.yaml'));
  fs.mkdirSync(path.dirname(file),{recursive:true});
  fs.writeFileSync(path.join(dir,'PROJECT.md'),'---\nname: 回答の見本\nstatus: 進行中\nphases: []\nfolders: {}\nrelated: []\n---\n');reset();fs.mkdirSync(bin);
- fs.writeFileSync(path.join(bin,'codex'),`#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>{console.log(JSON.stringify({type:'turn.completed'}));},2000));process.on('SIGTERM',()=>process.exit(143));\n`,{mode:0o755});
- process.env.PATH=bin+':/usr/bin:/bin';process.env.HUB_ROOT=root;process.env.HUB_PORT='0';process.env.HUB_DRY_RUN='1';process.env.HUB_AI_HOME=path.join(tmp,'home');process.env.HUB_TRASH=path.join(tmp,'trash');
+ if(process.platform==='win32')require('./helpers/codex-server').install(bin,{delay:2000});else fs.writeFileSync(path.join(bin,'codex'),`#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>{console.log(JSON.stringify({type:'turn.completed'}));},2000));process.on('SIGTERM',()=>process.exit(143));\n`,{mode:0o755});
+ const nativePath=process.platform==='win32'?[bin,path.dirname(require('../lib/cli-platform').find('git')),path.join(process.env.SystemRoot,'System32'),path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0')].join(path.delimiter):bin+':/usr/bin:/bin';process.env.PATH=nativePath;process.env.HUB_ROOT=root;process.env.HUB_PORT='0';process.env.HUB_DRY_RUN='1';process.env.HUB_AI_HOME=path.join(tmp,'home');process.env.HUB_TRASH=path.join(tmp,'trash');
+ if(process.platform==='win32'){const pw=require('../lib/procwatch'),create=pw.create;pw.create=o=>create({...o,exec:async()=>JSON.stringify([{pid:process.pid,ppid:0,since:new Date().toISOString(),name:'node.exe',command:'synthetic test controller'}])});}
  ({server}=require('../server'));await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));process.env.HUB_PORT=String(port);delete require.cache[require.resolve('../server')];({server}=require('../server'));await new Promise(r=>server.listen(port,'127.0.0.1',r));base=`http://127.0.0.1:${port}`;
 });
 test.afterEach(async()=>{
@@ -36,14 +38,14 @@ test.afterEach(async()=>{
   await new Promise(r=>setTimeout(r,10));
  }
 });
-test.after(async()=>{if(server){await post('/api/chat/stop');await new Promise(r=>server.close(r));}});
+test.after(async()=>{if(server){await post('/api/chat/stop');await new Promise(r=>server.close(r));}process.env.PATH=initialPath;assert.ok(tmp.startsWith(os.tmpdir()+path.sep));fs.rmSync(tmp,{recursive:true,force:true,maxRetries:20,retryDelay:50});});
 
 test('起動の成功を受け付けてから質問を解除し、受付した原文を返す',async()=>{
  reset();const res=await send({});assert.equal(res.status,200);const body=await res.json();assert.equal(body.answeredQuestion,question);assert.equal(read().question,'');assert.equal(read().state,'実行中');await post('/api/chat/stop');
 });
 test('起動失敗とモデル拒否は返事待ちと質問を保持する',async()=>{
  reset();const original=fs.readFileSync(file,'utf8');assert.equal((await send({model:'unknown-model'})).status,409);assert.equal(fs.readFileSync(file,'utf8'),original);
- const command=path.join(bin,'codex');fs.renameSync(command,command+'.saved');try{const res=await send({});assert.equal(res.status,409);assert.match((await res.json()).error,/起動できません/);assert.equal(read().question,question);assert.equal(read().state,'返事待ち');}finally{fs.renameSync(command+'.saved',command);}await post('/api/chat/stop');
+ const command=path.join(bin,process.platform==='win32'?'codex.cmd':'codex');fs.renameSync(command,command+'.saved');try{const res=await send({});assert.equal(res.status,409);assert.match((await res.json()).error,process.platform==='win32'?/^codex CLI was not found$/:/起動できません/);assert.equal(read().question,question);assert.equal(read().state,'返事待ち');}finally{fs.renameSync(command+'.saved',command);}await post('/api/chat/stop');
 });
 test('送信時と異なる新しい質問は成功時にも消さない',async()=>{
  reset();const newer='新しい質問です';fs.writeFileSync(file,fs.readFileSync(file,'utf8').replace(question,newer));const body=await (await send({})).json();assert.equal(body.answeredQuestion,null);assert.equal(read().question,newer);assert.equal(read().state,'返事待ち');await post('/api/chat/stop');

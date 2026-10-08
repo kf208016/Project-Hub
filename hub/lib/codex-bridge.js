@@ -22,7 +22,7 @@ function start(options) {
   proc.ready=new Promise(resolve=>resolveReady=resolve);
   proc.stdin = new PassThrough(); proc.stdout = new PassThrough(); proc.stderr = new PassThrough();
   const command = cli.resolve(options.command || 'codex', ['app-server','--listen','stdio://','-c','analytics.enabled=false'], options.env?.PATH);
-  const transport = (options.spawn || managed.spawn)(command.file, command.args, { cwd: options.cwd, env: options.env, stdio:['pipe','pipe','pipe'], windowsHide:true });
+  const transport = (options.spawn || managed.spawn)(command.file, command.args, { cwd: options.cwd, env: options.env, stdio:['pipe','pipe','pipe'], windowsHide:true, ...(options.dirPin?{dirPin:options.dirPin}:{}) });
   let sequence=0, threadId='', turnId='', buffer='', prompt='', finished=false, closed=false, stopped=false, inputReady;
   let startup, usage, succeeded=false;
   const textItems = new Map();

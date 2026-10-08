@@ -28,6 +28,9 @@ function agyAccountErrorNow(file) {
 }
 function childEnv(ai, env) {
   const out = { ...env };
+  // Hub login/instance/control values belong to the owner controller.
+  // Native CLI authentication retains its existing provider login environment.
+  if(process.platform==='win32')for(const key of Object.keys(out))if(/^HUB_/i.test(key))delete out[key];
   if (ai === 'agy') for (const key of API_ENV) delete out[key];
   return out;
 }

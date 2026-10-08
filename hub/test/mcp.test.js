@@ -1,4 +1,9 @@
 'use strict';
+// Windows exercises the current scoped, owner-approved contract. The original
+// POSIX assertions stay intact in the other branch; no Windows cases are skipped.
+if(process.platform==='win32'){
+  require('./native-mcp-registration-http.test.js');
+}else{
 // ChatGPT 連携（版1）：mcp.js を本当に起動し、標準入出力の JSON-RPC で Hub の道具を呼ぶ
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -150,3 +155,5 @@ test('報告・質問・手順・提案が作業ファイルと会話画面に�
   const nt = fs.readFileSync(path.join(pdir, '.ai', 'tasks', made.task + '.md'), 'utf8');
   assert.match(nt, /owner: chatgpt/); assert.match(nt, /state: 未着手/); assert.match(nt, /## 次にやること\n一覧の画面にテストが無い。\n足すとよい。/);
 });
+
+}

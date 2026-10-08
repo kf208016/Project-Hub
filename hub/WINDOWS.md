@@ -1,76 +1,63 @@
-# Windows 原生移植進度
+# Windows 原生 Codex 分支
 
-日期：2026-10-08。以 v4.68.2 為基礎；仍是開發分支，**未完成正式安裝或完整功能／資安驗收**。使用者要求保留原版功能，以下未完成項目仍屬交付範圍。
+日期：2026-10-09；以 Project Hub v4.68.2 為基礎。本輪範圍為原生 Windows Codex 的 Hub 功能；Claude／Agy 的 Windows 隔離執行與真實互動留待後續處理，不從 Codex 的結果推論其他 AI 的安全性。
 
-## 已實作及驗證
+下表描述本分支的實作及已驗證路徑，不代表所有平台、所有模型工具或每份 checkout 都已完成正式安裝。確切 source commit、套件 manifest SHA-256、各測試成功／失敗／跳過／逾時、正式安裝位置及實際啟停結果，以隨交付提供的驗證／安裝報告為準。
 
-| 項目 | 證據與界線 |
+## 功能與驗證範圍
+
+| 項目 | 實作與已測界線 |
 |---|---|
-| 原生 Codex 會話 | CLI 0.154.0、本機 stdio app-server；真實 `gpt-6-astra` 回覆固定合成文字，沒有呼叫工具。模型從帳號實際列表確認，不以過期標籤猜測或替換付費模型 |
-| 模型重新整理 | Windows 使用 app-server 的 `model/list`，不再使用可能過期的 `debug models` 清單。分頁、格式、大小、逾時與非預期執行要求均有拒絕測試；查詢失敗保留上次清單。已用真實 CLI 驗證，未啟動 thread 或模型回合 |
-| 沙箱 | 明確要求 Windows elevated、workspace-write、on-request、使用者審批；確認 server 回報設定。本機 command/exec 合成探針確認專用沙箱帳號、工作目錄可寫、相鄰範圍外寫入 EPERM |
-| 網路限制 | `networkAccess=false` 仍可連線本機 loopback；不能標示完全離線。尚未完成外部目的地與敏感檔案讀取測試 |
-| 審批 UI | 綁定 thread／turn／item、一次性 token、到期、拒絕／取消、檔案狀態指紋、問題回答。要求瀏覽器登入與操作標頭；先寫核准意圖記錄，失敗即不傳送決定。fixture 與 HTTP 測試通過；尚未以真實工具提權回合測試所有分支 |
-| 程序所有權 | 先暫停啟動、指定 Windows Job、再執行；私有 pipe 綁定 Hub 生存期。父子孫程序取消／擁有者崩潰均已實測，不以 PID 清單終止無關程序 |
-| ConPTY | node-pty 1.1.0 原生元件載入、Unicode／特殊字元、resize、取消與擁有者崩潰測試通過；真實 Codex TUI 啟動並正常退出，未送模型回合。PTY 是終端機與生命週期管理，沒有額外沙箱能力 |
-| 啟動器 | 背景啟動、相同实例重新開啟、明確停止、埠衝突、junction 與破損紀錄拒絕；自動測試使用 `-NoBrowser`。實際 Edge 專用視窗仍需人工／UI 驗收 |
-| 程序監測 | Windows CIM 查詢、PID＋建立時間識別；失敗顯示未知。外部 AI 的 cwd 尚不能可靠歸屬，因此未歸屬作業會阻擋整理、還原與驗證操作 |
-| 路徑與 Git | 拒絕 UNC／裝置／ADS／模糊名稱與 symlink／junction；驗證既有 worktree 的 common dir 與登錄。真實合成 Git 及拒絕路徑通過 |
-| 整理與還原 | 原版選擇／確認／指紋重新檢查、保留來源與不覆蓋還原；新增搬移／還原中断復原。Windows API 需最新且可歸屬的程序狀態；未知不是零程序 |
+| 原生 Codex 會話與模型 | CLI 0.154.0 stdio app-server、模型清單分頁與失敗保留、指定模型、同作業委派、待執行指示、取消／追加／恢復。真實模型只測固定合成回覆且未呼叫工具；其他流程使用明示 provider fixture，不當成全部模型工具驗收 |
+| 終端機 | node-pty 1.1.0 ConPTY、內嵌／獨立視窗、輸入／resize、Unicode、觀看／控制租約、明確接管與停止。實際 managed PTY 及 Codex TUI 啟停已測；TUI 啟動測試未送模型回合，PTY 本身不是額外沙箱 |
+| 審批與命令 | 綁定 thread／turn／item 或 capability run、task hash、argv／cwd、root FileID，一次性核准、到期、拒絕／取消、問題回答及重放拒絕。瀏覽器核准前保存意圖；實際 command/exec 可在零模型呼叫下驗證，不代表所有模型提權分支皆已實測 |
+| 工作區與機密供應 | 非 Git／首次提交、registered isolated worktree、direct 基線與互斥鎖；每次開始須人工預覽及私有 permit。逐檔選取秘密、10 分鐘 lease、原目的 baseline 備份／復原；hash 或 FileID 改變則保留待覆核。已追蹤 HEAD 秘密與 Git 歷史可讀範圍須明確核准，不宣稱偵測所有歷史秘密 |
+| Git／成果移交與整合 | 最新 HEAD／index／全檔 bytes 快照、一次性 ticket、同 repo worker 鎖、共用引用檢查、native 成果 copy、階層收據鏈與可恢復 cleanup。拒絕 assume-unchanged／skip-worktree 及 Git stat cache 隱藏差異；不清除使用者 flags 或修改 Git 設定。合成 repo 成功與拒絕路徑已測，未對真實專案 push |
+| 整理／還原／空白項目 | 預覽及逐項選取、native FileID／tree hash 計畫、durable planned／complete／partial 收據、同名不覆蓋還原與 legacy 重新確認。實測 NTFS 搬移／復原及拒絕；目錄 rename 前後重驗不能稱為整棵內容原子凍結 |
+| MCP／同作業委派 | Browser 與 capability credential 分離、DPAPI sealed transport、scope／run／TTL／call budget、控制路徑拒絕、200 KiB UTF-8 檔案 broker、逐次命令核准與指定模型的一次委派。註冊須預覽具體設定 patch，AI token 不能當人工核准 |
+| 遠端入口 | Windows HTTPS／本機 TLS 證書、登入／撤銷、Host／Origin 與來源入口檢查。使用本機 TLS fixture 驗證；不代表公網、DNS、防火牆、第三方憑證或手機外網連線已驗收 |
+| 圖片 | 原生圖片檢查、常用格式及 HEIC／HEIF 轉換；私有 FFmpeg bytes 與來源 metadata 固定。成功及破損／超限／來源改變拒絕使用合成檔案驗證，未上傳真實使用者圖片 |
+| 啟動／更新／回復 | DPAPI launcher state、PID＋建立時間＋HMAC 實例核對、背景啟動／重開／明確停止、Hub 重啟；Codex 私有 CLI slot 預覽／下載／探針／回復與版本化安裝器。未知狀態／埠占用／活動作業拒絕；安裝器的合成資料驗證不等同本機正式安裝完成 |
+| 台灣繁體中文 | Windows 預設繁中，設定可切換日文並保存偏好；翻譯保留 API／狀態原值及使用者內容。renderer／綁定測試及實際瀏覽器切換已測；CLI 輸出與自訂資料不改寫 |
 
-## 環境與試跑
+詳細介面與限制見 [工作區與機密供應](windows/reviewed-workspace.md)、[命令／檔案](windows/COMMANDS-FILES.md)、[MCP 註冊](windows/MCP-REGISTRATION.md)、[原生搬移](windows/ROOTED-MOVE.md)、[整理](windows/MAINTENANCE.md)、[空白清理](windows/EMPTY-CLEANUP.md)、[更新／重啟](windows/UPDATE-RESTART.md)、[語言](windows/LANGUAGE.md)與 [安裝／回復](windows/INSTALL.md)。
 
-前置：Windows、Node.js 22 以上、Git、已登入的 Codex CLI，以及 .NET Framework C# 編譯器（生命週期 helper 由已審閱原始碼建置）。ConPTY 使用 lockfile 固定的 node-pty 1.1.0。
+## Codex 沙箱與資料邊界
 
-只能先在非敏感的測試工作區執行：
+- 要求 Windows elevated、workspace-write、on-request 並核對 app-server 回報。合成探針確認專用沙箱帳號、工作目錄可寫、相鄰範圍外寫入被拒絕；失敗不得改成 bypass。
+- **讀取不限於 task 目錄**：已實測合成 sibling 範圍外標記可讀。工作複本及 MCP 安全檔案 broker 不等於 Codex 自身只能讀該範圍。
+- **`networkAccess=false` 不是完整斷網**：已實測本機 loopback 仍可連線；未宣稱涵蓋所有主機讀取或外部網路目的地。每次工作區／命令確認均揭露這兩項限制。
+- 所選秘密與一般工作內容可能由 Codex 傳至 OpenAI 模型服務；逐檔核准列出檔名與目的地，不顯示秘密值。TTL 清理不代表抹除來源原檔、Git 歷史、既有 baseline 或所有副本。
+- 程序監測使用 Windows CIM 與 PID／建立時間，原生 cwd 查詢仍有平台／程序權限限制；未知或不可歸屬狀態保守阻擋，不當成零程序。
+- managed Job／ancestor HANDLE 負責 owned 程序樹退出與路徑身分，不能延伸為 Hub、npm 專案測試或任意 CLI 的 OS 沙箱。
+
+## 環境與操作
+
+前置：Windows AMD64、本機 NTFS、Node.js 22 以上、Git、已登入且相容的 Codex CLI 0.154.0，以及 Windows .NET Framework C# 編譯器。原生 helper 從本分支原始碼建置。未驗證的版本、架構、檔案系統或 vendor inventory 不會靜默替換已核准環境。
+
+版本化安裝使用 [INSTALL.md](windows/INSTALL.md) 的已審閱套件與 manifest SHA-256。開發／測試 checkout 可明確指定資料 Root：
 
 ```powershell
-$env:HUB_ROOT = 'C:\path\to\isolated\AI-Workspace'
+$env:HUB_ROOT = 'C:\path\to\AI-Workspace'
 & .\hub\start-windows.ps1
-# 等 AI 作業結束後停止
+# 等 owned 作業結束後停止
 & .\hub\start-windows.ps1 -Stop
 ```
 
-啟動器會建立 `_hub`、`Product`、`Work`，既有 roles.yaml 不覆蓋。關閉介面會保留背景服務；再次執行啟動器可回到同一服務。`-NoBrowser` 供無視窗驗證。`-Stop` 透過已驗證的服務呼叫停止 API，活動作業存在時不強制結束。
+啟動器建立缺少的 `_hub`、`Product`、`Work`；既有 roles.yaml 不覆蓋。關閉瀏覽器保留背景服務，再次啟動可重開同一服務。`-NoBrowser` 供無視窗驗證；`-Stop` 透過已核對服務呼叫停止 API，活動作業存在時不強制終止。PowerShell 政策受管控時先檢查有效來源；本分支不永久修改執行原則，也沒有宣稱提供正式程式簽章。
 
-若 PowerShell 的有效執行原則阻擋腳本，先檢查政策來源。本次測試只對測試行程指定 RemoteSigned，沒有修改登錄、群組原則或使用者永久設定。尚未提供正式簽章的安裝入口。
+本機控制服務只綁 loopback，cookie 為 HttpOnly／SameSite=Strict，Host／Origin 檢查及操作標頭保持生效；遠端 HTTPS 是另行核准的入口。AI 子程序不繼承 Hub 登入、MCP 或 owner 控制環境。launcher token 以 DPAPI CurrentUser 保存，重開先核對 PID、建立時間與 HMAC；DPAPI、瀏覽器 fragment 與本機 journal 不隔離同一登入使用者，也不是簽章、WORM 或外部 attestation。
 
-### 本機控制資料
+清理失敗保留紀錄及互斥鎖，即使 chat idle 也有［重試停止／清理工作區］。冷啟動沒有當前 controller owned flow 時，不能由 metadata 重建 permit；舊 secret lease 無程序退出證據仍需人工覆核，未知／存活 PID 不自動解鎖或刪除。
 
-- `_hub/desktop-state.json` v1 保存工作區、版本目錄、PID、建立時間、埠與 DPAPI CurrentUser 加密 token。重開時先比對程序身分，再以隨機 challenge 驗證 HMAC，驗證前不送登入 token。
-- HTTP 只綁定 loopback，cookie 為 HttpOnly／SameSite=Strict，Host／Origin 檢查保持生效。登入 token 從 AI 子程序環境移除。
-- 瀏覽器登入片段會短暫包含 token；同一使用者的其他程序仍可能觀察命令列。DPAPI 不隔離同一登入使用者。
-- `_hub/approvals.jsonl` 是本機審批意圖記錄，不包含回答或命令內容；不是不可變更的外部稽核證明。
-- 整理記錄增量加入 `moving`、`restoring`；舊格式可讀。恢復只在來源／目的地狀態與既有指紋相符時更新紀錄。損壞記錄會報錯，不當作空歷史。
+「執行專案測試」只在 package.json hash／具體命令核准後執行 npm，停用 pre/post hooks。專案程式以目前 Windows 使用者權限執行，可讀主機與存取網路，**沒有自動套用 Codex 沙箱**；managed Job 只管逾時與程序樹清理。
 
-資料契約見 `windows/desktop-state.schema.json` 與 `windows/cleanup-record.schema.json`。Schema 描述序列化格式；程序、檔案與授權的動態檢查由執行程式負責。
+## 依賴與驗證
 
-### 已核准測試腳本的權限
+node-pty 固定 1.1.0，使用 `npm ci --ignore-scripts` 與已審閱 Windows prebuild；未執行套件安裝 hooks。2026-10-08 官方 npm lockfile 弱點查詢為 0 筆已知弱點，這不等於應用或原生二進位無風險。PTY adapter 的 worker disposal 依賴該固定版本內部欄位，升級需重驗。
 
-「執行專案測試」會在確認 package.json 雜湊與具體命令後執行 npm，關閉 npm 的 pre/post hooks。這是以目前 Windows 使用者權限執行的專案程式，可存取主機檔案與網路，**沒有自動套用 Codex 沙箱**；確認畫面會說明此界線。managed Job 只負責逾時與子程序清理。只執行已信任的程式。
+FFmpeg 9.0.2 為固定 SHA-256 的私有 GPLv3 依賴，版本化套件保留 LICENSE、README 與來源 metadata；source-only archive 不包含二進位。Codex 更新目前僅已驗證的 0.154.0 native inventory 可啟用，其他版本保留候選而不自動選取。
 
-## 尚未完成的原版功能
+Node 測試入口為 `npm --prefix hub test`。正式交付報告逐組列出成功、拒絕、失敗修復與重跑證據；不能把合成 fixture、分組重跑或平台 skip 合稱所有平台單次完整套件通過。使用者指定的 Python unittest 命令曾執行，但本專案沒有 Python `tests` 目錄，ImportError 不列為通過。
 
-- Claude／Agy 的 Windows 隔離與真實互動驗證；不能從 Codex 的結果推論它們安全。
-- 另開終端機、全部跨 AI 交接、长提示 TUI、各種暫停／恢復及視窗互動。
-- 非 Git／首次提交／direct mode 的預覽與授權、短期選擇供應機密檔案。
-- Git 合併的最新快照與一次性授權、成果移轉／整合、批次空專案清理；仍保持拒絕分支。
-- MCP／委派憑證分離、遠端 TLS／登入與真實端點驗證。
-- CLI 更新、Hub 內重啟、完整圖片格式轉換、資料升級／回復與正式安裝包。
-- 所有原版回歸測試；仍有 POSIX 夾具、尚未恢復的 Windows 成功路徑及逾時失敗。不得以大量 skip 視為通過。
-
-## 依賴與驗證方式
-
-node-pty 以 `npm ci --ignore-scripts` 取得並檢查安裝腳本與原生產物，未執行套件安裝脚本；現成 Windows prebuild 已實際載入。本次 npm 官方弱點 API 對 lockfile 回報 0 筆已知弱點，不等於原生二進位可追溯建置或整體無風險。
-
-Windows PTY 使用 `useConptyDll=true` 的 handle 關閉路徑；node-pty 1.1.0 自然退出會保留 output worker 引用，adapter 會 dispose 該 worker。這依賴固定版本的內部欄位，升級時必須重新檢查與測試，不能只改版號。
-
-目前 Windows 變更的指定整合回歸為 **211 通過、0 失敗、0 跳過**，涵蓋 23 個測試檔。上次完整套件在 `6838c25` 檢查點以 66 個測試檔執行，3 分鐘內已記錄 135 個失敗項目且未跑完，已停止該測試程序樹；新增模型清單修正後尚未重跑完整套件。不能將指定範圍測試當成完整套件通過。
-
-模型清單查詢沒有發送推論提示。帳號模型會隨登入狀態及服務供應變動；Hub 保留使用者指定的模型，不能用重新整理清單自行替換。初次開啟仍可能顯示本機快取，應使用設定中的模型重新整理；開始工作時 bridge 會再次檢查指定模型。
-
-Git 合併尚未開放的具體原因：上游流程會自動提交來源及本體的未提交變更，並在成功回報／Hub 操作紀錄前搬走工作複本。需先完成內容快照、一次性確認、共用 repo 鎖及可恢復操作紀錄，再恢復 Windows 的合併入口。不能只移除平台拒絕條件。
-
-單元／整合测试：`npm --prefix hub test`。完整 Windows 測試尚未全過；本機驗證紀錄應保留實際成功／失敗／逾時。使用者指定的 Python unittest 命令已執行，但本專案是 Node，沒有 `tests` Python 目錄，回報 ImportError；不列為通過。
-
-未安裝 WSL、未改動全域 Codex 設定、未改防火牆／系統帳號。實作順序與完整驗收範圍見 [已核准計畫](../docs/superpowers/plans/2026-10-08-windows-feature-parity-implementation.md)。
+模型清單查詢不送推論提示，帳號可用模型仍會變動；Hub 不因重新整理清單自行替換使用者所選模型。未安裝 WSL、未改全域 Codex 設定或防火牆；原生沙箱依 Codex 自身的 Windows 設定，其專用沙箱帳號不是 Hub 自建身分隔離保證。歷史設計與本輪範圍見 [已核准計畫](../docs/superpowers/plans/2026-10-08-windows-feature-parity-implementation.md)。

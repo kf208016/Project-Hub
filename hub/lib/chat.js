@@ -349,7 +349,7 @@ class ChatRunner {
     const childEnv = launch.childEnv(ai, { ...process.env, ...(env || {}) });
     let child;
     if (process.platform === 'win32' && ai === 'codex') {
-      child = require('./codex-bridge').start({ command: turn.command, cwd: dir, env: childEnv, model: turn.modelFlag, effort: turn.effortFlag, sessionId: turn.sessionId, images: turn.images });
+      child = require('./codex-bridge').start({ command: turn.command, cwd: dir, env: childEnv, model: turn.modelFlag, effort: turn.effortFlag, sessionId: turn.sessionId, images: turn.images, ...(o.nativeRootPin?{dirPin:o.nativeRootPin}:{}) });
     } else {
       const command = cli.resolve(turn.command, turn.args, childEnv.PATH);
       child = spawn(command.file, command.args, { cwd: dir, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -490,7 +490,7 @@ class ChatRunner {
     const k = this.key(p, t);
     if (!opts?.interrupting) this.stops.set(k, (this.stops.get(k) || 0) + 1);
     const run = this.busy(p, t);
-    if (!run) { const q = this.queue(p, t); if (q.length) this.setQueue(p, t, []); return Boolean(q.length); }
+    if (!run) { const q = this.queue(p, t); if (q.length&&!opts?.interrupting) this.setQueue(p, t, []); return Boolean(q.length); }
     run.stopped = true;
     if (opts && opts.interrupting) run.interrupting = true;
     if (run.pending) {

@@ -11,6 +11,7 @@ function localPath(value, { allowMissing = false } = {}) {
     for (const part of value.slice(3).split(/[\\/]/)) {
       if (part === '.' || part === '..' || /[. ]$|[<>"|?*\x00-\x1f]/.test(part) || /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)) throw Error('路徑含有不允許的名稱');
     }
+    require('./local-drives').assertLocalDrive(value);
   }
   const resolved = path.resolve(value), root = path.parse(resolved).root;
   let current = root;

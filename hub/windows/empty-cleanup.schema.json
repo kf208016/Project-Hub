@@ -1,0 +1,16 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "title":"Native empty cleanup batch journal version 1",
+ "description":"One user-confirmed batch of exact pre-confirmation Removal native plans. Item bindings exclude mutable progress flags but include all root/FileID/tree authority. Partial stops remaining items; continuation needs a fresh one-time ticket.",
+ "type":"object","additionalProperties":false,
+ "required":["version","id","at","state","entries","error"],
+ "properties":{
+  "version":{"const":1},"id":{"type":"string","format":"uuid"},"at":{"type":"string","format":"date-time"},"confirmedAt":{"type":"string","format":"date-time"},"state":{"enum":["planned","running","partial","complete"]},"error":{"type":"string","maxLength":8192},
+  "entries":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","additionalProperties":false,"required":["item","title","state","record","binding"],"properties":{
+   "item":{"type":"object","additionalProperties":false,"required":["project","task"],"properties":{"project":{"$ref":"#/$defs/id"},"task":{"type":"string","maxLength":255}}},
+   "title":{"type":"string"},"state":{"enum":["planned","moving","complete"]},"record":{"$ref":"native-cleanup.schema.json"},"binding":{"type":"string","pattern":"^[a-f0-9]{64}$"}
+  }}}
+ },
+ "$defs":{"id":{"type":"string","minLength":1,"maxLength":255,"pattern":"^[^\\\\/\\u0000]+$"}},
+ "allOf":[{"if":{"properties":{"state":{"const":"complete"}}},"then":{"required":["confirmedAt"],"properties":{"entries":{"items":{"properties":{"state":{"const":"complete"}}}}}}}]
+}

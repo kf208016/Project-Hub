@@ -1,6 +1,8 @@
 # Start/reopen local Hub. Closing the interface keeps owned jobs alive.
-param([switch]$Stop, [switch]$NoBrowser)
+param([switch]$Stop, [switch]$Restart, [switch]$NoBrowser, [int]$ExpectedPid = 0, [string]$ExpectedCreatedTicks = '')
 $ErrorActionPreference = 'Stop'
+if ($Stop -and $Restart) { throw 'Stop and Restart are mutually exclusive.' }
+if (-not $Restart -and ($ExpectedPid -ne 0 -or $ExpectedCreatedTicks)) { throw 'Expected identity is only valid for Restart.' }
 [void][Reflection.Assembly]::Load('System.Security, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a')
 $entropy = [Text.Encoding]::UTF8.GetBytes('ProjectHub.Windows.Launcher.v1')
 if ($env:OS -ne 'Windows_NT') { throw 'Windows is required.' }
@@ -65,6 +67,17 @@ try {
             $running = $true
         }
     }
+    $restartToken = $null
+    if ($Restart) {
+        if (-not $running) { throw 'Restart requires the verified running workspace instance.' }
+        if ($ExpectedPid -le 0 -or $ExpectedCreatedTicks -notmatch '^[0-9]{1,19}$' -or $state.pid -ne $ExpectedPid -or $state.createdTicks -cne $ExpectedCreatedTicks) { throw 'Restart owner identity changed; the service has not been stopped.' }
+        $restartToken = $token
+        $restartSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+        Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/local/login" -Method Post -ContentType 'application/json' -Headers @{ 'X-Hub' = '1' } -Body (@{token=$token}|ConvertTo-Json -Compress) -WebSession $restartSession | Out-Null
+        Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/quit" -Method Post -ContentType 'application/json' -Headers @{ 'X-Hub' = '1' } -Body '{"reason":"windows-restart"}' -WebSession $restartSession | Out-Null
+        if (-not $savedProcess.WaitForExit(10000)) { throw 'Restart did not stop the verified old process; saved state has been retained.' }
+        $running = $false
+    }
     if ($Stop) {
         if (-not $running) { Write-Host 'Project Hub is not running for this workspace.'; $completed = $true; return }
         $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
@@ -82,10 +95,13 @@ try {
         New-Item -ItemType Directory -Force -Path (Join-Path $root 'Product'), (Join-Path $root 'Work') | Out-Null
         $rolesFile = Join-Path $logDir 'roles.yaml'
         if (-not (Test-Path -LiteralPath $rolesFile)) { Copy-Item -LiteralPath (Join-Path $hubDir 'windows\roles.yaml') -Destination $rolesFile }
-        $tokenBytes = New-Object byte[] 32
-        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-        try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
-        $token = [Convert]::ToBase64String($tokenBytes).TrimEnd('=').Replace('+','-').Replace('/','_')
+        if ($restartToken) { $token = $restartToken }
+        else {
+            $tokenBytes = New-Object byte[] 32
+            $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
+            $token = [Convert]::ToBase64String($tokenBytes).TrimEnd('=').Replace('+','-').Replace('/','_')
+        }
         $env:HUB_ROOT = $root
         $env:HUB_TRASH = Join-Path $logDir 'Trash'
         $env:HUB_PORT = "$port"

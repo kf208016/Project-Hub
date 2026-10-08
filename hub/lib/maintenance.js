@@ -56,8 +56,8 @@ class Maintenance {
   try {
    for(const base of roots) {
     noLinks(base);
-    let top='';try {top=execFileSync('git',['-C',base,'rev-parse','--show-toplevel'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch(e){/* Gitなし */}
-    if(top) {const names=execFileSync('git',['-C',top,'ls-files','-z'],{encoding:'utf8',maxBuffer:2*1024*1024});tracked.push(...names.split('\0').filter(Boolean).map(n=>path.join(top,n)));}
+    let top='';if(process.platform==='win32'){const metadata=require('./git-metadata').assertLocalMetadata(base);if(metadata.gitdir)top=require('./git-policy').run(base,['rev-parse','--show-toplevel']).trim();}else try {top=execFileSync('git',['-C',base,'rev-parse','--show-toplevel'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch(e){/* Gitなし */}
+    if(top) {const names=process.platform==='win32'?require('./git-policy').run(top,['ls-files','-z']):execFileSync('git',['-C',top,'ls-files','-z'],{encoding:'utf8',maxBuffer:2*1024*1024});tracked.push(...names.split('\0').filter(Boolean).map(n=>path.join(top,n)));}
     const walk=(d,depth)=>{scanPath=d;scanSize=0;
      if(depth>6)throw Error('参照の走査範囲を超えました');
      for(const ent of fs.readdirSync(d,{withFileTypes:true})) {

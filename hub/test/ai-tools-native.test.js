@@ -1,0 +1,12 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {AiTools}=require('../lib/ai-tools');
+function fixture(t){const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-ai-native-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));return root;}
+test('Native AI update forwards exact approval, exposes a private candidate and retains the old CLI on compatibility block',async t=>{
+ const root=fixture(t);let approved;const native={useActive(){},preview:async version=>({version,token:'fixture-token',ignoreScripts:true,scope:'Hub-private-slot',compatible:false,blocker:'UNVERIFIED_CODEX_PROTOCOL_VERSION'}),apply:async body=>{approved=body;return{ok:false,phase:'blocked',oldVersionRetained:true,blocker:'UNVERIFIED_CODEX_PROTOCOL_VERSION'};}};
+ const tools=new AiTools({root,home:path.join(root,'home'),platform:'win32',nativeUpdater:native,find:()=>process.execPath,run:async()=>'codex-cli 0.154.0',latest:async()=>({version:'0.155.0',source:'official fixture'})});const check=await tools.checkUpdate('codex');assert.equal(check.nativePreview.version,'0.155.0');assert.equal(check.scope,'Hub-private-slot');const approval={version:'0.155.0',token:'fixture-token',confirm:true},result=await tools.update('codex',approval);assert.deepEqual(approved,approval);assert.equal(result.phase,'blocked');assert.equal(result.changed,false);assert.equal(result.verified,false);assert.equal(result.afterVersion,'0.154.0');assert.equal(tools.isOperating(),false);
+});
+test('Native AI activation verifies its exact version, preserves model choices, and rolls back a version verification failure',async t=>{
+ const root=fixture(t);let versions=0,rollback=0;const native={useActive(){},apply:async()=>({ok:true,phase:'activated',version:'0.154.0',slot:'fixture-slot',globalCliChanged:false}),active:()=>({file:process.execPath}),rollback:id=>{assert.equal(id,'fixture-slot');rollback++;}};
+ const tools=new AiTools({root,home:path.join(root,'home'),platform:'win32',nativeUpdater:native,find:()=>process.execPath,run:async()=>++versions===1?'codex-cli 0.154.0':'broken version',refreshCodex:async()=>[{id:'fixture-model',label:'fixture-model'}]});await assert.rejects(tools.update('codex',{version:'0.154.0',token:'fixture',confirm:true}),error=>error.stage==='verify');assert.equal(rollback,1);assert.equal(tools.isOperating(),false);assert.deepEqual(tools.catalog().codex.models,[]);
+});

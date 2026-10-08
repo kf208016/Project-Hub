@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
 const { expandHome } = require('./store');
+const processCwd = require('./process-cwd');
 
 const AIS = ['codex', 'claude', 'agy'];
 const INTERVAL = 10000, TIMEOUT = 5000, WARN_EVERY = 5 * 60 * 1000;
@@ -123,6 +124,7 @@ function create(opts = {}) {
   const selfPid = opts.selfPid || process.pid;
   const projects = opts.projects || (() => []);
   const baseOf = opts.baseOf;
+  const windowsCwds = opts.windowsCwds || processCwd.query;
   const log = opts.log || (m => console.log(m));
   const realCache = new Map();
   const real = d => { if (!realCache.has(d)) { if (realCache.size > 1000) realCache.clear(); let r = d; try { r = fs.realpathSync(d); } catch (e) { r = d; } realCache.set(d, r); } return realCache.get(d); };
@@ -158,10 +160,28 @@ function create(opts = {}) {
         if(!rows.length)throw Error('程序查詢沒有完整結果');
       } catch(e) { status={state:'unknown',checkedAt:status.checkedAt,error:'程序查詢失敗；無法確認是否有背景作業'};warn((platform==='win32'?'Windows':'ps')+'：'+status.error);return current; }
       const kept = pickAi(rows, selfPid);
-      const dirs = platform==='win32'?kept.map(()=>''):kept.length ? await cwds(kept) : [];
+      let cwdResults = [];
+      if (platform === 'win32' && kept.length) {
+        try {
+          cwdResults = await windowsCwds(kept.map(({pid,since}) => ({pid,since})));
+          if (!Array.isArray(cwdResults) || cwdResults.length !== kept.length || cwdResults.some((x,i) => !x || x.pid !== kept[i].pid || typeof x.status !== 'string' || typeof x.cwd !== 'string' || typeof x.creationTime !== 'string' || (x.status === 'ok' && (!x.cwd || !processCwd.sameCreation(x.creationTime,kept[i].since))))) throw Error('Invalid cwd result');
+        } catch { cwdResults = kept.map(({pid}) => ({pid,creationTime:'',cwd:'',status:'helper-failed'})); }
+      }
+      const dirs = platform==='win32'?cwdResults.map(x => x.status === 'ok' ? x.cwd : ''):kept.length ? await cwds(kept) : [];
       let all = [];
-      if (kept.length) { try { all = projects() || []; } catch (e) { all = []; } }
-      const next = kept.map((r, i) => ({ pid: r.pid, ai: r.ai, cmd: cleanCmd(r.command), since: r.since, cwd: dirs[i], ...mapCwd(dirs[i], all, baseOf, real) }));
+      let mappingKnown = true;
+      if (kept.length) { try { all = projects();if(!Array.isArray(all))throw Error('Invalid projects'); } catch (e) { all = []; mappingKnown = false; } }
+      let mappedBaseOf = baseOf;
+      if (platform === 'win32') {
+        const bases = new Map();
+        for (const p of all) {try{bases.set(p.id,baseOf ? baseOf(p) : '');}catch{mappingKnown=false;}}
+        mappedBaseOf = p => bases.get(p.id) || '';
+      }
+      const next = kept.map((r, i) => {
+        const mapped = mapCwd(dirs[i], all, mappedBaseOf, real);
+        return { pid: r.pid, ai: r.ai, cmd: cleanCmd(r.command), since: r.since, cwd: dirs[i], ...mapped,
+          ...(platform === 'win32' ? {cwdStatus:cwdResults[i].status,attribution:mapped.project?'known-related':cwdResults[i].status==='ok'&&mappingKnown?'known-unrelated':'unknown'} : {}) };
+      });
       const identity=x=>`${x.pid}:${x.since}`;
       const before = new Set(current.map(identity)), after = new Set(next.map(identity));
       const removed = current.filter(x => !after.has(identity(x))), added = next.filter(x => !before.has(identity(x)));
@@ -179,8 +199,8 @@ function create(opts = {}) {
   return {
     scan,
     list: () => current.slice(),
-    status: () => ({...status,unassigned:current.filter(x=>!x.project).length}),
-    assertKnown() { if(status.state!=='ok'||Date.now()-Date.parse(status.checkedAt)>2*INTERVAL||current.some(x=>!x.project))throw Error('背景程序狀態未知或有未歸屬 AI；請先確認作業已停止'); },
+    status: () => ({...status,unassigned:current.filter(x=>!x.project&&x.attribution!=='known-unrelated').length,...(platform==='win32'?{unrelated:current.filter(x=>x.attribution==='known-unrelated').length}:{})}),
+    assertKnown() { if(status.state!=='ok'||Date.now()-Date.parse(status.checkedAt)>2*INTERVAL||current.some(x=>!x.project&&x.attribution!=='known-unrelated'))throw Error('背景程序狀態未知或有未歸屬 AI；請先確認作業已停止'); },
     onChange: fn => { listeners.push(fn); },
     start(ms = INTERVAL) { if (timer) return; scan().catch(() => {}); timer = setInterval(() => { scan().catch(() => {}); }, ms); timer.unref?.(); },
     stop() { if (timer) clearInterval(timer); timer = null; },

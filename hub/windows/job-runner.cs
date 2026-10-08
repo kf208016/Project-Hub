@@ -38,6 +38,7 @@ class HubJobRunner {
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForMultipleObjects(uint count, IntPtr[] handles, bool all, uint timeout);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle, uint timeout);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
   [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int n);
@@ -59,10 +60,15 @@ class HubJobRunner {
   static IntPtr DuplicateStd(int n) {
     IntPtr result; Check(DuplicateHandle(GetCurrentProcess(), GetStdHandle(n), GetCurrentProcess(), out result, 0, true, 2)); return result;
   }
+  static void WaitEmpty(IntPtr job) {
+    IntPtr accounting=Marshal.AllocHGlobal(48);
+    try { for(;;) { Check(QueryInformationJobObject(job,1,accounting,48,IntPtr.Zero)); if(Marshal.ReadInt32(accounting,40)==0)return;Thread.Sleep(25); } }
+    finally {Marshal.FreeHGlobal(accounting);}
+  }
   static int Main() {
     IntPtr job=IntPtr.Zero, attributes=IntPtr.Zero, handles=IntPtr.Zero;
     IntPtr[] std = new IntPtr[3]; PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-    NamedPipeClientStream owner = null; ManualResetEvent gone = new ManualResetEvent(false);
+    NamedPipeClientStream owner = null; ManualResetEvent gone = new ManualResetEvent(false);HubPinnedRoot pin=null;
     try {
       string encoded = Environment.GetEnvironmentVariable("HUB_PROCESS_SPEC");
       Environment.SetEnvironmentVariable("HUB_PROCESS_SPEC", null);
@@ -74,6 +80,7 @@ class HubJobRunner {
       NamedPipeClientStream channel = owner;
       Thread monitor = new Thread(delegate() { try { while(channel.ReadByte() != -1) {} } catch {} finally { gone.Set(); } });
       monitor.IsBackground = true; monitor.Start();
+      if(spec.ContainsKey("dirPin")) {Dictionary<string,object> binding=(Dictionary<string,object>)spec["dirPin"];pin=new HubPinnedRoot((string)binding["root"],(string)binding["rootFingerprint"]);}
       job = CreateJobObject(IntPtr.Zero, null); Check(job != IntPtr.Zero);
       EXTENDED_LIMIT limits = new EXTENDED_LIMIT(); limits.basic.flags = 0x2000; // KILL_ON_JOB_CLOSE, no breakaway
       Check(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(EXTENDED_LIMIT))));
@@ -92,6 +99,7 @@ class HubJobRunner {
       try { Check(AssignProcessToJobObject(job,pi.process)); }
       catch { TerminateProcess(pi.process,125); throw; }
       if(gone.WaitOne(0)) return 125;
+      if(pin!=null)pin.Verify();
       Check(ResumeThread(pi.thread) != 0xffffffff);
       Console.Error.WriteLine("HUB_JOB_READY:" + (string)spec["nonce"] + ":" + pi.pid); Console.Error.Flush();
       uint wait = WaitForMultipleObjects(2,new IntPtr[]{pi.process,gone.SafeWaitHandle.DangerousGetHandle()},false,0xffffffff);
@@ -108,7 +116,9 @@ class HubJobRunner {
       Console.Error.WriteLine("HUB_JOB_ERROR:" + (native != null ? native.NativeErrorCode.ToString() : e.GetType().Name));
       return 125;
     } finally {
-      if(job!=IntPtr.Zero) { TerminateJobObject(job,125); CloseHandle(job); }
+      if(job!=IntPtr.Zero) { TerminateJobObject(job,125); try {WaitEmpty(job);} finally {CloseHandle(job);} }
+      if(pi.process!=IntPtr.Zero) {TerminateProcess(pi.process,125);WaitForSingleObject(pi.process,0xffffffff);}
+      if(pin!=null)pin.Dispose();
       if(pi.thread!=IntPtr.Zero) CloseHandle(pi.thread); if(pi.process!=IntPtr.Zero) CloseHandle(pi.process);
       foreach(IntPtr h in std) if(h!=IntPtr.Zero) CloseHandle(h);
       if(attributes!=IntPtr.Zero) { DeleteProcThreadAttributeList(attributes); Marshal.FreeHGlobal(attributes); }

@@ -10,7 +10,9 @@ function spawn(file,args,options) {
   if(process.platform!=='win32')return pty.spawn(file,args,options);
   if(!path.isAbsolute(file)||file.includes('\0')||!Array.isArray(args)||args.some(x=>typeof x!=='string'||x.includes('\0')))throw Error('Invalid PTY invocation');
   const runner=ensureRunner(),pipe='project-hub-pty-'+randomUUID(),nonce=randomUUID();
-  const spec=JSON.stringify({file,args,cwd:options.cwd,pipe,nonce,pty:true});
+  const pin=options.dirPin;
+  if(pin&&(!pin||typeof pin!=='object'||Object.keys(pin).sort().join(',')!=='root,rootFingerprint'||typeof pin.root!=='string'||pin.root!==options.cwd||!path.isAbsolute(pin.root)||! /^[a-f0-9]{64}$/.test(pin.rootFingerprint||'')))throw Error('Invalid PTY root identity');
+  const spec=JSON.stringify({file,args,cwd:options.cwd,pipe,nonce,pty:true,...(pin?{dirPin:pin}:{})});
   if(spec.length>24000)throw Error('Windows 終端機參數超過上限，請用會話模式傳送長文');
   const events=new EventEmitter();let real,owner,pending='',ready=false,ended=false,killed=false,resolveStarted;
   const started=new Promise(r=>resolveStarted=r);

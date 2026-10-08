@@ -62,7 +62,10 @@ function methodFor(ai, file) {
   let real;
   try { real = fs.realpathSync(file); } catch (e) { return 'unknown'; }
   if (ai === 'agy') return path.basename(real) === 'agy' ? 'native' : 'unknown';
-  if (ai === 'codex') return /[/\\]\.codex[/\\]packages[/\\]standalone[/\\]/.test(real) ? 'standalone' : 'unknown';
+  if (ai === 'codex') {
+    if(process.platform==='win32'&&/\.cmd$/i.test(file)){try{const pkg=JSON.parse(fs.readFileSync(path.join(path.dirname(file),'node_modules/@openai/codex/package.json'),'utf8'));if(pkg.name==='@openai/codex'&&typeof pkg.version==='string')return'npm';}catch{}}
+    return /[/\\]\.codex[/\\]packages[/\\]standalone[/\\]/.test(real) ? 'standalone' : 'unknown';
+  }
   if (/[/\\]Caskroom[/\\]claude-code@latest[/\\]/.test(real)) return 'homebrew-cask';
   if (/[/\\]\.claude[/\\]local[/\\]|[/\\]\.local[/\\]share[/\\]claude[/\\]/.test(real)) return 'native';
   return 'unknown';
@@ -185,6 +188,8 @@ class AiTools {
     this.methods = opts.methods || {};
     this.busy = opts.busy || (() => 0);
     this.dry = Boolean(opts.dry);
+    this.nativeUpdater = this.platform==='win32' && this.root ? opts.nativeUpdater || new (require('./native-cli-update').NativeCliUpdater)({root:this.root}) : null;
+    if(this.nativeUpdater&&!this.dry){this.nativeUpdater.useActive();foundAt.delete('codex');}
     this.refreshClaude = opts.refreshClaude || claudeInitialize;
     this.operation = null;
     this.latest = opts.latest || latestVersion;
@@ -272,8 +277,9 @@ class AiTools {
         const method = this.methods[ai] || methodFor(ai, file);
         const latest = this.dry ? { version: currentVersion || '0.0.0', source: 'dry-run' } : await this.latest(ai, method, this.home);
         if (epoch !== (this.updateEpoch[ai] || 0) || this.operation?.ai === ai && this.operation.kind === 'update') throw toolError(409, 'busy', '確認中に更新が適用されました。適用後に確認してください');
+        const nativePreview=this.platform==='win32'&&ai==='codex'&&!this.dry&&this.nativeUpdater?await this.nativeUpdater.preview(latest.version):null;
         const result = { ok: true, ai, currentVersion, latestVersion: latest.version, source: latest.source,
-          available: newer(latest.version, currentVersion), checkedAt: new Date().toISOString(), applicable: ['standalone', 'native', 'homebrew-cask'].includes(method) };
+          available: newer(latest.version, currentVersion), checkedAt: new Date().toISOString(), applicable: Boolean(nativePreview)||['standalone', 'native', 'homebrew-cask'].includes(method),...(nativePreview?{nativePreview,scope:'Hub-private-slot'}:{}) };
         this.updateChecks[ai] = result; return result;
       } catch (e) {
         if (e.status === 409) throw e;
@@ -364,7 +370,18 @@ class AiTools {
     finally { this.operation = null; }
   }
 
-  async update(ai) {
+  async update(ai, approval) {
+    if(this.platform==='win32'){
+      if(ai!=='codex'||!this.nativeUpdater)throw toolError(409,'unsupported','本輪僅支援原生 Codex 的 Hub 私有版本槽更新');
+      const {file}=this.check(ai);if(this.dry)return{ok:true,dry:true,ai,scope:'Hub-private-slot',globalCliChanged:false};
+      this.operation={ai,kind:'update',startedAt:new Date().toISOString()};this.updateEpoch[ai]=(this.updateEpoch[ai]||0)+1;
+      try{const beforeVersion=await this.version(ai,file),result=await this.nativeUpdater.apply(approval);foundAt.delete('codex');delete this.updateChecks[ai];
+        if(!result.ok)return{...result,ai,beforeVersion,afterVersion:beforeVersion,changed:false,verified:false};
+        const active=this.nativeUpdater.active();let afterVersion;try{afterVersion=await this.version(ai,active.file,true);if(afterVersion!==result.version)throw Error('version mismatch');}catch{this.nativeUpdater.rollback(result.slot);foundAt.delete('codex');throw toolError(502,'verify','私有版本槽版號驗證失敗，已回復原版本；未宣稱更新完成');}
+        let models;try{const found=await this.fetchModels(ai,active.file);models=this.saveCatalog(ai,found);}catch{models={ok:false,error:'CLI 已驗證，但模型列表未能重新驗證；保留原候選'};}
+        return{...result,ai,beforeVersion,afterVersion,changed:beforeVersion!==afterVersion,verified:true,models};
+      }catch(e){throw e.status?e:failure('update',e);}finally{this.operation=null;}
+    }
     const { file, method } = this.check(ai);
     let updater, args;
     if (ai === 'codex' && method === 'standalone') { updater = file; args = ['update']; }

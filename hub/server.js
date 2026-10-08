@@ -25,10 +25,13 @@ const { AsyncLocalStorage } = require('async_hooks');
 
 const PORT = Number(process.env.HUB_PORT || 4545);
 const ROOT = expandHome(process.env.HUB_ROOT || path.join(os.homedir(), 'Documents', 'AI-Workspace'));
+if(process.platform==='win32')require('./lib/native-dependencies').apply(ROOT);
 const DRY = process.env.HUB_DRY_RUN === '1'; // テスト用：実際には起動しない
 const LOCAL_TOKEN = process.env.HUB_LOCAL_TOKEN || '';
 delete process.env.HUB_LOCAL_TOKEN; // Never pass the browser credential to an AI child process.
 const localAuth = LOCAL_TOKEN ? localAuthLib.create(LOCAL_TOKEN) : null;
+const { CapabilityAuth, READ_TOOLS } = require('./lib/capability-auth');
+const mcpCapabilities = new CapabilityAuth();
 const limitEvidence = new LimitEvidence(path.join(ROOT, '_hub', 'limits.json'));
 const usage = new Usage({ dry: DRY, observe: snapshot => {
   try { limitEvidence.observe(snapshot); } catch { /* 保存失敗では直前の保持状態を維持 */ }
@@ -47,6 +50,7 @@ const store = new Store(ROOT);
 const projectOrder = new (require('./lib/project-order').ProjectOrder)(store);
 // 外から使う（iPhone）の設定と、今の要求が外からかどうか（記録に「外から」と印を付けるため）
 const remote = new remoteLib.Remote({ file: path.join(ROOT, '_hub', 'remote.json') });
+const nativeRemote = process.platform==='win32' ? new (require('./lib/windows-remote').WindowsRemote)({root:ROOT,handle:async(req,res,url)=>{try{await reqCtx.run({remote:true,transport:'tls'},()=>remoteGate(req,res,url));}catch(error){if(res.headersSent){res.destroy();return;}if(error.code==='WORKSPACE_REQUIRED'&&error.workspaceRequired===true)return send(res,409,nativeWorkspaceError(error,error.task));return send(res,500,{error:'HTTPS 操作失敗，請在本機檢查交易狀態'});}}}) : null;
 const reqCtx = new AsyncLocalStorage();
 const fromRemote = () => Boolean(reqCtx.getStore()?.remote);
 const sessions = new Sessions();
@@ -55,7 +59,7 @@ const chats = new chat.ChatRunner({ dirOf: id => { const p = store.readProject(i
   permFor: permCmd,
   limitBackup: o => fableBackup(rolesData(), o.role),
   limitPreflight: () => limitEvidence.active(),
-  beforeQueued: refreshLimitEvidence,
+  beforeQueued: async o => {if(process.platform==='win32'){const p=store.readProject(o.project);await workspaceReview.verifiedBinding(o.project,o.task,{verifySource:Boolean(p&&github.locked(baseOf(p)))});workspaceRuntime.assertStart(o.project,o.task,o.workspaceFlow,o.dir);}await refreshLimitEvidence(o);},
   onLimit: o => {
     try { limitEvidence.record(o); }
     catch (e) { record('limit-save-error', o); throw e; }
@@ -67,6 +71,7 @@ const chats = new chat.ChatRunner({ dirOf: id => { const p = store.readProject(i
     if (!p || !t) throw Error('作業が見つかりません');
     const dir = o.dir && fs.existsSync(o.dir) ? o.dir : workDir(p, t).dir;
     if (!dir || !fs.existsSync(dir)) throw Error('作業場所を用意できませんでした');
+    if(process.platform==='win32')workspaceRuntime.assertStart(p.id,t.id,o.workspaceFlow,dir);
     return { dir, policy: modelPolicy(p, t), basePrompt: taskPrompt(p, t, store.taskFile(p.id, t.id), dir) + ' ここは会話画面。人からの依頼に答え、区切りで作業ファイルを更新すること。' };
   },
   canStart: (ai, model, o) => {
@@ -76,25 +81,26 @@ const chats = new chat.ChatRunner({ dirOf: id => { const p = store.readProject(i
       if(!p || !t)return '作業が見つかりません';
       if(o.requireModel && t.state === '完了')return DELEGATE_COMPLETED_ERROR;
       if(o.requireModel) {const blocked=delegateTerminalError(p.id,t.id);if(blocked)return blocked;}
-      try {assertWorkspaceIdle(p,t,false);} catch(e) {return e.message;}
+      try {if(process.platform==='win32'){workspaceRuntime.assertStart(p.id,t.id,o.workspaceFlow,o.dir);o.nativeRootPin=nativeRootPin(p.id,t.id);}assertWorkspaceIdle(p,t,false,false,o.workspaceFlow);} catch(e) {return e.message;}
     }
     return '';
   } });
-const { Maintenance } = require('./lib/maintenance');
+const { Maintenance } = process.platform==='win32'?{Maintenance:require('./lib/native-maintenance').NativeMaintenance}:require('./lib/maintenance');
 const emptyLib = require('./lib/empty');
 const maintenance = new Maintenance({store,baseOf,busy:id=>{
   const p=store.readProject(id);if(!p)return false;
   const all=store.listProjects(), familyIds=require('./lib/work-context').family(p,all).map(q=>q.id);
   const base=fs.realpathSync(baseOf(p));
-  if (github.locked(base)) return true;
+  if (github.locked(base) || process.platform === 'win32' && (reviewedMerge.locked(base)||taskTransfer.nativeActive()||taskIntegrate.nativeActive()||nativeEmpty?.nativeBusy(id)||workspaceReview.operations.size||[...workspaceReview.runs.values()].some(x=>x.record.project===id))) return true;
   const active=[...sessions.list().filter(x=>x.running),...[...chats.running.keys()].map(k=>({project:k.split('\u0000')[0]}))];
   return procwatch.list().some(x=>x.project && (familyIds.includes(x.project)||all.some(q=>q.id===x.project&&fs.realpathSync(baseOf(q))===base))) || active.some(a=>{const q=all.find(x=>x.id===a.project);return q && (familyIds.includes(q.id) || fs.realpathSync(baseOf(q))===base);});
 }});
 const {Removal}=require('./lib/remove');
-const removal=new Removal({store,locked:id=>{const p=store.readProject(id);return p?maintenance.locked(id):false;},busy:(project,task)=>
+const removal=new Removal({store,locked:id=>{const p=store.readProject(id);return p?maintenance.locked(id) || process.platform === 'win32' && (maintenance.nativeBusy(id)||reviewedMerge.locked(baseOf(p))):false;},busy:(project,task)=>
   sessions.list().some(x=>x.running&&x.project===project&&(!task||x.task===task)) ||
   [...chats.running.keys()].some(k=>k.split('\u0000')[0]===project&&(!task||k.split('\u0000')[1]===task)) ||
-  procwatch.list().some(x=>x.project===project&&(!task||!x.task||x.task===task))});
+  procwatch.list().some(x=>x.project===project&&(!task||!x.task||x.task===task)) ||
+  process.platform==='win32'&&(workspaceReview.operations.size||[...workspaceReview.runs.values()].some(x=>x.record.project===project&&(!task||x.record.task===task)))});
 const aiTools = new AiTools({ root: ROOT, dry: DRY, busy: () => sessions.list().filter(x => x.running).length + chats.running.size });
 function applyModelCatalog() {
   const catalog = aiTools.catalog();
@@ -147,21 +153,31 @@ function allowed(req) {
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', c => { data += c; if (data.length > 200000) { reject(new Error('too large')); req.destroy(); } });
-    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(e); } });
+    const chunks=[];let size=0;
+    req.on('data', c => { size+=c.length;if(size>2*1024*1024){reject(Object.assign(Error('JSON 請求超過 2 MiB'),{status:413}));req.destroy();}else chunks.push(c); });
+    req.on('end', () => { try { const data=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks));resolve(data?JSON.parse(data):{}); } catch {reject(Object.assign(Error('JSON 或 UTF-8 請求格式無效'),{status:400}));} });
+    req.on('error',reject);
   });
 }
 
 // 操作の記録（_hub/log.jsonl に1行ずつ）。1MB を超えたら log.old.jsonl に回す
 const LOG_FILE = path.join(ROOT, '_hub', 'log.jsonl');
 function record(action, b, extra) {
+  const strictFileRecord = process.platform === 'win32' && (action === 'chatgpt' && extra?.tool === 'hub_write_file' || ['commandapprove','mcpregister','mcpgrant','mcprevoke'].includes(action));
   try {
+    if (strictFileRecord) require('./lib/safe-path').localPath(LOG_FILE, { allowMissing: true });
     fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > 1024 * 1024) fs.renameSync(LOG_FILE, LOG_FILE.replace(/\.jsonl$/, '.old.jsonl'));
+    if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > 1024 * 1024) {
+      const old = LOG_FILE.replace(/\.jsonl$/, '.old.jsonl');
+      if (strictFileRecord) require('./lib/safe-path').localPath(old, { allowMissing: true });
+      fs.renameSync(LOG_FILE, old);
+    }
     const row = { at: new Date().toISOString(), action, project: b.project, task: b.task, ai: b.ai || b.to, ...(extra || {}), ...(fromRemote() ? { remote: true } : {}) };
-    fs.appendFileSync(LOG_FILE, JSON.stringify(row) + '\n');
-  } catch (e) { /* 記録できなくても操作は続ける */ }
+    if (strictFileRecord) {
+      const fd = fs.openSync(LOG_FILE, 'a');
+      try { fs.writeFileSync(fd, JSON.stringify(row) + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    } else fs.appendFileSync(LOG_FILE, JSON.stringify(row) + '\n');
+  } catch (e) { if (strictFileRecord) throw Error('MCP 檔案操作紀錄未能保存'); /* 既有其他記錄仍是 best effort。 */ }
 }
 function readLog(n, file = LOG_FILE) {
   try { return fs.readFileSync(file, 'utf8').trim().split('\n').slice(-n).reverse().map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean); }
@@ -236,8 +252,59 @@ function fableBackup(data, role) {
 }
 // ChatGPT アプリ・Codex の設定ファイル（~/.codex/config.toml）に、Hub の MCP が登録されているか
 const CODEX_CONFIG = () => path.join(process.env.HUB_AI_HOME || os.homedir(), '.codex', 'config.toml');
+const nativeMcpRegistration = process.platform==='win32'&&Number.isSafeInteger(PORT)&&PORT>=1024&&PORT<=65535 ? new (require('./lib/native-mcp-registration').NativeMcpRegistration)({
+  root:ROOT,hubDir:__dirname,configFile:CODEX_CONFIG(),port:PORT,
+  resolveGrant:async({capabilityId,runId,token})=>{
+    const scope=mcpCapabilities.inspect(token,runId);
+    if(scope.id!==capabilityId||!scope.task)throw Object.assign(Error('MCP 註冊必須綁定已核准的同一作業與回合'),{status:403});
+    const grant=mcpCapabilities.current(capabilityId,runId),p=store.readProject(grant.project),t=p?.tasks.find(x=>x.id===grant.task);
+    if(!t)throw Object.assign(Error('MCP 註冊作業已不存在'),{status:403});
+    if(grant.workspaceRun)await validateWorkspaceCapability(grant);
+    if(grant.root){if(!t.workdir||path.resolve(expandHome(t.workdir)).toLowerCase()!==grant.root.toLowerCase()||(await require('./lib/scoped-file').identity(grant.root)).rootFingerprint!==grant.rootFingerprint)throw Object.assign(Error('MCP 註冊工作區身分已變更'),{status:403});}
+    const fresh=mcpCapabilities.inspect(token,runId);if(fresh.id!==capabilityId)throw Object.assign(Error('MCP 註冊授權已失效'),{status:403});return fresh;
+  },
+  revokeGrant:async({capabilityId,runId})=>{mcpCapabilities.revoke(capabilityId);for(const row of commandIntents.list())if(row.capId===capabilityId&&row.run===runId)commandIntents.cancelRun(runId);}
+}) : null;
+let nativeMcpRegistrationError='';
+const nativeMcpRegistrationReady=Promise.resolve().then(()=>nativeMcpRegistration?.prune({all:true})).catch(error=>{nativeMcpRegistrationError=error.code||'STARTUP_CLEANUP_REQUIRES_REVIEW';});
+if(nativeMcpRegistration){const timer=setInterval(()=>{if(!nativeMcpRegistration.active())void nativeMcpRegistration.prune({}).catch(error=>{nativeMcpRegistrationError=error.code||'EXPIRED_CLEANUP_REQUIRES_REVIEW';});},30000);timer.unref();}
+function nativeMcpRegistrationStatus(){if(!nativeMcpRegistration)return{configFile:CODEX_CONFIG(),registrations:[],configured:false,error:'REGISTRATION_PORT_UNCONFIGURED'};try{return{...nativeMcpRegistration.status(),...(nativeMcpRegistrationError?{manualReview:true,error:nativeMcpRegistrationError}:{})};}catch(error){return{configFile:CODEX_CONFIG(),registrations:[],manualReview:true,error:error.code||'REGISTRATION_RECORD_REQUIRES_REVIEW'};}}
+async function nativeMcpRegistrationRoute(req,res,url,b={}){
+  if(!nativeMcpRegistration||!localAuth?.check(req)||fromRemote()||reqCtx.getStore()?.mcpScope||req.headers.authorization!==undefined)return send(res,403,{error:'暫時 MCP 註冊僅限本機已登入使用者'});
+  await nativeMcpRegistrationReady;
+  const action=url.pathname==='/api/chatgpt/register'?'apply':url.pathname.slice('/api/chatgpt/register/'.length);
+  if(action==='status')return req.method==='GET'?send(res,200,nativeMcpRegistrationStatus()):send(res,405,{error:'method'});
+  if(req.method!=='POST')return send(res,405,{error:'method'});
+  try{
+    if(action==='preview')return send(res,200,await nativeMcpRegistration.preview(b));
+    if(action==='apply'){
+      const result=await nativeMcpRegistration.apply(b);
+      try{record('mcpregister',{}, {registrationId:result.registrationId,capabilityId:result.capabilityId,fragmentHash:result.fragmentHash,configured:true});}
+      catch{mcpCapabilities.revoke(result.capabilityId);for(const row of commandIntents.list())if(row.capId===result.capabilityId)commandIntents.cancelRun(row.run);const cleanup=await nativeMcpRegistration.cleanup({registrationId:result.registrationId}).catch(()=>({ok:false,manualReview:true}));return send(res,500,{error:'MCP 設定寫入後操作記錄失敗；已撤銷授權，請確認設定清理狀態',partial:true,registrationId:result.registrationId,grantRevoked:true,configured:cleanup.ok===true?false:null,configState:cleanup.ok===true?'restored':'unknown',manualReview:cleanup.ok!==true});}
+      return send(res,200,result);
+    }
+    if(action==='cleanup'){
+      if(b.confirm!==true||Object.keys(b).some(key=>!['registrationId','confirm'].includes(key)))return send(res,400,{error:'請確認此暫時 MCP 註冊的撤權與清理'});
+      return send(res,200,await nativeMcpRegistration.cleanup({registrationId:b.registrationId}));
+    }
+    if(action==='recover/preview'){
+      if(Object.keys(b).length!==1||typeof b.registrationId!=='string')return send(res,400,{error:'請指定已知的註冊恢復記錄'});
+      const{record}=nativeMcpRegistration.checkedRecord(b.registrationId);
+      if(record.phase!=='manual-review'||!/^[a-f0-9]{32}$/.test(record.recoveryRecordId||''))return send(res,409,{error:'沒有已知的不完整原生交易；請人工檢查，不自動採用未知檔案'});
+      const current=await nativeMcpRegistration.snapshot(record.snapshot);
+      if(current.fileFingerprint!==record.snapshot.fileFingerprint)return send(res,409,{error:'設定檔 FileID 已变更；未自動恢復'});
+      return send(res,200,{registrationId:record.id,configFile:CODEX_CONFIG(),expectedHash:current.sha256,beforeHash:record.snapshot.sha256,fileFingerprint:current.fileFingerprint,recordId:record.recoveryRecordId});
+    }
+    if(action==='recover'){
+      if(Object.keys(b).some(key=>!['registrationId','expectedHash','confirm'].includes(key)))return send(res,400,{error:'恢復確認格式無效'});
+      return send(res,200,await nativeMcpRegistration.recover(b));
+    }
+    return send(res,404,{error:'not found'});
+  }catch(error){return send(res,error.status||409,{error:error.code?'MCP 註冊：'+error.code:'MCP 註冊未完成',...(error.partial?{partial:true}:{}),...(error.registrationId?{registrationId:error.registrationId}:{}),...(error.grantRevoked===true?{grantRevoked:true}:{}),...(error.manualReview?{manualReview:true}:{}),...(error.recoveryRequired?{recoveryRequired:true}:{})});}
+}
 const MCP_BLOCK = () => `\n# Project Hub の道具（作業を読む・結果を書き戻す）。Hub を起動しておくこと\n[mcp_servers.project-hub]\ncommand = "node"\nargs = ["${path.join(__dirname, 'mcp.js')}"]\n`;
 function codexMcpStatus() {
+  if(process.platform==='win32'){const status=nativeMcpRegistrationStatus();return{...status,registered:status.registrations.some(row=>row.phase==='configured'),configExists:null};}
   let text = '';
   try { text = fs.readFileSync(CODEX_CONFIG(), 'utf8'); } catch (e) { return { registered: false, configFile: CODEX_CONFIG(), configExists: false }; }
   return { registered: /^\s*\[mcp_servers\.project-hub\]/m.test(text), configFile: CODEX_CONFIG(), configExists: true };
@@ -375,8 +442,10 @@ function baseOf(p) {
   const d = body && expandHome(body.path);
   return d && fs.existsSync(d) ? d : p.dir;
 }
-function assertWorkspaceIdle(p, t, permitChat, githubOperation = false) {
+function assertWorkspaceIdle(p, t, permitChat, githubOperation = false, workspaceFlow = null) {
   if (maintenance.locked(p.id)) {const e=Error('同じ本体で検証中です。終わってからAIを始めてください');e.status=409;throw e;}
+  const ownFlow=process.platform==='win32'&&workspaceFlow?workspaceRuntime.assertStart(p.id,t.id,workspaceFlow,workspaceReview.binding(p.id,t.id)?.dir):null;
+  if (process.platform === 'win32' && (reviewedMerge.pending(baseOf(p)) || reviewedMerge.locked(baseOf(p))&&!ownFlow || workspaceReview.pending(baseOf(p))&&!ownFlow)) {const e=Error('此 Git 儲存庫有工作流程、合併或恢復作業；請待該作業結束後再啟動 AI');e.status=409;throw e;}
   if (!githubOperation) github.assertStart(githubProject(p), { ...t, workdir: expandHome(t.workdir) });
   const canonical = dir => { try { return fs.realpathSync(dir); } catch(e) { return path.resolve(dir); } };
   const base = canonical(baseOf(p));
@@ -385,7 +454,7 @@ function assertWorkspaceIdle(p, t, permitChat, githubOperation = false) {
   if (!active.length) return;
   const all = store.listProjects();
   for (const a of active) {
-    if (permitChat && a.chat && a.project===p.id && a.task===t.id) continue;
+    if ((permitChat||ownFlow) && a.chat && a.project===p.id && a.task===t.id) continue;
     const q=all.find(x=>x.id===a.project), at=q?.tasks.find(x=>x.id===a.task); if(!q || !at)continue;
     if(canonical(baseOf(q))===base && (targetDirect || at.workspaceMode==='direct')) {
       const e=Error('同じ本体でAIが作業中です。本体での同時作業はできません');e.status=409;throw e;
@@ -402,10 +471,15 @@ function workDir(p, t) {
       const actual = fs.realpathSync(wd);
       const root = path.resolve(workRoot(p));
       const rel = path.relative(root, actual);
+      const expected = path.resolve(root, t.id);
+      const taskRel = path.relative(expected, actual);
+      const tree = gitw.repoTop(actual);
       const main = gitw.mainOf(actual), base = gitw.repoTop(baseOf(p));
       if (!rel || rel.startsWith('..' + path.sep) || rel === '..' || path.isAbsolute(rel) ||
+          taskRel === '..' || taskRel.startsWith('..' + path.sep) || path.isAbsolute(taskRel) ||
+          !tree || path.resolve(tree).toLowerCase() !== expected.toLowerCase() ||
           !main || !base || fs.realpathSync(main) !== fs.realpathSync(base)) {
-        throw new Error('Windows 版只允許在此專案的隔離 Git 工作複本執行 AI');
+        throw new Error('Windows 版只允許在此作業已登錄的隔離 Git 工作複本執行 AI');
       }
     }
     return { dir: wd };
@@ -431,13 +505,161 @@ const inWork = (p, t) => { const wd = expandHome(t.workdir); const rel = wd && p
 // 作業ファイルに作業用コピーの場所が書いてあるのに、その場所が無い（取り込んでゴミ箱へ移した後に、AI が古い内容で書き戻した時など）
 const copyMissing = (p, t) => inWork(p, t) && !fs.existsSync(expandHome(t.workdir));
 // この作業を本体に取り込んだ記録（いちばん新しいもの）
-const lastMerge = (project, task) => require('./lib/integration-log').lastMerge(LOG_FILE, project, task);
+const lastMerge = (project, task) => require('./lib/integration-log').lastMerge(LOG_FILE, project, task)
+  || (process.platform === 'win32' ? reviewedMerge.reader.receipt(project, task) : null);
+
+function reviewedMergeDescriptor(project, task) {
+  if (typeof project !== 'string' || typeof task !== 'string' || !project || !task) throw Error('請指定專案與作業');
+  const p = store.readProject(project), t = p?.tasks.find(x => x.id === task);
+  if (!p || !t) throw Error('找不到專案或作業');
+  if (require('./public/project-order').integrators(p, t, store.listProjects()).length) throw Error('請由父作業的整合流程接收此子作業成果');
+  if (t.mergeExcluded) throw Error('此作業已排除合併；請先恢復為合併對象');
+  const dir = expandHome(t.workdir) || path.join(workRoot(p), t.id);
+  const expected = path.resolve(workRoot(p), t.id), rel = path.relative(expected, dir);
+  if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) throw Error('此作業沒有有效的隔離工作複本');
+  if (fs.existsSync(dir)) {
+    const tree = gitw.repoTop(dir);
+    if (!tree || path.resolve(tree).toLowerCase() !== expected.toLowerCase()) throw Error('此作業的工作複本根目錄與作業識別不符');
+  }
+  return { project: p.id, task: t.id, title: `${t.id} ${t.title}`, taskHash: t.completionHash, dir, workRoot: workRoot(p), target: baseOf(p), forbiddenRoots: [path.resolve(__dirname, '..'), path.join(ROOT, '_hub')] };
+}
+function reviewedMergeBusy(project, task) {
+  const p = store.readProject(project); if (!p) return true;
+  if (maintenance.locked(project) || github.locked(baseOf(p))) return true;
+  const common = dir => { const top = gitw.repoTop(dir); return top && fs.realpathSync(gitw.mainOf(top) || top).toLowerCase(); };
+  const target = common(baseOf(p)); if (!target) throw Error('無法確認合併目標的 Git 儲存庫');
+  const all = store.listProjects();
+  const active = [...sessions.list().filter(x => x.running), ...[...chats.running.keys()].map(k => { const [project, task] = k.split('\u0000'); return { project, task }; }), ...procwatch.list().filter(x => x.project)];
+  if (active.some(x => { const q = all.find(p => p.id === x.project); return q && common(baseOf(q)) === target; })) return true;
+  const queue = path.join(p.dir, '.ai', 'chat', task + '.queue.json');
+  require('./lib/remove').noLinks(queue);
+  if (fs.existsSync(queue)) { const pending = JSON.parse(fs.readFileSync(queue, 'utf8')); if (!Array.isArray(pending) || pending.length) return true; }
+  return false;
+}
+const reviewedMerge = new (require('./lib/reviewed-git-service').ReviewedGitService)({ root: ROOT, resolve: reviewedMergeDescriptor, busy: reviewedMergeBusy, verifyStore: true });
+const workspaceReview = new (require('./lib/reviewed-workspace').ReviewedWorkspace)({
+  root:ROOT,
+  resolve:(project,task)=>{const p=store.readProject(project),t=p?.tasks.find(x=>x.id===task);if(!t)throw Error('找不到工作區作業');return {project,task,title:t.id+' '+t.title,taskHash:t.completionHash,base:baseOf(p),workRoot:workRoot(p),forbiddenRoots:[path.resolve(__dirname,'..'),path.join(ROOT,'_hub')]};},
+  busy:(project,task,baseInput,authority)=>{const p=store.readProject(project),t=p?.tasks.find(x=>x.id===task);if(!t)return true;const preapprovedIsolated=authority?.phase==='consume'&&authority.record?.mode==='isolated'&&authority.record.state==='ready';if(maintenance.locked(project)||maintenance.nativeBusy(project)||nativeEmpty?.nativeBusy(project)||github.locked(baseOf(p))&&!preapprovedIsolated||reviewedMerge.pending(baseOf(p))||taskTransfer.nativeBusy?.(project)||taskIntegrate.nativeBusy?.(project))return true;const base=fs.realpathSync(baseOf(p)).toLowerCase(),all=store.listProjects(),active=[...sessions.list().filter(x=>x.running),...[...chats.running.keys()].map(k=>({project:k.split('\0')[0],task:k.split('\0')[1]}))],other=procwatch.list().filter(x=>x.project);return [...active,...other].some(x=>{const q=all.find(y=>y.id===x.project),qt=q?.tasks.find(y=>y.id===x.task);return q&&fs.realpathSync(baseOf(q)).toLowerCase()===base&&(x.project===project&&x.task===task||t.workspaceMode==='direct'||qt?.workspaceMode==='direct');});}
+});
+const workspaceRuntime = new (require('./lib/workspace-runtime').WorkspaceRuntime)({review:workspaceReview,sessions,chats,store,stopExtra:(project,task)=>stopTaskCommands(project,task),onError:error=>record('workspaceclose-error',{}, {error:String(error.message).slice(0,1000)})});
+const secretSupply = new (require('./lib/secret-supply').SecretSupply)({root:ROOT,stopRun:id=>workspaceRuntime.stop(id)});
+workspaceReview.secretSupply=secretSupply;
+// Private lifecycle observation does not count as a browser watcher.
+const emitChat=chats.emit.bind(chats);
+chats.emit=(project,task,event)=>{if(process.platform==='win32'&&event.type==='busy')workspaceRuntime.observeChat(project,task);return emitChat(project,task,event);};
+
+async function nativeStartDir(p,t,{workspacePermit,kind='chat',allowExisting=false}={}){
+  if(process.platform!=='win32')return startDir(p,t,allowExisting);
+  assertNativeMutationUnlocked(p.id,{task:t.id,allowOwned:true});
+  const current=workspaceRuntime.current(p.id,t.id);
+  if(!current){await procwatch.scan();procwatch.assertKnown();assertWorkspaceIdle(p,t,allowExisting);}
+  let flow;try{flow=await workspaceRuntime.begin({project:p.id,task:t.id,permit:workspacePermit,kind,verifySource:github.locked(baseOf(p))});}catch(error){if(error.workspaceFlow){try{await failNativeWorkspace(error.workspaceFlow);}catch(cleanup){error.message+='；供應清理待覆核：'+String(cleanup.message).slice(0,500);}}throw error;}
+  try{assertNativeMutationUnlocked(p.id,{task:t.id,allowOwned:true});}catch(error){await failNativeWorkspace(flow.id);throw error;}const dir=flow.workspace.dir;
+  const beforeTask=store.readTask(store.taskFile(p.id,t.id));
+  if(beforeTask.workdir!==dir||!beforeTask.workspaceStarted)nativeTaskMetadataWrite(p.id,t.id,current=>store.updateTask(p.id,t.id,{workdir:dir,...(!current.workspaceStarted?{workspaceStarted:new Date().toISOString()}:{})}));
+  return {dir,workspaceFlow:flow.id,note:flow.workspace.mode==='direct'?'此工作流程已明確核准本體作業；Git基線与互斥鎖已建立':'此工作流程使用已核准的隔離工作複本'};
+}
+// Only synchronous controller writes may extend this run's approved task hash.
+// A lifecycle write without a receipt remains stale; it is never adopted here.
+function nativeTaskMetadataWrite(project,task,write){
+  const p=store.readProject(project),file=store.taskFile(project,task),before=store.readTask(file),taskHash=require('./lib/completion').hash;
+  const rawHash=taskHash(fs.readFileSync(file,'utf8'));
+  const flow=workspaceRuntime.current(project,task),binding=workspaceReview.metadataBinding(project,task),entry=binding&&workspaceReview.runs.get(binding.run);
+  const continuous=Boolean(flow&&binding&&binding.run===flow.workspace?.run&&before.completionHash===rawHash&&entry?.approvedTaskHash===rawHash);
+  if(github.locked(baseOf(p))&&!continuous)throw Object.assign(Error('GitHub期間作業metadata缺少連續controller收據；請先停止後重新核准'),{status:409});
+  if(continuous&&entry.taskAdvances.length>=128)throw Object.assign(Error('工作區metadata更新收據已達上限；請停止後重新核准'),{status:409});
+  const after=write(before);
+  if(continuous){
+    if(taskHash(fs.readFileSync(file,'utf8'))!==after.completionHash)throw Object.assign(Error('作業資料已寫入但實際 bytes 與收據讀取不一致；請停止後重新核准'),{status:409});
+    workspaceReview.advanceTaskMetadata({run:binding.run,project,task,beforeHash:rawHash,afterHash:after.completionHash});
+  }
+  return after;
+}
+async function failNativeWorkspace(flowId){if(process.platform!=='win32'||!flowId)return;const x=workspaceRuntime.flows.get(flowId);if(x&&!x.children.size)await workspaceRuntime.failed(x);}
+function nativeRootPin(project,task){if(process.platform!=='win32')return undefined;const b=workspaceReview.binding(project,task);if(!b?.rootFingerprint)throw Error('缺少本次已驗證工作區的根目錄 FileID');return {root:b.dir,rootFingerprint:b.rootFingerprint};}
+function workspaceFlowOf(project,task){return workspaceRuntime.current(project,task)||workspaceRuntime.flows.get(workspaceRuntime.byTask.get(workspaceRuntime.key(project,task)));}
+function nativeWorkspaceError(error,task){return {error:String(error.message||error),...(error.workspaceRequired?{workspaceRequired:true,code:'WORKSPACE_REQUIRED',project:error.project,task:error.task||task}:{}),...(task&&!error.workspaceRequired?{task}:{})};}
+
+// A bearer can request a command. Only the logged-in browser can approve it.
+const commandIntents = new (require('./lib/command-intents').CommandIntents)({
+  resolve: async (project, task, scope) => {
+    const grant = mcpCapabilities.current(scope.id, scope.run);
+    if(grant.workspaceRun)await validateWorkspaceCapability(grant);
+    if (!grant.tools.includes('hub_request_command') || grant.project !== project || grant.task !== task || !gpt.settings().work) throw Object.assign(Error('命令授權已失效'), { status: 403 });
+    const read = () => {
+      const p = store.readProject(project), t = p?.tasks.find(row => row.id === task);
+      if (!t?.workdir || t.completionHash !== scope.taskHash || path.resolve(expandHome(t.workdir)).toLowerCase() !== grant.root?.toLowerCase()) throw Object.assign(Error('命令作業範圍已變更'), { status: 409 });
+      const binding=grant.workspaceRun?workspaceReview.binding(project,task):null;
+      if (reviewedMerge.pending(baseOf(p)) || reviewedMerge.locked(baseOf(p))&&(!binding||binding.run!==grant.workspaceRun)|| taskTransfer.nativeBusy?.(project,task) || taskIntegrate.nativeBusy?.(project,task)) throw Object.assign(Error('此儲存庫正在處理交易'), {status:409});
+      return t;
+    };
+    read(); const identity = await require('./lib/scoped-file').identity(grant.root); const taskNow=read();
+    const fresh = mcpCapabilities.current(scope.id, scope.run);
+    if (fresh.rootFingerprint !== identity.rootFingerprint) throw Object.assign(Error('命令工作區識別已變更'),{status:409});
+    return {...fresh,taskHash:taskNow.completionHash};
+  },
+  record: intent => {
+    const dir=path.join(ROOT,'_hub','commands');require('./lib/safe-path').localPath(dir,{allowMissing:true});fs.mkdirSync(dir,{recursive:true});
+    const file=path.join(dir,intent.id+'.approved.json');require('./lib/safe-path').localPath(file,{allowMissing:true});
+    const {argv,result,...binding}=intent;
+    const fd=fs.openSync(file,'wx');try{fs.writeFileSync(fd,JSON.stringify({version:1,...binding,argvHash:crypto.createHash('sha256').update(JSON.stringify(argv)).digest('hex'),state:'approved'})+'\n');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+    record('commandapprove',{project:intent.project,task:intent.task,ai:'codex'},{id:intent.id,capId:intent.capId,argvHash:crypto.createHash('sha256').update(JSON.stringify(intent.argv)).digest('hex'),rootFingerprint:intent.rootFingerprint});
+  },
+  execute: (intent, identity) => {
+    if(DRY)throw Object.assign(Error('測試模式不執行命令'),{status:409});
+    const file=require('./lib/cli-platform').find('codex');if(!file)throw Object.assign(Error('找不到 Codex CLI'),{status:409});
+    return require('./lib/codex-commands').run(file,{...identity,argv:intent.argv,cwd:intent.cwd,timeoutMs:intent.timeoutMs});
+  }
+});
+gpt.commandIntents = commandIntents;
+async function validateWorkspaceCapability(scope){
+  const binding=await workspaceReview.verifiedBinding(scope.project,scope.task);
+  if(binding.run!==scope.workspaceRun||binding.rootFingerprint!==scope.rootFingerprint||path.resolve(binding.dir).toLowerCase()!==scope.root?.toLowerCase())throw Object.assign(Error('工作區執行授權已變更或結束'),{status:403});
+  const fresh=mcpCapabilities.current(scope.id,scope.runId);if(fresh.workspaceRun!==scope.workspaceRun)throw Object.assign(Error('工作區能力授權已失效'),{status:403});return binding;
+}
+gpt.validateWorkspaceScope=validateWorkspaceCapability;
+gpt.delegate = async (scope,args) => {
+  const current=()=>{const grant=mcpCapabilities.current(scope.id,scope.runId);if(!grant.tools.includes('hub_delegate')||grant.delegationModel!==args.model||grant.project!==args.project||grant.task!==args.task||!gpt.settings().work)throw Object.assign(Error('委派授權已失效'),{status:403});return grant;};
+  const grant=current(),p=store.readProject(args.project),task=p?.tasks.find(row=>row.id===args.task);
+  if(!task?.workdir||path.resolve(expandHome(task.workdir)).toLowerCase()!==grant.root?.toLowerCase())throw Object.assign(Error('委派工作目錄已變更'),{status:409});
+  assertNativeMutationUnlocked(p.id,{task:task.id,allowOwned:Boolean(grant.workspaceRun)});
+  const binding=await workspaceReview.verifiedBinding(p.id,task.id);
+  if(!binding||path.resolve(binding.dir).toLowerCase()!==grant.root.toLowerCase())throw Object.assign(Error('委派需要此作業仍有效的工作區執行授權'),{status:409});
+  const identity=await require('./lib/scoped-file').identity(grant.root);current();
+  if(identity.rootFingerprint!==grant.rootFingerprint)throw Object.assign(Error('委派工作區識別已變更'),{status:409});
+  const folder=path.join(ROOT,'_hub','delegations');require('./lib/safe-path').localPath(folder,{allowMissing:true});fs.mkdirSync(folder,{recursive:true});const file=path.join(folder,grant.id+'.json');require('./lib/safe-path').localPath(file,{allowMissing:true});
+  const fd=fs.openSync(file,'wx');try{fs.writeFileSync(fd,JSON.stringify({version:1,capId:grant.id,run:grant.runId,project:p.id,task:task.id,model:args.model,rootFingerprint:grant.rootFingerprint,textHash:crypto.createHash('sha256').update(args.text).digest('hex'),state:'authorized'})+'\n');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+  current();return delegateTask({...args,ai:'codex'});
+};
+async function stopTaskCommands(project,task){
+  mcpCapabilities.revokeTask(project,task);
+  for(const row of commandIntents.list())if(row.project===project&&row.task===task)commandIntents.cancelRun(row.run);
+  const deadline=Date.now()+25000;
+  while(commandIntents.list().some(row=>row.project===project&&row.task===task&&['validating','running','canceling'].includes(row.state))){if(Date.now()>=deadline)return{stopped:false,treeExited:false};await new Promise(resolve=>setTimeout(resolve,25));}
+  return{stopped:true,treeExited:true};
+}
+
+function assertNativeMutationUnlocked(project,{task,allowOwned=false}={}) {
+  if(process.platform!=='win32')return;
+  // Shared file references can be added by any Product while a helper awaits.
+  // Freeze controller metadata until the transfer/integration transaction exits.
+  if(taskTransfer.nativeActive?.()||taskIntegrate.nativeActive?.())throw Object.assign(Error('正在交接或整合；請待全域參考檢查與交易完成後再變更作業資料'),{status:409});
+  const operations=[...workspaceReview.operations.values()],direct=[...workspaceReview.runs.values()].filter(x=>x.record.mode==='direct').map(x=>x.record);
+  if(!reviewedMerge.active()&&!taskTransfer.nativeActive?.()&&!taskIntegrate.nativeActive?.()&&!maintenance.nativeActive()&&!nativeEmpty?.nativeActive()&&!require('./lib/rooted-move').active()&&!operations.length&&!direct.length)return;
+  const p=project?store.readProject(project):null;
+  const sameBase=(a,b)=>{if(path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase())return true;try{return reviewedMerge.reader.common(a).toLowerCase()===reviewedMerge.reader.common(b).toLowerCase();}catch{return true;}};
+  const binding=allowOwned&&p&&task?workspaceReview.binding(p.id,task):null;
+  if(!p||reviewedMerge.pending(baseOf(p))||taskTransfer.nativeBusy?.(p.id)||taskIntegrate.nativeBusy?.(p.id)||maintenance.nativeBusy(p.id)||nativeEmpty?.nativeBusy(p.id)||require('./lib/rooted-move').active()||operations.some(x=>sameBase(x.base,baseOf(p)))||direct.some(x=>sameBase(x.base,baseOf(p))&&(!binding||binding.recordId!==x.id)))throw Object.assign(Error('此儲存庫正在處理工作區或持久交易；請待該流程完成後再變更'),{status:409});
+}
 
 const taskTransfer = new (require('./lib/task-transfer').TaskTransfer)({store,removal,baseOf,
   integration:(p,t)=>gitw.integrationReceipt(baseOf(p),lastMerge(p.id,t.id),t),
   notify:(project,task,id)=>{const p=store.readProject(project);const row=p&&chat.read(p.dir,task).find(x=>x.handoff===id||x.offer===id);if(row)chats.emit(project,task,{type:'row',row});chatEnded(project,task);}
 });
 const taskIntegrate = new (require('./lib/task-integrate').TaskIntegrate)({store,transfer:taskTransfer,removal,baseOf});
+const nativeEmpty=process.platform==='win32'?new (require('./lib/empty-native').NativeEmptyCleanup)({store,removal,busy:(project,task)=>{const p=store.readProject(project);return Boolean(sessions.list().some(x=>x.running&&x.project===project&&(!task||x.task===task))||[...chats.running.keys()].some(k=>k.split('\0')[0]===project&&(!task||k.split('\0')[1]===task))||procwatch.list().some(x=>x.project===project&&(!task||!x.task||x.task===task))||p&&(github.locked(baseOf(p))||reviewedMerge.pending(baseOf(p))||taskTransfer.nativeBusy(project)||taskIntegrate.nativeBusy(project)||maintenance.nativeBusy(project)||workspaceReview.operations.size||[...workspaceReview.runs.values()].some(x=>x.record.project===project)));}}):null;
+function nativeOperationsBusy(){return process.platform==='win32'&&Boolean(commandIntents.active()||reviewedMerge.active()||taskTransfer.nativeActive()||taskIntegrate.nativeActive()||workspaceReview.active()||workspaceRuntime.flows.size||secretSupply.active()||maintenance.nativeActive()||nativeEmpty.nativeActive()||require('./lib/scoped-file').active()||require('./lib/rooted-move').active()||nativeMcpRegistration?.active());}
 
 // iPhone で開くアドレス（Tailscale の Mac の名前）。tailscale が無い・止まっている時は空。1分は覚えておく
 let tsCache = { at: 0, url: '' };
@@ -509,7 +731,67 @@ function usageWithLimit(snapshot) {
   return { ...snapshot, fableLimit: state ? { model: 'claude-fable-5-1', at: state.at, until: state.validUntil, untilSource: state.untilSource, hold: true } : null };
 }
 
+function delegateResult(status,value){if(status!==200)throw Object.assign(Error(value.error||'委派未完成'),{status});return value;}
+async function delegateTask(b){
+    const p = store.readProject(b.project);
+    const file = p && store.taskFile(b.project, b.task);
+    const text = typeof b.text === 'string' ? b.text.trim() : '';
+    const ai = b.ai === 'claude-code' ? 'claude' : b.ai;
+    if (!p || !file || !launch.AIS.includes(ai)) return delegateResult(400, { error: 'project・task・ai（codex / claude / agy）を確かめてください' });
+    if (!text || text.length > 8000) return delegateResult(400, { error: 'text は1〜8000文字' });
+    if (aiTools.isOperating()) return delegateResult(409, { error: 'AI の更新・モデル再取得が進行中です' });
+    const t = store.readTask(file);
+    const sizeNote = text.length > 1500 ? ' Hub が付ける内容を除き、差分だけにすると短くなります' : '';
+    const title = String(b.title || text.split('\n')[0]).trim().slice(0, 60) || '渡した作業';
+    if (t.state === '完了') return delegateResult(409, { error: DELEGATE_COMPLETED_ERROR });
+    // 委任先の役割は元の担当と異なることがある。親の role/model や CLI の既定へは戻さない。
+    const role = b.role && rolesData().roles.find(r => r.name === b.role);
+    if (b.role && (!role || role.main.ai !== launch.AI_KEY[ai])) return delegateResult(400, { error: 'role は指定した AI が主担当の役割を選んでください' });
+    const model = launch.modelLabel(ai, typeof b.model === 'string' ? b.model.trim() : role?.main.model || '');
+    if (!model) return delegateResult(400, { error: 'model 又は role を明示してください。例：チェックは ai: claude・model: claude-fable-5-1、書込は ai: codex・model: gpt-6.1-sol。作業は増やしていません' });
+    const invalid = modelError(ai, model);
+    if (invalid) return delegateResult(409, { error: invalid });
+    if (!launch.flagFor(ai, model)) return delegateResult(409, { error: '委任には CLI に渡すモデル名が必要です。指定なしでは起動しません' });
+    const terminalError = delegateTerminalError(p.id, t.id);
+    if (terminalError) return delegateResult(409, { error: terminalError });
+    const sourceTurn = chats.busy(p.id, t.id)?.userRow?.turn || null;
+    const busy = Boolean(chats.busy(p.id, t.id));
+    let dir,workspaceFlow;
+    try { ({ dir,workspaceFlow } = await nativeStartDir(p,t,{workspacePermit:b.workspacePermit,allowExisting:busy})); } catch (e) {if(e.workspaceRequired)throw e;return delegateResult(409,nativeWorkspaceError(e));}
+    const effort = ai === 'agy' ? '高' : roles.EFFORTS.includes(b.effort) ? b.effort : role?.main.effort || '';
+    const shown = `【渡した依頼：${title}】\n${text}`;
+    const request = { ai, model, effort, sourceTurn, workspaceFlow, role: b.role || '', requireModel: true, requiredModel: launch.flagFor(ai, model), shown, text: shown + '\n\n新しい作業・子作業を作らず、この既存作業で依頼を行い、結果をこの会話へ返してください。', perm: permCmd(ai) };
+    const enqueue = () => {
+      const item = chats.enqueue(p.id, t.id, request);
+      record('delegate', { project: p.id, task: t.id, ai }, { title, model, effort, queued: true, id: item.id, sourceTurn });
+      return delegateResult(200, { ok: true, project: p.id, task: t.id, title, model, effort, queued: true, id: item.id, queue: chats.queue(p.id, t.id).length, note: (chats.busy(p.id, t.id) ? '今の AI が終わったら、同じ作業で指定の AI が始まります。開始時に上限継続を確かめた時は Astra で始めます。この番を終えてください' : '同じ作業の順番待ちに追加しました。画面の［始める］で再開できます') + sizeNote });
+    };
+    if (busy || chats.queue(p.id, t.id).length) return enqueue();
+    const basePrompt = taskPrompt(p, t, file, dir) + ' 同じ作業で担当 AI から渡された依頼です。結果と残った課題をこの会話へ返してください。';
+    const onEnd = row => {
+      if (row.asks && row.asks.length) store.updateTask(p.id, t.id, { state: '返事待ち', question: row.asks.map(a => a.question).filter(Boolean).join(' / ').slice(0, 300) || '選んでください' });
+      chatEnded(p.id, t.id);
+      record('delegateend', { project: p.id, task: t.id, ai: row.ai }, { title, model: row.model, error: Boolean(row.error) });
+    };
+    try {
+      const stopVersion = chats.stops.get(chats.key(p.id, t.id)) || 0;
+      await refreshLimitEvidence(request);
+      if ((chats.stops.get(chats.key(p.id, t.id)) || 0) !== stopVersion) throw Error('利用上限の確認中に停止されたため、委任を開始していません');
+      const terminalError = delegateTerminalError(p.id, t.id);
+      if (terminalError) throw Error(terminalError);
+      // 状態要求を待つ間に他の依頼が始まった場合も同じ待ち順へ入れる。
+      if (chats.busy(p.id, t.id) || chats.queue(p.id, t.id).length) return enqueue();
+      const r = chats.send({ ...request, project: p.id, task: t.id, pdir: p.dir, dir, basePrompt, policy: modelPolicy(p, t), onEnd });
+      if (!(await r.started)) throw Error('AIを起動できませんでした。CLIの導入状態を確認してください。作業の状態と質問は変更していません');
+      store.updateTask(p.id, t.id, { state: '実行中', question: '' });
+      record('delegate', { project: p.id, task: t.id, ai: r.ai }, { title, model: r.model, effort: r.effort, queued: false, preflight: Boolean(r.limitSwitch?.preflight), sourceTurn, receivedTurn: r.userRow.turn });
+      return delegateResult(200, { ok: true, project: p.id, task: t.id, title, ai: r.ai, model: r.model, effort: r.effort, queued: false, resume: r.resume, note: `${r.limitSwitch?.preflight ? 'Fable上限保持中のため Astra で開始しました。' : ''}同じ作業で ${launch.AI_LABEL[r.ai]}・${r.model} が作業中です。結果もこの会話へ届きます` + sizeNote });
+    } catch (e) {await failNativeWorkspace(workspaceFlow);return delegateResult(409,nativeWorkspaceError(e));}
+  }
+
 async function api(req, res, url) {
+  if(process.platform==='win32'&&url.pathname.startsWith('/api/chatgpt/register')&&req.method==='GET')return nativeMcpRegistrationRoute(req,res,url);
+  if(process.platform==='win32'&&fromRemote()&&['/api/quit','/api/restart','/api/pick-folder','/api/chatgpt','/api/chatgpt/register','/api/ai-tools/update'].includes(url.pathname)&&req.method!=='GET')return send(res,403,{error:'此主機管理操作僅限本機已登入使用者'});
   // Mac の許可が無くて中を読めない時の知らせ（Finder が違う場所で開くのを防ぐ）
   const denied = x => { try { fs.readdirSync(fs.statSync(x).isDirectory() ? x : path.dirname(x)); return ''; } catch (e) { return ['EPERM', 'EACCES'].includes(e.code) ? 'Mac の許可が無くて開けません。設定画面の「Mac のファイルの許可」で［確認をもう一度出す］を押し、「許可」を選んでください' : ''; } };
   // 本体が台帳のフォルダ（書類フォルダの中）を読めるか。Mac の許可が本体に効いているかをアプリが確かめる
@@ -536,10 +818,14 @@ async function api(req, res, url) {
       cliFlags: Object.fromEntries(launch.AIS.map(ai => [ai, Object.fromEntries((roleData.models[launch.AI_KEY[ai]] || []).map(m => [m, launch.flagFor(ai, m)]))])),
       // github：origin の場所と今のブランチ（120秒覚えておく）。作業は作業用コピーがある物だけ（ブランチが別のため）
       projects: (all => { const kids = handoff.childCounts(all); return all.map(p => {
-        const base = baseOf(p);
-        return { ...p, children: kids[p.id], startSpec: start.lastSpec(p), copies: gitw.countCopies(workRoot(p)), githubHasOrigin: gitw.hasOrigin(base), github: gitw.remoteInfo(base), tasks: p.tasks.map(t => {
+        const base = baseOf(p),gitRead=gitw.readSummary(base);
+        return { ...p, children: kids[p.id], startSpec: start.lastSpec(p), copies: gitw.countCopies(workRoot(p)), githubHasOrigin: gitRead.hasOrigin, github: gitRead.remote, gitReadState:gitRead.state,gitReadError:gitRead.error, tasks: p.tasks.map(t => {
           const missing = copyMissing(p, t);
-          return { ...slim(t), copy: inWork(p, t) && !missing, copyMissing: missing, ...(t.workdir && !missing ? { github: gitw.remoteInfo(expandHome(t.workdir)) } : {}) };
+          const mergeRecovery = process.platform === 'win32' ? reviewedMerge.recovery(p.id, t.id) : null;
+          return { ...slim(t), copy: inWork(p, t) && !missing, copyMissing: missing,
+            ...(process.platform==='win32'?{workspaceLifecycle:workspaceRuntime.summary(p.id,t.id)}:{}),
+            ...(mergeRecovery && (!mergeRecovery.complete || missing) ? { mergeRecovery } : {}),
+            ...(t.workdir && !missing ? (()=>{const view=gitw.readSummary(expandHome(t.workdir));return {github:view.remote,gitReadState:view.state,gitReadError:view.error};})() : {}) };
         }) };
       }); })(store.listProjects()),
       sessions: sessions.list(), terminal: sessions.available(),
@@ -548,7 +834,7 @@ async function api(req, res, url) {
       efforts: roles.EFFORTS, hiddenModels: modelView.hidden(modelSettings), modelOrder: modelView.saved(modelSettings), phoneLabels: modelView.phone(modelSettings),
       unread: [...unread].map(k => { const [project, task] = k.split('\u0000'); return { project, task }; }),
       background: procwatch.list().filter(x => x.project), backgroundMonitoring: true, backgroundStatus: procwatch.status(), windowsBrowser: process.platform === 'win32',
-        remote: { enabled: process.platform === 'win32' ? false : remote.enabled() }, chatgpt: gpt.settings(), hubDir: __dirname,
+        remote: { enabled: process.platform === 'win32' ? false : remote.enabled() }, chatgpt: gpt.settings(), hubDir: __dirname, nodeExe: process.execPath,
       agyAvailable: Boolean(aiTools.find('agy') && aiTools.catalog().agy.models.some(x => x.id === launch.AGY_MODEL.id) && !launch.agyAccountError()),
     };
     // 変わっていなければ中身を送らない（304）。画面は15秒ごとに聞いてくるので、何も変わらない時はほぼ空の返事で済む
@@ -603,21 +889,29 @@ async function api(req, res, url) {
   }
   // ChatGPT の道具（mcp.js から）。X-Hub の印がある物だけ
   if (url.pathname.startsWith('/api/mcp/')) {
-    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 瀏覽器版尚不支援 ChatGPT MCP' });
     if (req.headers['x-hub'] !== '1') return send(res, 403, { error: 'forbidden' });
-    if (req.method === 'GET' && url.pathname === '/api/mcp/tools') return send(res, 200, { tools: gpt.tools(), work: gpt.settings().work });
+    const scope = reqCtx.getStore()?.mcpScope;
+    if (process.platform === 'win32' && ['/api/mcp/tools','/api/mcp/call'].includes(url.pathname) && !scope) return send(res, 403, { error: '此 MCP 呼叫需要專案及回合限定的獨立憑證' });
+    if (req.method === 'GET' && url.pathname === '/api/mcp/tools') return send(res, 200, { tools: gpt.tools(scope), work: gpt.settings().work });
     if (req.method === 'POST' && url.pathname === '/api/mcp/call') {
       const b = await readBody(req);
-      try { const r = await gpt.call(String(b.name || ''), b.arguments && typeof b.arguments === 'object' ? b.arguments : {}); return send(res, 200, { text: typeof r === 'string' ? r : JSON.stringify(r, null, 2) }); }
-      catch (e) { return send(res, e.status || 500, { error: String(e.message || e), unknown: e.status === 404 && /^その道具/.test(e.message) }); }
+      try {
+        if (!b || typeof b !== 'object' || Array.isArray(b) || Object.keys(b).some(k => !['name','arguments'].includes(k)) || typeof b.name !== 'string' || !b.arguments || typeof b.arguments !== 'object' || Array.isArray(b.arguments)) return send(res, 400, { error: 'MCP 道具呼叫格式無效' });
+        const grant = scope ? mcpCapabilities.consume({ token: req.headers.authorization.slice(7), runId: req.headers['x-hub-mcp-run'], nonce: req.headers['x-hub-mcp-nonce'], tool: b.name, arguments: b.arguments }) : null;
+        if(!['hub_list_projects','hub_list_tasks','hub_get_task','hub_get_chat','hub_read_file','hub_get_command_result'].includes(b.name))assertNativeMutationUnlocked(b.arguments.project,{task:b.arguments.task,allowOwned:Boolean(grant?.workspaceRun)});
+        const r = await gpt.call(b.name, b.arguments, grant);
+        return send(res, 200, { text: typeof r === 'string' ? r : JSON.stringify(r, null, 2) });
+      }
+      catch (e) { return send(res, e.status || 500, { error: String(e.message || e), unknown: e.status === 404 && /^その道具/.test(e.message), ...(e.partial === true ? { partial: true } : {}), ...(e.created === true ? { created: true } : {}), ...(e.overwritten===true?{overwritten:true}:{}), ...(e.recoveryRequired===true?{recoveryRequired:true}:{}), ...(e.recordId?{recordId:e.recordId}:{}) }); }
     }
-    return send(res, 404, { error: 'not found' });
+    if (!['/api/mcp/capability','/api/mcp/capability/revoke'].includes(url.pathname)) return send(res, 404, { error: 'not found' });
   }
   if (req.method === 'GET' && url.pathname === '/api/github') return send(res, 200, { ...await github.status({ fresh: url.searchParams.get('fresh') === '1' }), settings: github.settings() });
-  if (req.method === 'GET' && url.pathname === '/api/chatgpt') return send(res, 200, { ...gpt.settings(), ...codexMcpStatus() });
+  if (req.method === 'GET' && url.pathname === '/api/chatgpt') return send(res, 200, { ...gpt.settings(), ...codexMcpStatus(),...(process.platform==='win32'?{delegationModels:(rolesData().models.codex||[]).map(label=>({label,id:launch.flagFor('codex',label)})).filter(row=>row.id&&!modelError('codex',row.label))}:{}) });
+  if (req.method === 'GET' && url.pathname === '/api/commands') return send(res,200,{intents:commandIntents.list()});
   // 外から使う（iPhone）の設定
   if (req.method === 'GET' && url.pathname === '/api/remote') {
-    if (process.platform === 'win32') return send(res, 200, { enabled: false, unsupported: true, error: 'Windows 版不支援遠端連線' });
+    if (nativeRemote) return send(res,200,{...remote.status(),tls:nativeRemote.status(),url:nativeRemote.status().url||'',hint:'指定 Windows 私有網路位址與有效 HTTPS 憑證；預設關閉。'});
     const st = remote.status(); return (st.url ? Promise.resolve(st.url) : tailscaleUrl()).then(u => send(res, 200, { ...st, url: u }));
   }
   if (req.method === 'GET' && url.pathname === '/api/version') return send(res, 200, { version: VERSION, latest: readVersion() });
@@ -682,6 +976,7 @@ async function api(req, res, url) {
   if (url.pathname === '/api/task/upload') {
     const q = k => url.searchParams.get(k) || '';
     const p = store.readProject(q('project'));
+    assertNativeMutationUnlocked(q('project'));
     const file = p && store.taskFile(p.id, q('task'));
     if (!file) { req.resume(); return send(res, 400, { error: '作業が見つかりません' }); }
     let data;
@@ -689,19 +984,29 @@ async function api(req, res, url) {
     const saved = saveUpload(q('name'), data);
     store.updateTask(p.id, q('task'), { memo: `ファイルを渡した: ${saved}` });
     const ai = launch.AIS.includes(q('ai')) ? q('ai') : '';
-    const typed = ai ? sessions.write(p.id, q('task'), ai, (/\s/.test(saved) ? `"${saved}"` : saved) + ' ') : false;
+    let typed = false;
+    if (ai) {
+      if (process.platform === 'win32') { try { typed = sessions.writeView(p.id, q('task'), ai, (/\s/.test(saved) ? `"${saved}"` : saved) + ' ', { viewId: req.headers['x-hub-term-view'], lease: req.headers['x-hub-term-lease'] }); } catch (e) { if (![400,403,404,409].includes(e.status)) throw e; } }
+      else typed = sessions.write(p.id, q('task'), ai, (/\s/.test(saved) ? `"${saved}"` : saved) + ' ');
+    }
     record('upload', { project: p.id, task: q('task'), ai }, { file: saved, bytes: data.length });
     return send(res, 200, { ok: true, path: saved, typed });
   }
 
   if (url.pathname === '/api/start/image') {
     const p = store.readProject(url.searchParams.get('project'));
+    assertNativeMutationUnlocked(url.searchParams.get('project'));
     if (!p) { req.resume(); return send(res, 400, { error: 'プロジェクトがありません' }); }
     try { return send(res, 200, start.saveImage(p, url.searchParams.get('name') || 'image.png', await readRaw(req, start.MAX))); }
     catch (e) { return send(res, 400, { error: e.message }); }
   }
 
   const b = await readBody(req);
+  if(process.platform==='win32'&&url.pathname.startsWith('/api/chatgpt/register'))return nativeMcpRegistrationRoute(req,res,url,b);
+  const transactionReadRoutes=new Set(['/api/task/merge/preview','/api/task/merge','/api/task/handup/preview','/api/task/handup','/api/task/absorb','/api/task/integrate/preview','/api/task/integrate','/api/task/recovery','/api/github/owners','/api/github/preview','/api/chatgpt/prompt','/api/empty/scan','/api/empty/preview','/api/hierarchy/remove/preview','/api/hierarchy/remove/history','/api/maintenance/preview','/api/maintenance/restore/preview','/api/term/view/register','/api/term/view/heartbeat','/api/term/view/claim','/api/term/view/disconnect','/api/term/input','/api/term/resize','/api/term/stop','/api/chat/stop','/api/mcp/capability/revoke','/api/commands/cancel','/api/commands/decide','/api/quit']);
+  const workflowRoutes=['/api/task/workspace/discover','/api/task/workspace/preview','/api/task/workspace/prepare','/api/task/workspace/close','/api/chat/send','/api/delegate','/api/term/start','/api/term/handoff','/api/continue'];
+  const ownTaskDisplay=url.pathname==='/api/task'&&Object.keys(b).every(k=>['project','task','state','question','memo'].includes(k))&&typeof b.project==='string'&&typeof b.task==='string'&&['state','question','memo'].some(k=>Object.hasOwn(b,k))&&['state','question','memo'].every(k=>!Object.hasOwn(b,k)||typeof b[k]==='string');
+  if(!transactionReadRoutes.has(url.pathname)&&!workflowRoutes.includes(url.pathname))assertNativeMutationUnlocked(b.project,{task:b.task,allowOwned:(ownTaskDisplay||['/api/task/step','/api/task/read','/api/chat/note','/api/chat/approval','/api/chat/unqueue'].includes(url.pathname))&&Boolean(workspaceRuntime.current(b.project,b.task))});
   if (url.pathname === '/api/github') return send(res, 200, await github.save(b));
   if (url.pathname === '/api/github/owners') return send(res, 200, { owners: await github.owners(b.account) });
   if (url.pathname === '/api/github/preview' || url.pathname === '/api/github/create') {
@@ -714,11 +1019,22 @@ async function api(req, res, url) {
     return send(res, 200, r);
   }
   if (url.pathname === '/api/remote') {
-    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版不支援遠端連線' });
+    if(nativeRemote){
+      if(fromRemote()||!localAuth?.check(req))return send(res,403,{error:'請由本機已登入使用者設定遠端入口'});
+      if(Object.keys(b).some(k=>!['enabled','passcode'].includes(k))||b.enabled!==undefined&&typeof b.enabled!=='boolean')return send(res,400,{error:'遠端設定格式無效'});
+      if(b.enabled===true){await nativeRemote.start();try{const r=remote.update(b);if(r.error)throw Object.assign(Error(r.error),{status:400});}catch(error){await nativeRemote.stop();throw error;}}
+      else{const r=remote.update(b);if(r.error)return send(res,400,{error:r.error});if(b.enabled===false)await nativeRemote.stop();}
+      record('remote',{}, {enabled:remote.enabled(),passcode:b.passcode!==undefined});return send(res,200,{...remote.status(),tls:nativeRemote.status(),url:nativeRemote.status().url||''});
+    }
     const r = remote.update({ enabled: b.enabled, passcode: b.passcode });
     if (r.error) return send(res, 400, { error: r.error });
     record('remote', {}, { enabled: remote.enabled(), passcode: b.passcode !== undefined });
     return send(res, 200, remote.status());
+  }
+  if(['/api/remote/tls/preview','/api/remote/tls/configure'].includes(url.pathname)){
+    if(!nativeRemote||fromRemote()||!localAuth?.check(req))return send(res,403,{error:'HTTPS 設定僅限本機已登入使用者'});
+    if(remote.enabled())return send(res,409,{error:'請先關閉遠端入口，再核對新的 HTTPS 設定'});
+    return send(res,200,url.pathname.endsWith('/preview')?nativeRemote.preview(b):await nativeRemote.configure(b));
   }
   // ChatGPT に貼る文：普段の ChatGPT の会話は Mac の道具（MCP）を使えないので、作業の中身を文に入れる
   if (url.pathname === '/api/chatgpt/prompt') {
@@ -754,9 +1070,76 @@ async function api(req, res, url) {
     record('chatgptregister', {}, { file: r.file, added: r.added });
     return send(res, 200, { ...gpt.settings(), ...codexMcpStatus(), ...r });
   }
+  if (url.pathname === '/api/mcp/capability') {
+    try {
+      if (process.platform !== 'win32' || !localAuth || !localAuth.check(req) || fromRemote() || reqCtx.getStore()?.mcpScope) return send(res, 403, { error: '能力授權僅能由本機已登入的 Windows 使用者建立' });
+      if (b.confirm !== true || Object.keys(b).some(k => !['project','task','tools','confirm','expectedHash','delegationModel'].includes(k))) return send(res, 400, { error: '請確認精確的 MCP 授權範圍' });
+      const project = store.readProject(b.project), task = b.task === undefined ? null : project?.tasks.find(t => t.id === b.task);
+      if (!project || b.task !== undefined && !task) return send(res, 400, { error: '找不到 MCP 授權專案或作業' });
+      if (b.expectedHash !== (task || project).completionHash) return send(res, 409, { error: '確認期間專案或作業已變更，請重新取得授權範圍' });
+      const tools = b.tools === undefined ? READ_TOOLS : b.tools;
+      if (Array.isArray(tools) && tools.some(t=>['hub_write_file','hub_request_command','hub_delegate'].includes(t)) && !gpt.settings().work) return send(res, 403, { error: '請先由使用者開啟 MCP 檔案寫入／命令要求，再建立此作業的授權' });
+      let fileScope = {};
+      if (Array.isArray(tools) && tools.some(t => ['hub_read_file','hub_write_file','hub_request_command','hub_get_command_result','hub_delegate'].includes(t))) {
+        if (!task || !task.workdir) return send(res, 403, { error: '檔案能力授權需要指定已建立隔離工作複本的作業' });
+        const safe = require('./lib/safe-path'), policy = require('./lib/git-policy');
+        const root = safe.localPath(expandHome(task.workdir));
+        let workspaceRun;
+        const binding=workspaceReview.binding(project.id,task.id);
+        if(binding?.mode==='direct'){
+          const live=await workspaceReview.verifiedBinding(project.id,task.id);
+          if(path.resolve(live.dir).toLowerCase()!==root.toLowerCase()||safe.localPath(baseOf(project)).toLowerCase()!==root.toLowerCase())return send(res,403,{error:'本體能力授權與目前已核准的工作區不一致'});
+          workspaceRun=live.run;
+        }else{
+        const expectedTree = safe.localPath(path.join(ROOT, 'Work', project.id, task.id));
+        const rel = path.relative(expectedTree, root);
+        if (rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel)) return send(res, 403, { error: '作業的檔案根目錄不屬於此作業的工作複本' });
+        const tree = path.resolve(policy.run(root, ['rev-parse', '--show-toplevel']).trim());
+        const common = dir => path.resolve(policy.run(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trim()).toLowerCase();
+        if (tree.toLowerCase() !== expectedTree.toLowerCase() || common(tree) !== common(baseOf(project))) return send(res, 403, { error: '工作複本與此專案的 Git 儲存庫不一致' });
+        const registered = policy.run(baseOf(project), ['worktree', 'list', '--porcelain', '-z']).split('\0').filter(x => x.startsWith('worktree ')).map(x => path.resolve(x.slice(9)).toLowerCase());
+        if (!registered.includes(tree.toLowerCase())) return send(res, 403, { error: '工作複本未登錄於此專案' });
+        }
+        const identity = await require('./lib/scoped-file').identity(root);
+        const current = store.readProject(project.id)?.tasks.find(t => t.id === task.id);
+        if (!current || safe.localPath(expandHome(current.workdir)).toLowerCase() !== root.toLowerCase() || current.completionHash !== task.completionHash) return send(res, 409, { error: '建立授權期間作業或工作目錄已變更，請重新確認' });
+        fileScope = { root, rootFingerprint: identity.rootFingerprint,...(workspaceRun?{workspaceRun}: {}) };
+        if(workspaceRun){const fresh=await workspaceReview.verifiedBinding(project.id,task.id);if(fresh.run!==workspaceRun||fresh.rootFingerprint!==identity.rootFingerprint)return send(res,409,{error:'建立授權期間本體工作區流程已變更'});}
+        if(tools.includes('hub_write_file')) {
+          const journalRoot=safe.localPath(path.join(ROOT,'_hub','file-write'),{allowMissing:true});fs.mkdirSync(journalRoot,{recursive:true});
+          fileScope.journalRoot=journalRoot;fileScope.journalRootFingerprint=(await require('./lib/scoped-file').identity(journalRoot)).rootFingerprint;
+        }
+        if(tools.some(t=>['hub_request_command','hub_get_command_result'].includes(t)))fileScope.taskHash=task.completionHash;
+        const finalTask=store.readProject(project.id)?.tasks.find(t=>t.id===task.id);
+        if(!finalTask||finalTask.completionHash!==task.completionHash||path.resolve(expandHome(finalTask.workdir)).toLowerCase()!==root.toLowerCase())return send(res,409,{error:'建立授權期間作業已變更'});
+      }
+      if(Array.isArray(tools)&&tools.includes('hub_delegate')){
+        if(typeof b.delegationModel!=='string'||b.delegationModel!==launch.flagFor('codex',launch.modelLabel('codex',b.delegationModel)))return send(res,400,{error:'請選擇精確的 Codex 委派模型 ID'});
+        const invalid=modelError('codex',launch.modelLabel('codex',b.delegationModel));if(invalid)return send(res,409,{error:invalid});fileScope.delegationModel=b.delegationModel;
+      }else if(b.delegationModel!==undefined)return send(res,400,{error:'此授權沒有指定委派工具'});
+      const result = mcpCapabilities.issue({ project: project.id, ...(task ? { task: task.id } : {}), tools, runId: crypto.randomUUID(), ...fileScope });
+      try{record('mcpgrant',{project:project.id,task:task?.id},{capabilityId:result.id,runId:result.runId,tools:result.tools,expiresAt:result.expiresAt,rootFingerprint:fileScope.rootFingerprint||null});}catch(error){mcpCapabilities.revoke(result.id);throw error;}
+      return send(res, 200, result);
+    } catch (e) { return send(res, e.status || 400, { error: e.message }); }
+  }
+  if (url.pathname === '/api/mcp/capability/revoke') {
+    if (!localAuth || !localAuth.check(req) || reqCtx.getStore()?.mcpScope || b.confirm !== true || typeof b.id !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(b.id) || Object.keys(b).some(k => !['id','confirm'].includes(k))) return send(res, 403, { error: '請由已登入的使用者確認撤銷此能力授權' });
+    for(const intent of commandIntents.list())if(intent.capId===b.id)commandIntents.cancelRun(intent.run);
+    const revoked=mcpCapabilities.revoke(b.id);try{record('mcprevoke',{}, {capabilityId:b.id,revoked});}catch(error){return send(res,500,{error:'MCP 已撤銷，但持久操作記錄未完成',revoked,partial:true});}return send(res, 200, { ok: true, revoked });
+  }
+  if(url.pathname==='/api/commands/decide') {
+    if(process.platform!=='win32'||!localAuth?.check(req)||fromRemote()||reqCtx.getStore()?.mcpScope)return send(res,403,{error:'僅限本機已登入使用者核准命令'});
+    return send(res,200,await commandIntents.decide(b));
+  }
+  if(url.pathname==='/api/commands/cancel') {
+    if(!localAuth?.check(req)||b.confirm!==true||Object.keys(b).some(k=>!['id','confirm'].includes(k)))return send(res,400,{error:'請確認取消的命令'});
+    const row=commandIntents.list().find(row=>row.id===b.id);if(!row)return send(res,404,{error:'找不到命令要求'});
+    return send(res,200,commandIntents.cancel({id:row.capId,project:row.project,task:row.task,run:row.run,taskHash:row.taskHash,root:row.cwd,rootFingerprint:row.rootFingerprint},row.id));
+  }
   if (url.pathname === '/api/chatgpt') {
     if (typeof b.work !== 'boolean') return send(res, 400, { error: '形式が違います' });
     const s = gpt.save({ work: b.work }); record('chatgptwork', {}, { work: s.work });
+    if(!s.work)for(const intent of commandIntents.list())commandIntents.cancelRun(intent.run);
     return send(res, 200, s);
   }
   if (url.pathname === '/api/remote/logout-all') {
@@ -768,6 +1151,20 @@ async function api(req, res, url) {
     const p = store.readProject(b.project);
     try { if (!p) throw Error('プロジェクトがありません'); return send(res, 200, start.imageFromPath(p, b.path)); }
     catch (e) { return send(res, 400, { error: e.message }); }
+  }
+  if(url.pathname.startsWith('/api/task/workspace/')){
+    if(process.platform!=='win32')return send(res,404,{error:'此核准入口適用於 Windows Codex'});
+    const action=url.pathname.slice('/api/task/workspace/'.length),allowed={discover:['project','task'],preview:['project','task','secrets'],prepare:['project','task','token','confirm','skipHooks','ackReadLimits','ackNetworkLimits'],close:['project','task','confirm']}[action];
+    if(!allowed||!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).some(k=>!allowed.includes(k))||typeof b.project!=='string'||typeof b.task!=='string')return send(res,400,{error:'工作區請求格式無效'});
+    const p=store.readProject(b.project),t=p?.tasks.find(x=>x.id===b.task);if(!t)return send(res,404,{error:'找不到工作區作業'});
+    if(action==='close'){if(b.confirm!==true)return send(res,400,{error:'請明確確認停止此作業的 owned 程序、撤銷授權並重試機密清理'});const flow=workspaceFlowOf(p.id,t.id);if(!flow)return send(res,200,{ok:true,duplicate:true,workspaceLifecycle:null});try{const proof=await workspaceRuntime.stop(flow.id);if(!proof.stopped||!proof.treeExited)return send(res,409,{ok:false,partial:true,error:'owned 工作區程序尚未完全退出，清理與鎖保留',workspaceLifecycle:workspaceRuntime.summary(p.id,t.id)});await workspaceRuntime.finish(flow.id);return send(res,200,{ok:true,workspaceLifecycle:null});}catch{return send(res,409,{ok:false,partial:true,error:'工作區停止或清理未完成；檔案、紀錄與互斥鎖保留，請確認後重試',workspaceLifecycle:workspaceRuntime.summary(p.id,t.id)});}}
+    await procwatch.scan();procwatch.assertKnown();
+    if(action==='discover'){const d=workspaceReview.context(p.id,t.id);if(workspaceReview.busy(p.id,t.id)||workspaceReview.pending(d.base))return send(res,409,{error:'此工作區仍有執行中的流程'});const value=await workspaceReview.candidates(d.base);return send(res,200,{project:p.id,task:t.id,base:d.base,mode:t.workspaceMode==='direct'?'direct':'isolated',taskHash:d.taskHash,candidates:value.files});}
+    if(action==='preview')return send(res,200,await workspaceReview.preview(p.id,t.id,{direct:t.workspaceMode==='direct',secrets:b.secrets||[]}));
+    if(b.ackReadLimits!==true||b.ackNetworkLimits!==true||b.confirm!==true)return send(res,400,{error:'必須明確核准原生 Codex 的主機讀取／網路限制與此次工作區'});
+    const entry=workspaceReview.tokens.get(b.token);if(!entry||entry.value.project!==p.id||entry.value.task!==t.id)return send(res,409,{error:'工作區預覽已失效'});
+    record('workspaceapprove',{project:p.id,task:t.id,ai:'codex'},{mode:entry.value.mode,taskHash:entry.value.taskHash,sourceHash:entry.value.original.allContent,files:entry.value.secrets.files.map(f=>({relative:f.relative,sha256:f.sha256})),destination:'OpenAI',ackReadLimits:true,ackNetworkLimits:true,skipHooks:b.skipHooks===true});
+    const prepared=await workspaceReview.apply({project:p.id,task:t.id,token:b.token,confirm:true,skipHooks:b.skipHooks});return send(res,prepared.ok?200:409,prepared);
   }
   if (url.pathname === '/api/start') {
     const p = store.readProject(b.project), text = String(b.text || '').trim();
@@ -785,7 +1182,7 @@ async function api(req, res, url) {
     let receipt; try { receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')); } catch { /* 初回 */ }
     if (b.request && receipt?.request === b.request && receipt.result) return send(res, 200, receipt.result);
     const writeReceipt = value => { if (b.request) { fs.mkdirSync(path.dirname(receiptFile), { recursive: true }); fs.writeFileSync(receiptFile, JSON.stringify({ request: b.request, ...value })); } };
-    let t;
+    let t,workspaceFlow;
     try {
       for (const id of b.images) if (!fs.existsSync(start.imageFile(p, id))) throw Error('添付画像が見つかりません');
       // 途中で失敗しても同じ作業を再開し、重複作成を防ぐ。
@@ -794,7 +1191,7 @@ async function api(req, res, url) {
       if (t && chats.busy(p.id, t.id)) throw Error('この作業はすでに始まっています');
       t ||= store.createTask(p.id, { title: (text.split('\n')[0] || '画像を確認する').slice(0, 40), owner: agent ? ai : launch.AI_KEY[ai], role: ph?.role || '', phase: ph?.name || '' });
       writeReceipt({ task: t.id });
-      const { dir, note } = startDir(p, t);
+      const prepared=agent?startDir(p,t):await nativeStartDir(p,t,{workspacePermit:b.workspacePermit});const {dir,note}=prepared;workspaceFlow=prepared.workspaceFlow;
       const images = start.copyImages(p, b.images, dir, t.id);
       store.updateTask(p.id, t.id, { owner: agent ? ai : launch.AI_KEY[ai], ...spec });
       const prompt = start.imagePrompt(ai, text || '添付画像を確認してください。', images);
@@ -805,20 +1202,20 @@ async function api(req, res, url) {
         chat.append(p.dir, t.id, { role: 'user', to: ai, text: prompt });
       } else {
         const basePrompt = taskPrompt(p, t, file, dir);
-        const turn = { request: b.request, role: t.role, project: p.id, task: t.id, pdir: p.dir, dir, ai, ...spec, text: prompt, images, basePrompt, policy: modelPolicy(p, t), perm: permCmd(ai), onEnd: row => {
+        const turn = { request: b.request, workspaceFlow, role: t.role, project: p.id, task: t.id, pdir: p.dir, dir, ai, ...spec, text: prompt, images, basePrompt, policy: modelPolicy(p, t), perm: permCmd(ai), onEnd: row => {
           if (row.asks?.length) store.updateTask(p.id, t.id, { state: '返事待ち', question: row.asks.map(a => a.question).join(' / ').slice(0, 300) });
           chatEnded(p.id, t.id);
         } };
         if (!DRY && !(await chats.send(turn).started)) throw Error('AIを起動できませんでした。CLIの導入状態を確認してください');
         store.updateTask(p.id, t.id, { state: '実行中', question: '', memo: images.length ? '参照画像: ' + images.join(' / ') : '' });
-        if (DRY) t.turn = chat.buildTurn({ ...turn, rows: [], meta: {} });
+        if (DRY) {t.turn = chat.buildTurn({ ...turn, rows: [], meta: {} });await failNativeWorkspace(workspaceFlow);}
       }
       start.saveSpec(p, { ai, ...spec });
       record('quickstart', { project: p.id, task: t.id, ai }, { ...spec, images });
       const result = { ok: true, task: t.id, agent, note, images, ...(DRY ? { dry: true, turn: t.turn } : {}) };
       writeReceipt({ task: t.id, result });
       return send(res, 200, result);
-    } catch (e) { return send(res, 409, { error: e.message, task: t?.id }); }
+    } catch (e) {await failNativeWorkspace(workspaceFlow);return send(res,409,nativeWorkspaceError(e,t?.id));}
   }
 
   if (url.pathname === '/api/ai-tools/check') {
@@ -826,9 +1223,13 @@ async function api(req, res, url) {
     catch (e) { return send(res, e.status || 502, { error: e.reason || '更新情報の確認に失敗しました', stage: e.stage }); }
   }
   if (url.pathname === '/api/ai-tools/update' || url.pathname === '/api/ai-tools/models/refresh') {
-    if (process.platform === 'win32' && url.pathname.endsWith('/update')) return send(res, 409, { error: 'Windows 瀏覽器版請在 Hub 之外更新 Codex CLI' });
+    if(process.platform==='win32'&&url.pathname.endsWith('/update')){
+      if(b.ai!=='codex'||b.confirm!==true||typeof b.version!=='string'||typeof b.token!=='string'||Object.keys(b).some(k=>!['ai','version','token','confirm'].includes(k)))return send(res,400,{error:'請核准精確 Codex 版本與此次來源預覽'});
+      await assertFreshWindowsProcesses();
+      if(nativeOperationsBusy())return send(res,409,{error:'原生工作區、交易或命令仍在執行，請等候程序與紀錄完成'});
+    }
     try {
-      const result = url.pathname.endsWith('/update') ? await aiTools.update(b.ai) : await aiTools.refresh(b.ai);
+      const result = url.pathname.endsWith('/update') ? await aiTools.update(b.ai,process.platform==='win32'?{version:b.version,token:b.token,confirm:b.confirm}:undefined) : await aiTools.refresh(b.ai);
       applyModelCatalog();
       record(url.pathname.endsWith('/update') ? 'aiupdate' : 'aimodels', { ai: b.ai }, { added: result.models?.added ?? result.added ?? 0 });
       return send(res, 200, result);
@@ -846,20 +1247,22 @@ async function api(req, res, url) {
     const file = store.taskFile(b.project, b.task);
     if (!p || !file || !launch.AIS.includes(b.ai)) return send(res, 400, { error: '作業が見つかりません' });
     const t = store.readTask(file);
+    assertNativeMutationUnlocked(p.id,{task:t.id,allowOwned:true});
     const { model, effort } = pickSpec(t, b.ai);
     const invalidModel = modelError(b.ai, model);
     if (invalidModel) return send(res, 409, { error: invalidModel });
     const cur = sessions.get(b.project, b.task, b.ai);
-    const { dir, note } = cur && !cur.exited ? { dir: cur.dir } : startDir(p, t);
+    const { dir, note,workspaceFlow } = cur && !cur.exited ? { dir: cur.dir } : await nativeStartDir(p,t,{workspacePermit:b.workspacePermit,kind:'terminal'});
     const argv = launch.buildArgv({ ai: b.ai, prompt: taskPrompt(p, t, file, dir, 'terminal', { ai: b.ai, model }), cmd: permCmd(b.ai), model, effort });
-    if (DRY) return send(res, 200, { ok: true, dry: true, dir, model, effort, ...argv });
+    if (DRY) {await failNativeWorkspace(workspaceFlow);return send(res,200,{ok:true,dry:true,dir,model,effort,...argv});}
     try {
-      const s = sessions.start({ project: b.project, task: b.task, ai: b.ai, dir, command: argv.command, args: argv.args, cols: b.cols, rows: b.rows });
-      if(!await s.startedP)return send(res,409,{error:'終端機的 CLI 啟動失敗；請檢查終端機輸出'});
+      const s = sessions.start({ project: b.project, task: b.task, ai: b.ai, dir, command: argv.command, args: argv.args, cols: b.cols, rows: b.rows,dirPin:nativeRootPin(b.project,b.task) });
+      if(workspaceFlow)workspaceRuntime.trackTerminal(workspaceRuntime.flows.get(workspaceFlow),s);
+      if(!await s.startedP){await failNativeWorkspace(workspaceFlow);return send(res,409,{error:'終端機的 CLI 啟動失敗；請檢查終端機輸出'});}
       record('start', b, { model, effort, dir });
       return send(res, 200, { ok: true, dir, note, model, effort, running: !s.exited });
     } catch (e) {
-      return send(res, e.status || 500, { error: String(e.message || e) });
+      await failNativeWorkspace(workspaceFlow);return send(res,e.status||500,nativeWorkspaceError(e));
     }
   }
   // 交代する：前の AI の会話を「引き継ぎ資料」にまとめ、相手の AI に読ませて続けさせる
@@ -869,6 +1272,7 @@ async function api(req, res, url) {
     const file = store.taskFile(b.project, b.task);
     if (!p || !file || !launch.AIS.includes(b.to)) return send(res, 400, { error: '作業が見つかりません' });
     const t = store.readTask(file);
+    assertNativeMutationUnlocked(p.id,{task:t.id,allowOwned:true});
     const from = b.from || (b.to === 'claude' ? 'codex' : b.to === 'codex' ? 'claude' : '');
     if (!launch.AIS.includes(from) || from === b.to) return send(res, 400, { error: '交代元を指定してください' });
     const LABEL = launch.AI_LABEL;
@@ -880,7 +1284,7 @@ async function api(req, res, url) {
     }
     if (tgtLive && Date.now() - tgt.lastOut < 20000) return send(res, 409, { error: `${LABEL[b.to]} が作業中です。止まってから（入力待ちになってから）交代してください` });
     const src = sessions.get(b.project, b.task, from);
-    const { dir } = tgtLive ? { dir: tgt.dir } : startDir(p, t);
+    const { dir,workspaceFlow } = tgtLive ? { dir: tgt.dir } : await nativeStartDir(p,t,{workspacePermit:b.workspacePermit,kind:'terminal'});
     const convo = transcript.collect({ ai: from, dir: (src && src.dir) || dir, since: src ? src.started : Date.now() - 3 * 86400000, buf: src && src.buf });
     const board = path.join(p.dir, '.ai', 'board.md');
     const note = b.note ? String(b.note).replace(/[\r\n]+/g, ' ').slice(0, 300) : '';
@@ -896,13 +1300,14 @@ async function api(req, res, url) {
     } else {
       spec = pickSpec(t, b.to);
       const argv = launch.buildArgv({ ai: b.to, prompt: msg + ' ' + taskPrompt(p, t, file, dir, 'terminal', { ai: b.to, model: spec.model }), cmd: permCmd(b.to), model: spec.model, effort: spec.effort });
-      if (DRY) return send(res, 200, { ok: true, dry: true, packet: packetFile, kind: convo.kind, ...argv });
+      if (DRY) {await failNativeWorkspace(workspaceFlow);return send(res,200,{ok:true,dry:true,packet:packetFile,kind:convo.kind,...argv});}
       try {
-        const session = sessions.start({ project: b.project, task: b.task, ai: b.to, dir, command: argv.command, args: argv.args, cols: b.cols, rows: b.rows });
+        const session = sessions.start({ project: b.project, task: b.task, ai: b.to, dir, command: argv.command, args: argv.args, cols: b.cols, rows: b.rows,dirPin:nativeRootPin(b.project,b.task) });
+        if(workspaceFlow)workspaceRuntime.trackTerminal(workspaceRuntime.flows.get(workspaceFlow),session);
         if(!await session.startedP)return send(res,409,{error:'交接 CLI 未成功啟動；原作業負責人保留',packet:packetFile});
         started = true;
       }
-      catch (e) { return send(res, 500, { error: String(e.message || e), packet: packetFile }); }
+      catch (e) {await failNativeWorkspace(workspaceFlow);return send(res,500,{...nativeWorkspaceError(e),packet:packetFile});}
     }
     store.updateTask(p.id, t.id, { owner: launch.AI_KEY[b.to], memo: `${LABEL[from]} から ${LABEL[b.to]} へ交代（引き継ぎ資料: ${packetFile}）` });
     record('handoff', b, { packet: packetFile, kind: convo.kind, started });
@@ -916,6 +1321,7 @@ async function api(req, res, url) {
       const invalidModel = modelError(b.ai, String(b.value || ''));
       if (invalidModel) return send(res, 409, { error: invalidModel });
     }
+    if (process.platform === 'win32' && sessions.get(b.project, b.task, b.ai) && !sessions.get(b.project, b.task, b.ai).exited) sessions.viewController(b.project, b.task, b.ai).assertOwner({ viewId: b.viewId, lease: b.lease });
     const t = store.updateTask(b.project, b.task, { [b.field]: typeof b.value === 'string' ? b.value : '' });
     if (!t) return send(res, 400, { error: '作業が見つかりません' });
     const spec = pickSpec(t, b.ai);
@@ -924,14 +1330,30 @@ async function api(req, res, url) {
     record('switch', b, { [b.field]: spec[b.field], sent });
     return send(res, 200, { ok: true, sent, command: cmd, ...spec });
   }
+  if (url.pathname.startsWith('/api/term/view/')) {
+    if (process.platform !== 'win32') return send(res, 404, { error: '此入口適用於 Windows 終端機視窗' });
+    const action = url.pathname.slice('/api/term/view/'.length), allowed = ['project','task','ai',...(action === 'register' ? [] : ['viewId','lease']),...(action === 'claim' ? ['expectedEpoch','takeover'] : [])];
+    if (!b || typeof b !== 'object' || Array.isArray(b) || Object.keys(b).some(k => !allowed.includes(k)) || typeof b.project !== 'string' || typeof b.task !== 'string' || !launch.AIS.includes(b.ai)) return send(res, 400, { error: '終端機視窗請求格式無效' });
+    const credentials = { viewId: b.viewId, lease: b.lease };
+    let result;
+    if (action === 'register') result = sessions.registerView(b.project, b.task, b.ai);
+    else if (action === 'heartbeat') result = sessions.heartbeatView(b.project, b.task, b.ai, credentials);
+    else if (action === 'claim') result = sessions.claimView(b.project, b.task, b.ai, { ...credentials, expectedEpoch: b.expectedEpoch, takeover: b.takeover });
+    else if (action === 'disconnect') result = sessions.disconnectView(b.project, b.task, b.ai, credentials);
+    else return send(res, 404, { error: '找不到終端機視窗操作' });
+    return send(res, 200, result);
+  }
   if (url.pathname === '/api/term/input') {
-    return send(res, sessions.write(b.project, b.task, b.ai, String(b.data || '')) ? 200 : 404, { ok: true });
+    const ok = process.platform === 'win32' ? sessions.writeView(b.project, b.task, b.ai, b.data, { viewId: b.viewId, lease: b.lease }) : sessions.write(b.project, b.task, b.ai, String(b.data || ''));
+    return send(res, ok ? 200 : 404, { ok });
   }
   if (url.pathname === '/api/term/resize') {
-    return send(res, sessions.resize(b.project, b.task, b.ai, b.cols, b.rows) ? 200 : 404, { ok: true });
+    const ok = process.platform === 'win32' ? sessions.resizeView(b.project, b.task, b.ai, b.cols, b.rows, { viewId: b.viewId, lease: b.lease }) : sessions.resize(b.project, b.task, b.ai, b.cols, b.rows);
+    return send(res, ok ? 200 : 404, { ok });
   }
   if (url.pathname === '/api/term/stop') {
     record('stop', b);
+    if(process.platform==='win32'){const flow=workspaceFlowOf(b.project,b.task);if(flow?.kind==='terminal'){const proof=await workspaceRuntime.stop(flow.id);if(!proof.treeExited)return send(res,409,{error:'終端機程序樹尚未退出，工作區鎖保留'});await workspaceRuntime.finish(flow.id);return send(res,200,{ok:true});}}
     return send(res, 200, { ok: sessions.stop(b.project, b.task, b.ai) });
   }
 
@@ -944,7 +1366,12 @@ async function api(req, res, url) {
     const spec = pickSpec(t, b.ai);
     const invalidModel = modelError(b.ai, spec.model);
     if (invalidModel) return send(res, 409, { error: invalidModel });
-    const { dir } = startDir(p, t);
+    const { dir,workspaceFlow } = await nativeStartDir(p,t,{workspacePermit:b.workspacePermit,kind:'terminal'});
+    if(process.platform==='win32'){
+      const argv=launch.buildArgv({ai:b.ai,dir,prompt:taskPrompt(p,t,file,dir,'terminal',{ai:b.ai,model:spec.model}),cmd:permCmd(b.ai),...spec});
+      if(DRY){await failNativeWorkspace(workspaceFlow);return send(res,200,{ok:true,dry:true,dir,...argv});}
+      try{const s=sessions.start({project:p.id,task:t.id,ai:b.ai,dir,command:argv.command,args:argv.args,cols:b.cols,rows:b.rows,dirPin:nativeRootPin(p.id,t.id)});workspaceRuntime.trackTerminal(workspaceRuntime.flows.get(workspaceFlow),s);if(!await s.startedP)throw Error('終端機 CLI 啟動失敗');return send(res,200,{ok:true,dir,running:!s.exited,window:true});}catch(error){await failNativeWorkspace(workspaceFlow);throw error;}
+    }
     const command = launch.buildCommand({ ai: b.ai, dir, prompt: taskPrompt(p, t, file, dir, 'terminal', { ai: b.ai, model: spec.model }), cmd: permCmd(b.ai), ...spec });
     const r = await launch.openTerminal(command, DRY);
     return send(res, 200, { ok: true, dir, ...(DRY ? { command, r } : {}) });
@@ -1011,6 +1438,10 @@ async function api(req, res, url) {
   // 作業の状態・質問・メモ・モデル・思考
   // 作業用コピーの古い記録を片付ける（場所が無い時だけ。取り込み済みの後に AI が書き戻した時など）
   if (url.pathname === '/api/task/copyclear') {
+    if (process.platform === 'win32') {
+      const recovery = reviewedMerge.recovery(b.project, b.task);
+      if (recovery && !recovery.complete) return send(res, 409, { error: '此工作複本仍有未完成合併交易；請先使用恢復合併', recordId: recovery.recordId });
+    }
     const p = store.readProject(b.project), file = p && store.taskFile(b.project, b.task), t = file && store.readTask(file);
     if (!t) return send(res, 400, { error: '作業が見つかりません' });
     if (!copyMissing(p, t)) return send(res, 409, { error: '作業用コピーはまだあります（片付けるのは、場所が無い時だけ）' });
@@ -1032,10 +1463,11 @@ async function api(req, res, url) {
         if (b.workspaceMode !== undefined && b.workspaceMode !== t.workspaceMode && (t.workspaceStarted || t.state !== '未着手' || t.workdir || chats.busy(p.id,t.id) || sessions.list().some(s=>s.project===p.id && s.task===t.id && s.running))) throw Error('場所は作業開始前に選んでください。既存コピーは自動で移しません');
       } catch(e) { return send(res,409,{error:e.message}); }
     }
-    const t = store.updateTask(b.project, b.task, {
+    const update=() => store.updateTask(b.project, b.task, {
       state: str('state'), question: str('question'), owner: str('owner'), role: str('role'),
       ...context, model: str('model'), effort: str('effort'), parent: str('parent'), phase: str('phase'), via: str('via'), memo: b.memo,
     });
+    const t=process.platform==='win32'&&ownTaskDisplay&&store.taskFile(b.project,b.task)?nativeTaskMetadataWrite(b.project,b.task,update):update();
     return t ? send(res, 200, t) : send(res, 400, { error: '作業が見つかりません' });
   }
   if (url.pathname === '/api/task/completion') {
@@ -1049,7 +1481,8 @@ async function api(req, res, url) {
   }
   // 手順に印を付ける・外す
   if (url.pathname === '/api/task/step') {
-    const t = typeof b.add === 'string' ? store.addStep(b.project, b.task, b.add) : store.setStep(b.project, b.task, Number(b.index), Boolean(b.done));
+    if (typeof b.add !== 'string' && (!Number.isSafeInteger(b.index) || b.index < 0 || typeof b.done !== 'boolean')) return send(res, 400, { error: 'index 必須是非負整數，done 必須是 boolean' });
+    const t = typeof b.add === 'string' ? store.addStep(b.project, b.task, b.add) : store.setStep(b.project, b.task, b.index, b.done);
     return t ? send(res, 200, t) : send(res, 400, { error: 'その手順が見つかりません' });
   }
   if (url.pathname === '/api/phase/continue') {
@@ -1110,8 +1543,28 @@ async function api(req, res, url) {
     return send(res, 200, { ok: true, task: updated });
   }
   // 作業用コピーを本体に取り込んで片付ける
+  if (url.pathname === '/api/task/merge/preview') {
+    if (process.platform !== 'win32') return send(res, 404, { error: '此預覽入口適用於 Windows 合併流程' });
+    try {
+      await assertFreshWindowsProcesses();
+      return send(res, 200, await reviewedMerge.preview(b.project, b.task));
+    } catch (e) { return send(res, 409, { error: e.message, ...(e.recordId ? { recordId: e.recordId, partial: true } : {}) }); }
+  }
   if (url.pathname === '/api/task/merge') {
-    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 合併的預覽授權與外部程序歸屬尚未完成驗收；工作複本保持原位' });
+    if (process.platform === 'win32') {
+      let merged;
+      try {
+        await assertFreshWindowsProcesses();
+        merged = await reviewedMerge.apply({ project: b.project, task: b.task, token: b.token, confirm: b.confirm, skipHooks: b.skipHooks });
+        if (!merged?.ok) return send(res, 409, { error: merged?.error || '合併尚未完成', ...merged, ok: false });
+        const done = store.updateTask(b.project, b.task, { workdir: '', state: '完了', question: '', memo: `已合併至本體並將工作複本退避（${merged.main}；交易 ${merged.recordId}）` });
+        if (!done) throw Error('Git 已合併，但作業紀錄未能更新；請重新預覽以恢復紀錄');
+        record('merge', { project: b.project, task: b.task }, { ok: true, main: merged.main, commit: merged.commit, files: merged.files, transaction: merged.recordId });
+        return send(res, 200, { ...merged, task: done });
+      } catch (e) {
+        return send(res, 409, { error: e.message, ...(merged?.ok ? { partial: true, commit: merged.commit, recordId: merged.recordId, main: merged.main, trashed: merged.trashed } : {}), ...(e.recordId ? { recordId: e.recordId, partial: true } : {}) });
+      }
+    }
     const p = store.readProject(b.project);
     const file = store.taskFile(b.project, b.task);
     if (!p || !file) return send(res, 400, { error: '作業が見つかりません' });
@@ -1144,81 +1597,25 @@ async function api(req, res, url) {
   }
   // 成果ファイルを選び、保存と受領通知の後に子作業・派生を片付ける。
   if (url.pathname === '/api/task/handup/preview') {
-    try { return send(res, 200, taskTransfer.offerPreview(b.project, b.task, b.paths || [], b.expectTitle)); }
+    try { return send(res, 200, process.platform==='win32'?await taskTransfer.offerPreviewAsync(b.project,b.task,b.paths||[],b.expectTitle):taskTransfer.offerPreview(b.project, b.task, b.paths || [], b.expectTitle)); }
     catch (e) { return send(res, 409, {error:e.message}); }
   }
   if (url.pathname === '/api/task/handup' || url.pathname === '/api/task/absorb' && taskTransfer.read(b.project,b.task)?.destination && !taskTransfer.read(b.project,b.task)?.integrating) {
-    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版尚不支援自動移轉與清理工作複本' });
     try {
-      const r = url.pathname === '/api/task/handup' ? taskTransfer.offer(b) : taskTransfer.apply(b); if(!r.handedUp)setUnread(b.project,b.task,false);
+      if(process.platform==='win32')await assertFreshWindowsProcesses();
+      const r = process.platform==='win32'?await(url.pathname==='/api/task/handup'?taskTransfer.offerAsync(b):taskTransfer.applyAsync(b)):url.pathname === '/api/task/handup' ? taskTransfer.offer(b) : taskTransfer.apply(b); if(!r.handedUp)setUnread(b.project,b.task,false);
       record('absorb', {project:r.parentProject,task:r.parent}, {child:b.task,childProject:b.project,files:r.files,receipt:r.record});
       return send(res,200,r);
     } catch(e) { return send(res,409,{error:e.message}); }
   }
   if(url.pathname === '/api/task/integrate/preview') {
-    try{return send(res,200,taskIntegrate.preview(b.project,b.task,b.only));}catch(e){return send(res,409,{error:e.message});}
+    try{return send(res,200,process.platform==='win32'?await taskIntegrate.previewAsync(b.project,b.task,b.only):taskIntegrate.preview(b.project,b.task,b.only));}catch(e){return send(res,409,{error:e.message});}
   }
   if(['/api/task/integrate','/api/task/absorb'].includes(url.pathname)) {
-    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版尚不支援自動整合與清理工作複本' });
-    try { const r=taskIntegrate.apply(b); record('integrate',b,{ok:r.ok,complete:r.complete,conflict:r.conflict});pruneUnread();return send(res,r.conflict?409:200,r); }
+    try { if(process.platform==='win32')await assertFreshWindowsProcesses();const r=process.platform==='win32'?await taskIntegrate.applyAsync(b):taskIntegrate.apply(b); record('integrate',b,{ok:r.ok,complete:r.complete,conflict:r.conflict});pruneUnread();return send(res,r.conflict||r.ok===false?409:200,r); }
     catch(e){return send(res,409,{error:e.message});}
   }
-  if (url.pathname === '/api/delegate') {
-    const p = store.readProject(b.project);
-    const file = p && store.taskFile(b.project, b.task);
-    const text = typeof b.text === 'string' ? b.text.trim() : '';
-    const ai = b.ai === 'claude-code' ? 'claude' : b.ai;
-    if (!p || !file || !launch.AIS.includes(ai)) return send(res, 400, { error: 'project・task・ai（codex / claude / agy）を確かめてください' });
-    if (!text || text.length > 8000) return send(res, 400, { error: 'text は1〜8000文字' });
-    if (aiTools.isOperating()) return send(res, 409, { error: 'AI の更新・モデル再取得が進行中です' });
-    const t = store.readTask(file);
-    const sizeNote = text.length > 1500 ? ' Hub が付ける内容を除き、差分だけにすると短くなります' : '';
-    const title = String(b.title || text.split('\n')[0]).trim().slice(0, 60) || '渡した作業';
-    if (t.state === '完了') return send(res, 409, { error: DELEGATE_COMPLETED_ERROR });
-    // 委任先の役割は元の担当と異なることがある。親の role/model や CLI の既定へは戻さない。
-    const role = b.role && rolesData().roles.find(r => r.name === b.role);
-    if (b.role && (!role || role.main.ai !== launch.AI_KEY[ai])) return send(res, 400, { error: 'role は指定した AI が主担当の役割を選んでください' });
-    const model = launch.modelLabel(ai, typeof b.model === 'string' ? b.model.trim() : role?.main.model || '');
-    if (!model) return send(res, 400, { error: 'model 又は role を明示してください。例：チェックは ai: claude・model: claude-fable-5-1、書込は ai: codex・model: gpt-6.1-sol。作業は増やしていません' });
-    const invalid = modelError(ai, model);
-    if (invalid) return send(res, 409, { error: invalid });
-    if (!launch.flagFor(ai, model)) return send(res, 409, { error: '委任には CLI に渡すモデル名が必要です。指定なしでは起動しません' });
-    const terminalError = delegateTerminalError(p.id, t.id);
-    if (terminalError) return send(res, 409, { error: terminalError });
-    const sourceTurn = chats.busy(p.id, t.id)?.userRow?.turn || null;
-    const busy = Boolean(chats.busy(p.id, t.id));
-    let dir;
-    try { ({ dir } = startDir(p, t, busy)); } catch (e) { return send(res, 409, { error: String(e.message || e) }); }
-    const effort = ai === 'agy' ? '高' : roles.EFFORTS.includes(b.effort) ? b.effort : role?.main.effort || '';
-    const shown = `【渡した依頼：${title}】\n${text}`;
-    const request = { ai, model, effort, sourceTurn, role: b.role || '', requireModel: true, requiredModel: launch.flagFor(ai, model), shown, text: shown + '\n\n新しい作業・子作業を作らず、この既存作業で依頼を行い、結果をこの会話へ返してください。', perm: permCmd(ai) };
-    const enqueue = () => {
-      const item = chats.enqueue(p.id, t.id, request);
-      record('delegate', { project: p.id, task: t.id, ai }, { title, model, effort, queued: true, id: item.id, sourceTurn });
-      return send(res, 200, { ok: true, project: p.id, task: t.id, title, model, effort, queued: true, id: item.id, queue: chats.queue(p.id, t.id).length, note: (chats.busy(p.id, t.id) ? '今の AI が終わったら、同じ作業で指定の AI が始まります。開始時に上限継続を確かめた時は Astra で始めます。この番を終えてください' : '同じ作業の順番待ちに追加しました。画面の［始める］で再開できます') + sizeNote });
-    };
-    if (busy || chats.queue(p.id, t.id).length) return enqueue();
-    const basePrompt = taskPrompt(p, t, file, dir) + ' 同じ作業で担当 AI から渡された依頼です。結果と残った課題をこの会話へ返してください。';
-    const onEnd = row => {
-      if (row.asks && row.asks.length) store.updateTask(p.id, t.id, { state: '返事待ち', question: row.asks.map(a => a.question).filter(Boolean).join(' / ').slice(0, 300) || '選んでください' });
-      chatEnded(p.id, t.id);
-      record('delegateend', { project: p.id, task: t.id, ai: row.ai }, { title, model: row.model, error: Boolean(row.error) });
-    };
-    try {
-      const stopVersion = chats.stops.get(chats.key(p.id, t.id)) || 0;
-      await refreshLimitEvidence(request);
-      if ((chats.stops.get(chats.key(p.id, t.id)) || 0) !== stopVersion) throw Error('利用上限の確認中に停止されたため、委任を開始していません');
-      const terminalError = delegateTerminalError(p.id, t.id);
-      if (terminalError) throw Error(terminalError);
-      // 状態要求を待つ間に他の依頼が始まった場合も同じ待ち順へ入れる。
-      if (chats.busy(p.id, t.id) || chats.queue(p.id, t.id).length) return enqueue();
-      const r = chats.send({ ...request, project: p.id, task: t.id, pdir: p.dir, dir, basePrompt, policy: modelPolicy(p, t), onEnd });
-      if (!(await r.started)) throw Error('AIを起動できませんでした。CLIの導入状態を確認してください。作業の状態と質問は変更していません');
-      store.updateTask(p.id, t.id, { state: '実行中', question: '' });
-      record('delegate', { project: p.id, task: t.id, ai: r.ai }, { title, model: r.model, effort: r.effort, queued: false, preflight: Boolean(r.limitSwitch?.preflight), sourceTurn, receivedTurn: r.userRow.turn });
-      return send(res, 200, { ok: true, project: p.id, task: t.id, title, ai: r.ai, model: r.model, effort: r.effort, queued: false, resume: r.resume, note: `${r.limitSwitch?.preflight ? 'Fable上限保持中のため Astra で開始しました。' : ''}同じ作業で ${launch.AI_LABEL[r.ai]}・${r.model} が作業中です。結果もこの会話へ届きます` + sizeNote });
-    } catch (e) { return send(res, 409, { error: String(e.message || e) }); }
-  }
+  if (url.pathname === '/api/delegate') return send(res,200,await delegateTask(b));
   // 会話に「人の依頼」を残すだけ（ChatGPT アプリに貼って頼んだ時など、Hub では AI を動かさない）
   if (url.pathname === '/api/chat/note') {
     const p = store.readProject(b.project), file = p && store.taskFile(b.project, b.task);
@@ -1250,7 +1647,7 @@ async function api(req, res, url) {
     const model = launch.modelLabel(b.ai, b.model || spec.model);
     const invalidModel = modelError(b.ai, model);
     if (invalidModel) return send(res, 409, { error: invalidModel });
-    const { dir, note } = startDir(p, t, Boolean(mode));
+    const { dir, note,workspaceFlow } = await nativeStartDir(p,t,{workspacePermit:b.workspacePermit,allowExisting:Boolean(mode)});
     const effort = b.ai === 'agy' ? '高' : roles.EFFORTS.includes(b.effort) ? b.effort : spec.effort;
     const basePrompt = taskPrompt(p, t, file, dir) + ' ここは会話画面。人からの依頼に答え、区切りで作業ファイルを更新すること。';
     // 受付時の質問だけを消す。起動待ち中に来た新しい質問には触れない。
@@ -1290,7 +1687,7 @@ async function api(req, res, url) {
       }
       const r = replacement
         ? await chats.sendQueued(replacement.options)
-        : await (fromQueue ? chats.sendQueued.bind(chats) : chats.send.bind(chats))({ project: p.id, task: t.id, pdir: p.dir, dir, ai: b.ai, model, effort, role: fromQueue ? fromQueue.role || '' : t.role, limitSwitch: fromQueue?.limitSwitch, request: fromQueue?.id, requireModel: Boolean(fromQueue?.requireModel), requiredModel: fromQueue?.requiredModel, text: sendText, shown: fromQueue?.shown || text, mode: mode || (fromQueue ? 'queued' : undefined), basePrompt, policy: modelPolicy(p, t), perm: permCmd(b.ai), onEnd });
+        : await (fromQueue ? chats.sendQueued.bind(chats) : chats.send.bind(chats))({ project: p.id, task: t.id, pdir: p.dir, dir, workspaceFlow, ai: b.ai, model, effort, role: fromQueue ? fromQueue.role || '' : t.role, limitSwitch: fromQueue?.limitSwitch, request: fromQueue?.id, requireModel: Boolean(fromQueue?.requireModel), requiredModel: fromQueue?.requiredModel, text: sendText, shown: fromQueue?.shown || text, mode: mode || (fromQueue ? 'queued' : undefined), basePrompt, policy: modelPolicy(p, t), perm: permCmd(b.ai), onEnd });
       if (!(await r.started)) throw Error('AIを起動できませんでした。CLIの導入状態を確認してください。作業の状態と質問は変更していません');
       const answeredQuestion = delegated ? null : acceptAnswer();
       if (delegated) {
@@ -1303,7 +1700,7 @@ async function api(req, res, url) {
       }
       record('chat', { project: p.id, task: t.id, ai: r.ai }, { model: r.model, effort: r.effort, resume: r.resume });
       return send(res, 200, { ok: true, model: r.model, effort: r.effort, note: r.limitSwitch?.preflight ? 'Fable上限保持中のため Astra で開始しました。' : note, resume: r.resume, answeredQuestion });
-    } catch (e) { return send(res, 409, { error: String(e.message || e) }); }
+    } catch (e) {await failNativeWorkspace(workspaceFlow);return send(res,409,nativeWorkspaceError(e));}
   }
   // 未読の印を消す（画面が作業を開いた時）
   if (url.pathname === '/api/task/read') {
@@ -1323,13 +1720,14 @@ async function api(req, res, url) {
       fs.appendFileSync(log, JSON.stringify({ at: new Date().toISOString(), project: b.project, task: b.task, tokenHash: crypto.createHash('sha256').update(b.token).digest('hex'), decision: b.decision, phase: 'requested' }) + '\n');
       run.child.respond(b.token, b.decision, b.answers);
       return send(res, 200, { ok: true });
-    } catch (e) { return send(res, 409, { error: String(e.message || e) }); }
+    } catch (e) {return send(res,409,nativeWorkspaceError(e));}
   }
   if (url.pathname === '/api/chat/unqueue') {
     if (fromRemote()) record('chatunqueue', b);
     return send(res, 200, { ok: true, queue: chats.unqueue(b.project, b.task, String(b.id || '')) });
   }
   if (url.pathname === '/api/chat/stop') {
+    if(process.platform==='win32'){const flow=workspaceFlowOf(b.project,b.task);if(flow?.kind==='chat'){const proof=await workspaceRuntime.stop(flow.id);if(!proof.treeExited)return send(res,409,{error:'對話程序樹尚未退出，工作區鎖保留'});await workspaceRuntime.finish(flow.id);record('chatstop',b);return send(res,200,{ok:true});}}
     const stopping=chats.stop(b.project,b.task),ok=Boolean(stopping);
     if(stopping)await stopping;
     if (ok) record('chatstop', b);
@@ -1340,6 +1738,10 @@ async function api(req, res, url) {
   // 本体を止める（アプリが、許可のある自分から起動し直すため）。AI が動いている間は断る
   if (url.pathname === '/api/quit') {
     if (aiTools.isOperating()) return send(res, 409, { error: 'AI の更新・モデル再取得が進行中です' });
+    if(nativeOperationsBusy())return send(res,409,{error:'原生工作區或交易仍在執行／清理，請先停止並完成清理後再關閉 Hub'});
+    if (process.platform === 'win32' && commandIntents.active() > 0) return send(res, 409, { error: '命令程序尚未完全退出，請先取消命令並等待清理完成' });
+    if (process.platform === 'win32' && reviewedMerge.active() > 0) return send(res, 409, { error: 'Git 交易尚未結束，請待持久紀錄完成後再停止 Hub' });
+    if (process.platform === 'win32' && require('./lib/scoped-file').active() > 0) return send(res, 409, { error: '受限檔案作業尚未結束，請稍後再停止 Hub' });
     const busy = sessions.list().filter(x => x.running).length + chats.running.size;
     if (busy) return send(res, 409, { error: `動いている AI が ${busy} つあります` });
     record('quit', {}, { reason: String(b.reason || '') });
@@ -1348,7 +1750,12 @@ async function api(req, res, url) {
     return undefined;
   }
   if (url.pathname === '/api/restart') {
-    if (process.platform === 'win32') return send(res, 409, { error: '請待 AI 作業結束，執行 start-windows.ps1 -Stop，再執行啟動器；關閉介面會保留背景服務' });
+    if (process.platform === 'win32') {
+      if (aiTools.isOperating() || nativeOperationsBusy() || sessions.list().some(x => x.running) || chats.running.size > 0) return send(res, 409, { error: '原生工作區、AI 或交易尚未結束；未停止 Hub', notStarted: true, stage: 'busy' });
+      let result;try { result = await require('./lib/native-restart').start({ root: ROOT, hubDir: __dirname }); } catch (error) { if (error.notStarted === true) return send(res,error.status||409,{error:error.message,notStarted:true,stage:error.stage});throw error; }
+      record('restart', {}, { from: VERSION, to: readVersion(), phase: 'planned', operation: result.operation });
+      return send(res, 200, { ...result, from: VERSION, to: readVersion() });
+    }
     if (aiTools.isOperating()) return send(res, 409, { error: 'AI の更新・モデル再取得が進行中です' });
     const busy = sessions.list().filter(x => x.running).length + chats.running.size;
     if (busy) return send(res, 409, { error: `動いている AI が ${busy} つあります。止めてから（または返事が終わってから）押してください` });
@@ -1404,7 +1811,11 @@ async function api(req, res, url) {
     if (!paths.length) return send(res, 400, { error: 'ファイルが見つかりません' });
     store.updateTask(p.id, b.task, { memo: `ファイルを渡した: ${paths.join(' , ')}` });
     const ai = launch.AIS.includes(b.ai) ? b.ai : '';
-    const typed = ai ? sessions.write(p.id, b.task, ai, paths.map(x => (/\s/.test(x) ? `"${x}"` : x)).join(' ') + ' ') : false;
+    let typed = false;
+    if (ai) {
+      if (process.platform === 'win32') { try { typed = sessions.writeView(p.id, b.task, ai, paths.map(x => (/\s/.test(x) ? `"${x}"` : x)).join(' ') + ' ', { viewId: b.viewId, lease: b.lease }); } catch (e) { if (![400,403,404,409].includes(e.status)) throw e; } }
+      else typed = sessions.write(p.id, b.task, ai, paths.map(x => (/\s/.test(x) ? `"${x}"` : x)).join(' ') + ' ');
+    }
     record('upload', { project: p.id, task: b.task, ai }, { file: paths.join(' , ') });
     return send(res, 200, { ok: true, paths, typed });
   }
@@ -1421,8 +1832,15 @@ async function api(req, res, url) {
 
   // 新しいプロジェクトを始める
   // 中身の無い作業・子プロジェクトを探す／ゴミ箱へまとめて移す
-  if (url.pathname === '/api/empty/scan' || url.pathname === '/api/empty/trash') {
-    if (process.platform === 'win32' && url.pathname.endsWith('/trash')) return send(res, 409, { error: 'Windows 版尚不支援自動清理；請人工檢查工作複本與背景程序' });
+  if (url.pathname.startsWith('/api/empty/')) {
+    if(process.platform==='win32'){
+      try{let result;
+        if(url.pathname==='/api/empty/scan'){if(Object.keys(b).length)return send(res,400,{error:'空作業搜尋不接受額外參數'});return send(res,200,{ok:true,...nativeEmpty.scan(),history:await nativeEmpty.history()});}
+        if(url.pathname==='/api/empty/preview'){if(Object.keys(b).some(k=>!['items','record'].includes(k))||Boolean(b.items)===Boolean(b.record))return send(res,400,{error:'請選取精確項目或單一續作紀錄'});result=b.record?await nativeEmpty.resumePreview(b.record):await nativeEmpty.preview({items:b.items});return send(res,200,result);}
+        if(url.pathname==='/api/empty/trash'){if(Object.keys(b).some(k=>!['token','confirm'].includes(k))||b.confirm!==true||typeof b.token!=='string')return send(res,400,{error:'請預覽並明確核准本次空作業批次'});await assertFreshWindowsProcesses();result=await nativeEmpty.apply({token:b.token,confirm:true});record('emptytrash',{}, {transaction:result.id,moved:result.moved,complete:result.complete});pruneUnread();return send(res,result.ok?200:409,result);}
+        return send(res,404,{error:'not found'});
+      }catch(error){return send(res,409,{error:error.message});}
+    }
     const busy = (project, task) => sessions.list().some(x => x.running && x.project === project && x.task === task) || Boolean(chats.busy(project, task));
     if (url.pathname === '/api/empty/scan') return send(res, 200, { ok: true, items: emptyLib.scan(store, busy) });
     const r = emptyLib.trash(store, busy, Array.isArray(b.items) ? b.items : []);
@@ -1433,10 +1851,10 @@ async function api(req, res, url) {
     try {
       let result;
       if(url.pathname.endsWith('/apply')||url.pathname.endsWith('/restore'))await assertFreshWindowsProcesses();
-      if(url.pathname.endsWith('/preview')) {result=removal.preview(b.project,b.task);const blocker=windowsMutationBlocker();if(blocker)result.blockers.push(blocker);}
-      else if(url.pathname.endsWith('/apply')) {result=removal.apply(b);pruneUnread();record('remove',{}, {transaction:result.record,moved:result.moved.length});}
-      else if(url.pathname.endsWith('/restore')) {result=removal.restore(b.record,b.confirm);record('removerestore',{}, {transaction:b.record});}
-      else if(url.pathname.endsWith('/history')) result={history:removal.history()};
+      if(url.pathname.endsWith('/preview')) {result=process.platform==='win32'?await removal.previewAsync(b.project,b.task):removal.preview(b.project,b.task);const blocker=windowsMutationBlocker();if(blocker)result.blockers.push(blocker);}
+      else if(url.pathname.endsWith('/apply')) {result=process.platform==='win32'?await removal.applyAsync(b):removal.apply(b);pruneUnread();record('remove',{}, {transaction:result.record,moved:result.moved.length});}
+      else if(url.pathname.endsWith('/restore')) {result=process.platform==='win32'?await removal.restoreAsync(b.record,b.confirm):removal.restore(b.record,b.confirm);record('removerestore',{}, {transaction:b.record});}
+      else if(url.pathname.endsWith('/history')) result={history:process.platform==='win32'?await removal.historyAsync():removal.history()};
       else return send(res,404,{error:'not found'});
       return send(res,200,result);
     }catch(e){return send(res,409,{error:e.message});}
@@ -1445,9 +1863,10 @@ async function api(req, res, url) {
     try {
       let result;
       if(['/api/maintenance/apply','/api/maintenance/restore','/api/maintenance/verify'].includes(url.pathname))await assertFreshWindowsProcesses();
-      if (url.pathname === '/api/maintenance/preview') {result=maintenance.preview(b.project);const blocker=windowsMutationBlocker();if(blocker){result.busy=true;result.busyReason=blocker;}result.hostScript=process.platform==='win32';}
-      else if (url.pathname === '/api/maintenance/apply') {result=maintenance.apply(b.project,b.token,b.selected,b.confirm);record('cleanup', {project:b.project}, {transaction:result.id,moved:result.moved});}
-      else if (url.pathname === '/api/maintenance/restore') {result=maintenance.restore(b.project,b.transaction,b.confirm);record('restore',{project:b.project},{transaction:b.transaction});}
+      if (url.pathname === '/api/maintenance/preview') {result=process.platform==='win32'?await maintenance.previewAsync(b.project):maintenance.preview(b.project);const blocker=windowsMutationBlocker();if(blocker){result.busy=true;result.busyReason=blocker;}result.hostScript=process.platform==='win32';}
+      else if (url.pathname === '/api/maintenance/apply') {result=process.platform==='win32'?await maintenance.applyAsync(b.project,b.token,b.selected,b.confirm):maintenance.apply(b.project,b.token,b.selected,b.confirm);record('cleanup', {project:b.project}, {transaction:result.id,moved:result.moved,complete:result.complete});}
+      else if (url.pathname === '/api/maintenance/restore/preview'&&process.platform==='win32')result=await maintenance.restorePreviewAsync(b.project,b.transaction);
+      else if (url.pathname === '/api/maintenance/restore') {result=process.platform==='win32'?await maintenance.restoreAsync(b.project,b.transaction,b.confirm,b.token):maintenance.restore(b.project,b.transaction,b.confirm);record('restore',{project:b.project},{transaction:b.transaction});}
       else if (url.pathname === '/api/maintenance/verify') {result=await maintenance.verify(b.project,b.script,b.expectedHash,b.confirm);record('verify',{project:b.project},{ok:result.ok,script:b.script});}
       else return send(res,404,{error:'操作が見つかりません'});
       return send(res,200,result);
@@ -1549,7 +1968,8 @@ async function remoteGate(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/login') return send(res, 200, remoteLib.loginPage(), 'text/html; charset=utf-8');
   if (req.method === 'POST' && url.pathname === '/api/login') {
     let b; try { b = await readBody(req); } catch (e) { return send(res, 400, { error: '形式が違います' }); }
-    const who = remoteLib.whoOf(req), r = remote.login(b.passcode, who, req.headers['user-agent']);
+    if(!b||typeof b!=='object'||Array.isArray(b)||Object.keys(b).some(k=>k!=='passcode'))return send(res,400,{error:'登入格式無效'});
+    const who = reqCtx.getStore()?.transport==='tls' ? crypto.createHash('sha256').update(String(req.socket.remoteAddress)).digest('hex') : remoteLib.whoOf(req), r = remote.login(b.passcode, who, req.headers['user-agent']);
     record('remotelogin', {}, { ok: Boolean(r.ok), who });
     if (!r.ok) return send(res, r.status, { error: r.error });
     res.setHeader('Set-Cookie', remoteLib.sessionCookie(r.token));
@@ -1573,9 +1993,17 @@ async function remoteGate(req, res, url) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
-    if (process.platform === 'win32' && remoteLib.isRemote(req)) return send(res, 403, { error: 'Windows 版不支援遠端連線' });
+    if (process.platform === 'win32' && remoteLib.isRemote(req)) return send(res, 403, { error: 'HTTP 中繼標頭未受信任；請使用核准的 HTTPS 入口' });
     if (remoteLib.isRemote(req)) return await reqCtx.run({ remote: true }, () => remoteGate(req, res, url));
     if (!allowed(req)) return send(res, 403, { error: 'forbidden' });
+    if (process.platform === 'win32' && ['/api/mcp/tools','/api/mcp/call'].includes(url.pathname) && req.headers.authorization) {
+      let mcpScope;
+      try {
+        if (!/^Bearer [A-Za-z0-9_-]{43}$/.test(req.headers.authorization)) return send(res, 403, { error: 'MCP 能力憑證無效' });
+        mcpScope = mcpCapabilities.inspect(req.headers.authorization.slice(7), req.headers['x-hub-mcp-run']);
+      } catch { return send(res, 403, { error: 'MCP 能力憑證無效、已撤銷或已到期' }); }
+      return await reqCtx.run({ mcpScope }, () => api(req, res, url));
+    }
     if (localAuth) {
       if(req.method==='GET'&&url.pathname==='/api/local/proof') {
         try {return send(res,200,{proof:localAuth.proof(url.searchParams.get('challenge'))});}
@@ -1593,11 +2021,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== 'GET') return send(res, 405, { error: 'method' });
     return serveStatic(res, url.pathname);
   } catch (e) {
-    return send(res, e.status || 500, { error: String(e.message || e) });
+    return send(res,e.status||500,nativeWorkspaceError(e));
   }
 });
 
-function shutdown() { procwatch.stop(); sessions.stopAll(); chats.stopAll(); server.close(); process.exit(0); }
+function shutdown() { procwatch.stop(); sessions.stopAll(); chats.stopAll(); server.close();void nativeRemote?.stop(); process.exit(0); }
 
 if (require.main === module) {
   if (process.platform === 'win32' && !localAuth) {
@@ -1617,9 +2045,10 @@ if (require.main === module) {
     console.log(sessions.available() ? '作業画面: 使えます' : '作業画面: 部品（node-pty）が未設定。setup.sh を実行してください');
     console.log('止める時は、この窓で Control + C');
     if (!DRY) procwatch.start();
+    if(nativeRemote&&remote.enabled())void nativeRemote.start().catch(()=>console.error('已保存的 HTTPS 入口未能啟動；本機 Hub 仍可使用，請由本機檢查設定。'));
   });
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
 
-module.exports = { server, PORT, sessions, taskPrompt };
+module.exports = { server, PORT, sessions, taskPrompt, nativeRemote, workspaceReview, workspaceRuntime };

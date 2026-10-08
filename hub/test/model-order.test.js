@@ -41,11 +41,12 @@ test('保存失敗は元ファイルと非表示を保持し、一時ファイ�
   fs.writeFileSync(file,'{broken');assert.deepEqual(view.saved(),[]);assert.throws(()=>view.setHidden('codex','Sol',true));assert.equal(fs.readFileSync(file,'utf8'),'{broken');
 });
 test('並べ替え前後でfake CLIが受け取る --model と思考は同一',t=>{
-  const {file,view}=fixture(t), fake=path.join(path.dirname(file),'fake-codex');
-  fs.writeFileSync(fake,`#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify(process.argv.slice(2))));\n`,{mode:0o700});
+  const {file,view}=fixture(t), fake=require('./helpers/portable-cli').install(path.dirname(file),`process.stdin.resume();process.stdin.on('end',()=>process.stdout.write(JSON.stringify(process.argv.slice(2))));\n`,'codex');
   const {buildTurn}=require('../lib/chat'),{spawnSync}=require('node:child_process');
-  const pick={ai:'codex',model:'GPT-6.1-Sol',effort:'極高',meta:{},rows:[],text:'隔離見本',perm:'./fake-codex'};
-  const receive=()=>{const turn=buildTurn(pick),r=spawnSync(turn.command,turn.args,{cwd:path.dirname(file),input:turn.stdin,encoding:'utf8'});assert.equal(r.status,0,r.error?.message||r.stderr);return JSON.parse(r.stdout);};
+  const pick={ai:'codex',model:'GPT-6.1-Sol',effort:'極高',meta:{},rows:[],text:'隔離見本',perm:fake.command};
+  // This tests buildTurn argument preservation; Windows ChatRunner separately
+  // tests the app-server protocol. Resolve the fixture through the real resolver.
+  const receive=()=>{const turn=buildTurn(pick),command=require('../lib/cli-platform').resolve(turn.command,turn.args,fake.env.PATH),r=spawnSync(command.file,command.args,{cwd:path.dirname(file),env:{...process.env,...fake.env},input:turn.stdin,encoding:'utf8'});assert.equal(r.status,0,r.error?.message||r.stderr);return JSON.parse(r.stdout);};
   const before=receive();view.setOrder(mixed,defaults,models);const after=receive();
   assert.deepEqual(after,before);assert.equal(after[after.indexOf('--model')+1],'gpt-6.1-sol');assert.ok(after.includes('model_reasoning_effort=xhigh'));
 });

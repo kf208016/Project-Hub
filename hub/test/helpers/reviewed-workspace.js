@@ -1,0 +1,7 @@
+'use strict';
+const assert=require('node:assert/strict');
+// Fixture actor only: deliberately confirms the disclosed local synthetic
+// scope and the real native CLI limitations. Never substitutes for browser UI.
+async function prepareFixtureWorkspace(post,{project,task,secrets=[]}){const scope={project,task},response=await post('/api/task/workspace/preview',{...scope,secrets});assert.equal(response.status,200,await response.clone().text());const preview=await response.json(),ready=await post('/api/task/workspace/prepare',{...scope,token:preview.token,confirm:true,ackReadLimits:true,ackNetworkLimits:true,skipHooks:Boolean(preview.execution?.hooks?.length)});assert.equal(ready.status,200,await ready.clone().text());const value=await ready.json();assert.equal(value.ok,true,value.error);return value;}
+async function startReviewedFixture(post,route,body,{secrets=[]}={}){const first=await post(route,body);if(process.platform!=='win32'||first.status!==409)return first;const required=await first.clone().json();if(required.code!=='WORKSPACE_REQUIRED'||required.workspaceRequired!==true)return first;assert.equal(required.project,body.project);if(body.task)assert.equal(required.task,body.task);const ready=await prepareFixtureWorkspace(post,{project:required.project,task:required.task,secrets});return post(route,{...body,task:required.task,workspacePermit:ready.permit});}
+module.exports={prepareFixtureWorkspace,startReviewedFixture};

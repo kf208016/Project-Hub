@@ -42,13 +42,14 @@ test('前置きは基点1回・全文を必要時参照、意味を保持して4
   assert.ok(after <= before * .6, `${after}/${before}`);
   assert.ok(copyText.length <= baseline.copyPrompt.length * .6, `${copyText.length}/${baseline.copyPrompt.length}`);
   assert.match(copyText, /作業用コピー.*本体には触らない/);
-  for (const word of ['司令塔＝Claude Code・Fable 5.1', '調査＝', 'デザイン＝', '画像生成＝', 'コーディング＝', 'チェック＝', '文章＝', 'claude-opus-4-6 などの古いモデルは使わない', '裏で起動しない', 'model欄は必須', '新しいプロジェクト', 'やっていない手順に [x]', 'workdir・state・question', '書き換えない', '自分で担当を変えない', '台帳/.ai/chat/existing.rules.md']) assert.ok(text.includes(word), word);
+  for (const word of ['司令塔＝Claude Code・Fable 5.1', '調査＝', 'デザイン＝', '画像生成＝', 'コーディング＝', 'チェック＝', '文章＝', 'claude-opus-4-6 などの古いモデルは使わない', ...(process.platform==='win32'?['hub_delegate','同作業','一次','model 必須符合','不要自行啟動 CLI','無憑證 curl']:['裏で起動しない','model欄は必須']), '新しいプロジェクト', 'やっていない手順に [x]', 'workdir・state・question', '書き換えない', '自分で担当を変えない', '台帳/.ai/chat/existing.rules.md']) assert.ok(text.includes(word), word);
   assert.equal(text.split('台帳=').length - 1, 1);
   assert.equal(text.split(dir).length - 1, 1); // 台帳の絶対パスは1回、cwdは台帳から参照
   const full = fs.readFileSync(path.join(dir, '.ai/chat/existing.rules.md'), 'utf8');
-  for (const word of ['## 委任', '## 委任の定型', '## 問題点', '## 操作案内', 'curl -s -X POST', 'createHash(\'sha256\').update(text, \'utf8\').digest(\'hex\').slice(0, 16)', '30字まで', '50字まで', '確認待ち', '原文は消さない', 'ボタン名の無い停止', '実装→チェック', 'チェック→報告']) {
+  for (const word of ['## 委任', '## 委任の定型', '## 問題点', '## 操作案内', ...(process.platform==='win32'?['hub_delegate','原生 Windows 僅執行 Codex','已授權','檢查→回報']:['curl -s -X POST','実装→チェック','チェック→報告']), 'createHash(\'sha256\').update(text, \'utf8\').digest(\'hex\').slice(0, 16)', '30字まで', '50字まで', '確認待ち', '原文は消さない', 'ボタン名の無い停止']) {
     assert.ok(full.includes(word), word);
   }
+  if(process.platform==='win32')assert.doesNotMatch(full,/curl -s -X POST.*api\/delegate/);
   const mtime = fs.statSync(path.join(dir, '.ai/chat/existing.rules.md')).mtimeMs;
   prompt(); assert.equal(fs.statSync(path.join(dir, '.ai/chat/existing.rules.md')).mtimeMs, mtime);
 });
