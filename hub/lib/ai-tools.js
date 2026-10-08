@@ -7,6 +7,7 @@ const { execFile, spawn } = require('child_process');
 
 const { AIS, AI_LABEL, AGY_MODEL, childEnv, agyAccountError } = require('./launch');
 const { latestVersion, newer } = require('./update-check');
+const cli = require('./cli-platform');
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/;
 const MAX_OUTPUT = 5 * 1024 * 1024;
 
@@ -20,7 +21,9 @@ function toolError(status, stage, reason) {
 
 function runFile(file, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    execFile(file, args, { timeout: opts.timeout || 30000, maxBuffer: MAX_OUTPUT, env: childEnv(path.basename(file) === 'agy' ? 'agy' : '', process.env) }, (err, stdout, stderr) => {
+    let command;
+    try { command = cli.invocation(file, args); } catch (e) { return reject(e); }
+    execFile(command.file, command.args, { timeout: opts.timeout || 30000, maxBuffer: MAX_OUTPUT, env: childEnv(path.basename(file) === 'agy' ? 'agy' : '', process.env) }, (err, stdout, stderr) => {
       if (err) return reject(err); // stdout/stderr には認証情報が入り得るので外へ出さない
       resolve(String(stdout || ''));
     });
@@ -37,12 +40,7 @@ const foundAt = new Map();
 function executable(name) {
   const hit = foundAt.get(name);
   if (hit && Date.now() - hit.at < 30000) return hit.file;
-  let file = '';
-  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
-    if (!dir) continue;
-    const f = path.join(dir, name);
-    try { fs.accessSync(f, fs.constants.X_OK); file = f; break; } catch (e) { /* 次へ */ }
-  }
+  const file = cli.find(name);
   foundAt.set(name, { file, at: Date.now() });
   return file;
 }

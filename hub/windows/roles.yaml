@@ -1,0 +1,9 @@
+# Windows browser edition: Codex runs only in an isolated Git worktree.
+# The server enforces sandbox and approval policy independently of this file.
+models:
+  codex: [GPT-6.1-Sol]
+  claude-code: []
+agents: []
+roles: {}
+permissions:
+  codex: codex

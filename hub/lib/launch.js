@@ -34,7 +34,7 @@ function childEnv(ai, env) {
 
 const DEFAULT_CMD = {
   claude: 'claude --dangerously-skip-permissions',
-  codex: 'codex --dangerously-bypass-approvals-and-sandbox',
+  codex: process.platform === 'win32' ? 'codex' : 'codex --dangerously-bypass-approvals-and-sandbox',
   agy: 'agy --dangerously-skip-permissions',
 };
 
@@ -134,6 +134,7 @@ function buildArgv({ ai, prompt, cmd, model, effort }) {
   const base = (cmd || DEFAULT_CMD[ai] || '').trim().split(/\s+/).filter(Boolean);
   if (!base.length || !['claude', 'codex'].includes(ai)) throw new Error('unknown ai');
   const args = base.slice(1);
+  if (ai === 'codex' && process.platform === 'win32') args.push('-a', 'never', '-s', 'workspace-write');
   const m = flagFor(ai, model);
   const e = effort && EFFORT_FLAG[ai][effort];
   if (ai === 'claude') {
@@ -156,15 +157,27 @@ function run(file, args, dry) {
 }
 
 function openTerminal(command, dry) {
+  if (process.platform === 'win32') {
+    const e = new Error('Windows 瀏覽器版請使用畫面中的 Codex 會話；尚不支援另開終端機');
+    e.status = 409;
+    return Promise.reject(e);
+  }
   return run('osascript', [
     '-e', `tell application "Terminal" to do script "${as(command)}"`,
     '-e', 'tell application "Terminal" to activate',
   ], dry);
 }
 
-function openFolder(p, dry) { return run('open', [p], dry); }
+function openFolder(p, dry) { return process.platform === 'win32' ? run('explorer.exe', [p], dry) : run('open', [p], dry); }
 // ファイルは Finder でその場所を開いて選ぶ。URL は Mac の既定のブラウザで開く
-function revealFile(p, dry) { return run('open', ['-R', p], dry); }
-function openUrl(u, dry) { return run('open', [u], dry); }
+function revealFile(p, dry) { return process.platform === 'win32' ? run('explorer.exe', [`/select,${p}`], dry) : run('open', ['-R', p], dry); }
+function openUrl(u, dry) {
+  if (process.platform === 'win32') {
+    const parsed = new URL(u);
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('unsupported URL protocol');
+    return run('explorer.exe', [parsed.href], dry);
+  }
+  return run('open', [u], dry);
+}
 
 module.exports = { AIS, AI_KEY, AI_LABEL, AGY_MODEL, agyAccountError, childEnv, buildCommand, buildArgv, openTerminal, openFolder, revealFile, openUrl, sq, DEFAULT_CMD, CODEX_CONTEXT_ARGS, CONTEXT_RULE, MODEL_FLAG, EFFORT_FLAG, SWITCH_CMD, switchCommand, flagFor, modelLabel, startupInfo, setOverrides, getOverrides, setDiscoveredModels };

@@ -18,6 +18,7 @@ const { AiTools } = require('./lib/ai-tools');
 const { Usage } = require('./lib/usage');
 const { LimitEvidence } = require('./lib/limit-evidence');
 const remoteLib = require('./lib/remote');
+const localAuthLib = require('./lib/local-auth');
 const { guidance } = require('./lib/guidance');
 const instructions = require('./lib/instructions');
 const { AsyncLocalStorage } = require('async_hooks');
@@ -25,6 +26,9 @@ const { AsyncLocalStorage } = require('async_hooks');
 const PORT = Number(process.env.HUB_PORT || 4545);
 const ROOT = expandHome(process.env.HUB_ROOT || path.join(os.homedir(), 'Documents', 'AI-Workspace'));
 const DRY = process.env.HUB_DRY_RUN === '1'; // テスト用：実際には起動しない
+const LOCAL_TOKEN = process.env.HUB_LOCAL_TOKEN || '';
+delete process.env.HUB_LOCAL_TOKEN; // Never pass the browser credential to an AI child process.
+const localAuth = LOCAL_TOKEN ? localAuthLib.create(LOCAL_TOKEN) : null;
 const limitEvidence = new LimitEvidence(path.join(ROOT, '_hub', 'limits.json'));
 const usage = new Usage({ dry: DRY, observe: snapshot => {
   try { limitEvidence.observe(snapshot); } catch { /* 保存失敗では直前の保持状態を維持 */ }
@@ -316,6 +320,13 @@ const github = require('./lib/github').createGithub({ settingsFile: path.join(RO
 });
 const githubProject = p => ({ ...p, base: baseOf(p) });
 function permCmd(ai) {
+  // Windows browser edition currently supports Codex with the CLI's own
+  // approval and sandbox defaults. Existing Mac roles.yaml files may contain
+  // bypass flags; they must never be inherited on Windows.
+  if (process.platform === 'win32') {
+    if (ai !== 'codex') throw Error('Windows 版目前只支援 Codex CLI');
+    return 'codex';
+  }
   const p = rolesData().permissions || {};
   if (ai === 'agy') return launch.DEFAULT_CMD.agy;
   const v = p[launch.AI_KEY[ai]];
@@ -335,6 +346,7 @@ function pickSpec(task, ai) {
 }
 
 function modelError(ai, model) {
+  if (process.platform === 'win32' && ai !== 'codex') return 'Windows 版目前只支援 Codex CLI';
   model = launch.modelLabel(ai, model);
   if (ai === 'agy') {
     const route = launch.agyAccountError();
@@ -374,7 +386,19 @@ function assertWorkspaceIdle(p, t, permitChat, githubOperation = false) {
 }
 function workDir(p, t) {
   const wd = expandHome(t.workdir);
-  if (wd && fs.existsSync(wd)) return { dir: wd };
+  if (wd && fs.existsSync(wd)) {
+    if (process.platform === 'win32') {
+      const actual = fs.realpathSync(wd);
+      const root = path.resolve(workRoot(p));
+      const rel = path.relative(root, actual);
+      const main = gitw.mainOf(actual), base = gitw.repoTop(baseOf(p));
+      if (!rel || rel.startsWith('..' + path.sep) || rel === '..' || path.isAbsolute(rel) ||
+          !main || !base || fs.realpathSync(main) !== fs.realpathSync(base)) {
+        throw new Error('Windows 版只允許在此專案的隔離 Git 工作複本執行 AI');
+      }
+    }
+    return { dir: wd };
+  }
   const base = baseOf(p);
   if (DRY) return { dir: base };
   try {
@@ -382,6 +406,7 @@ function workDir(p, t) {
     if (r.worktree) store.updateTask(p.id, t.id, { workdir: r.dir });
     return r;
   } catch (e) {
+    if (process.platform === 'win32') throw e; // Never fall back to the project root.
     return { dir: base, note: `作業用コピーを作れなかったため、本体で作業します（${String(e.message || e).split('\n')[0]}）` };
   }
 }
@@ -511,8 +536,8 @@ async function api(req, res, url) {
       initialPick, initialPickError: modelError(initialPick.ai, initialPick.model),
       efforts: roles.EFFORTS, hiddenModels: modelView.hidden(modelSettings), modelOrder: modelView.saved(modelSettings), phoneLabels: modelView.phone(modelSettings),
       unread: [...unread].map(k => { const [project, task] = k.split('\u0000'); return { project, task }; }),
-      background: procwatch.list().filter(x => x.project),
-      remote: { enabled: remote.enabled() }, chatgpt: gpt.settings(), hubDir: __dirname,
+      background: procwatch.list().filter(x => x.project), backgroundMonitoring: process.platform !== 'win32', windowsBrowser: process.platform === 'win32',
+        remote: { enabled: process.platform === 'win32' ? false : remote.enabled() }, chatgpt: gpt.settings(), hubDir: __dirname,
       agyAvailable: Boolean(aiTools.find('agy') && aiTools.catalog().agy.models.some(x => x.id === launch.AGY_MODEL.id) && !launch.agyAccountError()),
     };
     // 変わっていなければ中身を送らない（304）。画面は15秒ごとに聞いてくるので、何も変わらない時はほぼ空の返事で済む
@@ -525,7 +550,7 @@ async function api(req, res, url) {
     return res.end(body);
   }
   // 裏で動いている AI の全部（どのプロジェクトにも当たらない物も含む）
-  if (req.method === 'GET' && url.pathname === '/api/background') return send(res, 200, { items: procwatch.list() });
+  if (req.method === 'GET' && url.pathname === '/api/background') return send(res, 200, { items: procwatch.list(), supported: process.platform !== 'win32' });
   if (req.method === 'GET' && url.pathname === '/api/ai-tools') {
     const status = await aiTools.status();
     applyModelCatalog();
@@ -567,6 +592,7 @@ async function api(req, res, url) {
   }
   // ChatGPT の道具（mcp.js から）。X-Hub の印がある物だけ
   if (url.pathname.startsWith('/api/mcp/')) {
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 瀏覽器版尚不支援 ChatGPT MCP' });
     if (req.headers['x-hub'] !== '1') return send(res, 403, { error: 'forbidden' });
     if (req.method === 'GET' && url.pathname === '/api/mcp/tools') return send(res, 200, { tools: gpt.tools(), work: gpt.settings().work });
     if (req.method === 'POST' && url.pathname === '/api/mcp/call') {
@@ -579,7 +605,10 @@ async function api(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/github') return send(res, 200, { ...await github.status({ fresh: url.searchParams.get('fresh') === '1' }), settings: github.settings() });
   if (req.method === 'GET' && url.pathname === '/api/chatgpt') return send(res, 200, { ...gpt.settings(), ...codexMcpStatus() });
   // 外から使う（iPhone）の設定
-  if (req.method === 'GET' && url.pathname === '/api/remote') { const st = remote.status(); return (st.url ? Promise.resolve(st.url) : tailscaleUrl()).then(u => send(res, 200, { ...st, url: u })); }
+  if (req.method === 'GET' && url.pathname === '/api/remote') {
+    if (process.platform === 'win32') return send(res, 200, { enabled: false, unsupported: true, error: 'Windows 版不支援遠端連線' });
+    const st = remote.status(); return (st.url ? Promise.resolve(st.url) : tailscaleUrl()).then(u => send(res, 200, { ...st, url: u }));
+  }
   if (req.method === 'GET' && url.pathname === '/api/version') return send(res, 200, { version: VERSION, latest: readVersion() });
   if (req.method === 'GET' && url.pathname === '/api/changelog') return send(res, 200, changelog(12));
   if (req.method === 'GET' && url.pathname === '/api/sessions') return send(res, 200, sessions.list());
@@ -674,6 +703,7 @@ async function api(req, res, url) {
     return send(res, 200, r);
   }
   if (url.pathname === '/api/remote') {
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版不支援遠端連線' });
     const r = remote.update({ enabled: b.enabled, passcode: b.passcode });
     if (r.error) return send(res, 400, { error: r.error });
     record('remote', {}, { enabled: remote.enabled(), passcode: b.passcode !== undefined });
@@ -707,6 +737,7 @@ async function api(req, res, url) {
   }
   // ChatGPT アプリ（中身は Codex）に Hub の道具を登録する：~/.codex/config.toml に [mcp_servers.project-hub] を書き足す
   if (url.pathname === '/api/chatgpt/register') {
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 瀏覽器版尚不支援 ChatGPT MCP 註冊' });
     const r = codexMcpRegister();
     if (r.error) return send(res, 400, { error: r.error });
     record('chatgptregister', {}, { file: r.file, added: r.added });
@@ -784,6 +815,7 @@ async function api(req, res, url) {
     catch (e) { return send(res, e.status || 502, { error: e.reason || '更新情報の確認に失敗しました', stage: e.stage }); }
   }
   if (url.pathname === '/api/ai-tools/update' || url.pathname === '/api/ai-tools/models/refresh') {
+    if (process.platform === 'win32' && url.pathname.endsWith('/update')) return send(res, 409, { error: 'Windows 瀏覽器版請在 Hub 之外更新 Codex CLI' });
     try {
       const result = url.pathname.endsWith('/update') ? await aiTools.update(b.ai) : await aiTools.refresh(b.ai);
       applyModelCatalog();
@@ -926,8 +958,9 @@ async function api(req, res, url) {
     const t = f ? store.readTask(f) : null;
     const bases = [t && expandHome(t.workdir), p && baseOf(p), p && p.dir, ROOT].filter(Boolean);
     const list = raw.startsWith('~') || path.isAbsolute(raw) ? [expandHome(raw)] : bases.map(d => path.join(d, raw));
-    const home = [os.homedir(), ROOT].map(d => path.resolve(d));
-    const target = list.map(x => path.resolve(x)).find(x => home.some(h => x === h || x.startsWith(h + path.sep)) && fs.existsSync(x));
+    const home = [os.homedir(), ROOT].map(d => fs.realpathSync(d));
+    const within = x => home.some(h => x === h || x.startsWith(h + path.sep));
+    const target = list.map(x => { try { return fs.realpathSync(x); } catch { return ''; } }).find(within);
     if (!target) return send(res, 404, { error: `見つかりません：${raw}` });
     if (denied(target)) return send(res, 403, { error: denied(target) });
     const isDir = fs.statSync(target).isDirectory();
@@ -938,11 +971,11 @@ async function api(req, res, url) {
       let entries = [];
       try {
         entries = fs.readdirSync(target, { withFileTypes: true }).filter(d => !d.name.startsWith('.')).slice(0, 500)
-          .map(d => { const full = path.join(target, d.name); let st = null; try { st = fs.statSync(full); } catch (e) { /* 読めない物 */ } return { name: d.name, path: full, dir: st ? st.isDirectory() : d.isDirectory(), size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0 }; })
+          .map(d => { const full = path.join(target, d.name); let st = null; try { if (within(fs.realpathSync(full))) st = fs.statSync(full); } catch (e) { /* 読めない物 */ } return st ? { name: d.name, path: full, dir: st.isDirectory(), size: st.size, mtime: st.mtimeMs } : null; }).filter(Boolean)
           .sort((x, y) => (x.dir === y.dir ? x.name.localeCompare(y.name, 'ja') : x.dir ? -1 : 1));
       } catch (e) { return send(res, 403, { error: denied(target) || String(e.message) }); }
       const up = path.dirname(target);
-      return send(res, 200, { ok: true, path: target, dir: true, entries, parent: home.some(h => up === h || up.startsWith(h + path.sep)) ? up : '' });
+      return send(res, 200, { ok: true, path: target, dir: true, entries, parent: within(up) ? up : '' });
     }
     record('reveal', { project: b.project, task: b.task }, { path: target, dir: isDir, how, app: Boolean(b.app) });
     const act = how === 'list' ? 'open' : how; // ファイルに list が来たら開く
@@ -1062,6 +1095,7 @@ async function api(req, res, url) {
   }
   // 作業用コピーを本体に取り込んで片付ける
   if (url.pathname === '/api/task/merge') {
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版尚未監測背景程序；請人工確認並用 Git 合併工作複本' });
     const p = store.readProject(b.project);
     const file = store.taskFile(b.project, b.task);
     if (!p || !file) return send(res, 400, { error: '作業が見つかりません' });
@@ -1098,6 +1132,7 @@ async function api(req, res, url) {
     catch (e) { return send(res, 409, {error:e.message}); }
   }
   if (url.pathname === '/api/task/handup' || url.pathname === '/api/task/absorb' && taskTransfer.read(b.project,b.task)?.destination && !taskTransfer.read(b.project,b.task)?.integrating) {
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版尚不支援自動移轉與清理工作複本' });
     try {
       const r = url.pathname === '/api/task/handup' ? taskTransfer.offer(b) : taskTransfer.apply(b); if(!r.handedUp)setUnread(b.project,b.task,false);
       record('absorb', {project:r.parentProject,task:r.parent}, {child:b.task,childProject:b.project,files:r.files,receipt:r.record});
@@ -1108,6 +1143,7 @@ async function api(req, res, url) {
     try{return send(res,200,taskIntegrate.preview(b.project,b.task,b.only));}catch(e){return send(res,409,{error:e.message});}
   }
   if(['/api/task/integrate','/api/task/absorb'].includes(url.pathname)) {
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版尚不支援自動整合與清理工作複本' });
     try { const r=taskIntegrate.apply(b); record('integrate',b,{ok:r.ok,complete:r.complete,conflict:r.conflict});pruneUnread();return send(res,r.conflict?409:200,r); }
     catch(e){return send(res,409,{error:e.message});}
   }
@@ -1281,6 +1317,7 @@ async function api(req, res, url) {
     return undefined;
   }
   if (url.pathname === '/api/restart') {
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版請關閉啟動器視窗，再重新執行 start-windows.ps1' });
     if (aiTools.isOperating()) return send(res, 409, { error: 'AI の更新・モデル再取得が進行中です' });
     const busy = sessions.list().filter(x => x.running).length + chats.running.size;
     if (busy) return send(res, 409, { error: `動いている AI が ${busy} つあります。止めてから（または返事が終わってから）押してください` });
@@ -1291,7 +1328,7 @@ async function api(req, res, url) {
       server.close();
       const { spawn } = require('child_process');
       // 同じ設定で新しい本体を起動してから、この本体は終わる（新しい方は待ち受けが空くまで少し待つ）
-      const child = spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env: { ...process.env, HUB_RESTART_WAIT: '1' }, detached: true, stdio: ['ignore', 'inherit', 'inherit'] });
+      const child = spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env: { ...process.env, HUB_RESTART_WAIT: '1', ...(localAuth ? { HUB_LOCAL_TOKEN: LOCAL_TOKEN } : {}) }, detached: true, stdio: ['ignore', 'inherit', 'inherit'] });
       child.unref();
       process.exit(0);
     }, 200);
@@ -1310,6 +1347,17 @@ async function api(req, res, url) {
   if (url.pathname === '/api/pick-folder') {
     if (DRY) return send(res, 200, { path: '' });
     const { execFile } = require('child_process');
+    if (process.platform === 'win32') {
+      const script = 'Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description=$env:HUB_PICK_PROMPT; if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK){[Console]::Out.Write($d.SelectedPath)}';
+      execFile('powershell.exe', ['-NoProfile', '-STA', '-Command', script], {
+        env: { ...process.env, HUB_PICK_PROMPT: String(b.prompt || '選擇資料夾').slice(0, 200) },
+        timeout: 120000, windowsHide: true, maxBuffer: 4096,
+      }, (err, out) => {
+        if (err) return send(res, 409, { error: '無法開啟 Windows 資料夾選擇器' });
+        return send(res, 200, { path: String(out).trim() });
+      });
+      return undefined;
+    }
     execFile('osascript', ['-e', `POSIX path of (choose folder with prompt "${String(b.prompt || 'フォルダを選んでください').replace(/["\\]/g, '')}")`], (err, out) => {
       if (err) return send(res, 200, { path: '' }); // 取り消した時
       return send(res, 200, { path: String(out).trim().replace(/\/$/, '') });
@@ -1343,6 +1391,7 @@ async function api(req, res, url) {
   // 新しいプロジェクトを始める
   // 中身の無い作業・子プロジェクトを探す／ゴミ箱へまとめて移す
   if (url.pathname === '/api/empty/scan' || url.pathname === '/api/empty/trash') {
+    if (process.platform === 'win32' && url.pathname.endsWith('/trash')) return send(res, 409, { error: 'Windows 版尚不支援自動清理；請人工檢查工作複本與背景程序' });
     const busy = (project, task) => sessions.list().some(x => x.running && x.project === project && x.task === task) || Boolean(chats.busy(project, task));
     if (url.pathname === '/api/empty/scan') return send(res, 200, { ok: true, items: emptyLib.scan(store, busy) });
     const r = emptyLib.trash(store, busy, Array.isArray(b.items) ? b.items : []);
@@ -1350,6 +1399,7 @@ async function api(req, res, url) {
     return send(res, 200, { ok: true, ...r });
   }
   if (url.pathname.startsWith('/api/hierarchy/remove/')) {
+    if (process.platform === 'win32' && !url.pathname.endsWith('/preview') && !url.pathname.endsWith('/history')) return send(res, 409, { error: 'Windows 版尚不支援自動移除與還原' });
     try {
       let result;
       if(url.pathname.endsWith('/preview')) result=removal.preview(b.project,b.task);
@@ -1361,6 +1411,7 @@ async function api(req, res, url) {
     }catch(e){return send(res,409,{error:e.message});}
   }
   if (url.pathname.startsWith('/api/maintenance/')) {
+    if (process.platform === 'win32' && url.pathname !== '/api/maintenance/preview') return send(res, 409, { error: 'Windows 版尚不支援自動整理與驗證腳本' });
     try {
       let result;
       if (url.pathname === '/api/maintenance/preview') result=maintenance.preview(b.project);
@@ -1491,8 +1542,18 @@ async function remoteGate(req, res, url) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    if (process.platform === 'win32' && remoteLib.isRemote(req)) return send(res, 403, { error: 'Windows 版不支援遠端連線' });
     if (remoteLib.isRemote(req)) return await reqCtx.run({ remote: true }, () => remoteGate(req, res, url));
     if (!allowed(req)) return send(res, 403, { error: 'forbidden' });
+    if (localAuth) {
+      if (req.method === 'POST' && url.pathname === '/api/local/login') {
+        let body; try { body = await readBody(req); } catch { return send(res, 400, { error: 'invalid request' }); }
+        if (!localAuth.login(body.token)) return send(res, 403, { error: 'forbidden' });
+        res.setHeader('Set-Cookie', localAuth.cookie);
+        return send(res, 200, { ok: true });
+      }
+      if (url.pathname.startsWith('/api/') && !localAuth.check(req)) return send(res, 401, { error: '請由 Windows 啟動器開啟' });
+    }
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     if (req.method !== 'GET') return send(res, 405, { error: 'method' });
     return serveStatic(res, url.pathname);
@@ -1504,6 +1565,10 @@ const server = http.createServer(async (req, res) => {
 function shutdown() { procwatch.stop(); sessions.stopAll(); chats.stopAll(); server.close(); process.exit(0); }
 
 if (require.main === module) {
+  if (process.platform === 'win32' && !localAuth) {
+    console.error('Windows 版須使用 start-windows.ps1 啟動');
+    process.exit(1);
+  }
   // 新しい版に切り替える時は、前の本体が待ち受けを空けるまで少し待つ
   let tries = 0;
   server.on('error', e => {
@@ -1516,7 +1581,7 @@ if (require.main === module) {
     console.log(`Project Hub: http://127.0.0.1:${PORT}  （台帳の場所: ${ROOT}）`);
     console.log(sessions.available() ? '作業画面: 使えます' : '作業画面: 部品（node-pty）が未設定。setup.sh を実行してください');
     console.log('止める時は、この窓で Control + C');
-    if (!DRY) procwatch.start();
+    if (!DRY && process.platform !== 'win32') procwatch.start();
   });
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

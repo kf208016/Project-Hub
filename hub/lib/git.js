@@ -60,7 +60,7 @@ function stageAll(dir) {
 function save(dir, message) {
   if (!dirty(dir)) return false;
   if (!stageAll(dir)) return false;
-  git(dir, ['commit', '-q', '--no-verify', '-m', message]);
+  git(dir, process.platform === 'win32' ? ['commit', '-q', '-m', message] : ['commit', '-q', '--no-verify', '-m', message]);
   return true;
 }
 
@@ -86,6 +86,7 @@ function tooBig(dir) {
 
 // Git の無いフォルダで保存を始める。できなければ理由を返す
 function init(dir) {
+  if (process.platform === 'win32') throw new Error('Windows 版不會替非 Git 專案自動初始化或提交；請先確認專案並自行建立 Git 儲存庫');
   if (tooBig(dir)) return { ok: false, reason: 'ファイルが多すぎるため、Git の保存は始めませんでした' };
   git(dir, ['init', '-q']);
   stageAll(dir);
@@ -100,7 +101,11 @@ const branchName = s => 'hub/' + (String(s).replace(/[\s~^:?*[\\\x00-\x1f\x7f]+|
 // 作業を始める前の準備。作業する場所と、何をしたかを返す
 //   base: 本体のフォルダ / workRoot: AI-Workspace/Work/<プロジェクト>
 function prepare({ base, workRoot, taskId, direct }) {
-  if (!available()) return { dir: base, note: 'Git が無いため、本体で作業します' };
+  if (!available()) {
+    if (process.platform === 'win32') throw new Error('Windows 版需要 Git 才能隔離 AI 工作');
+    return { dir: base, note: 'Git が無いため、本体で作業します' };
+  }
+  if (process.platform === 'win32' && direct) throw new Error('Windows 版不允許 AI 直接修改專案本體');
   let top = repoTop(base);
   // 台帳のフォルダが別の Git の中にある時は、台帳だけの保存を始める
   if (top && direct && real(top) !== real(base)) top = null;
@@ -112,11 +117,15 @@ function prepare({ base, workRoot, taskId, direct }) {
   }
   // 元々 Git の無かったフォルダ・台帳のフォルダは、本体で作業する（始める前に保存だけする）
   if (direct || tryGit(top, ['config', 'hub.mode']) === 'direct') {
+    if (process.platform === 'win32') throw new Error('Windows 版不允許 AI 直接修改專案本體');
     save(top, '作業前の保存');
     return { dir: base, note: '作業前に保存しました' };
   }
   // まだ一度も保存していない Git なら、まず保存する
-  if (!tryGit(top, ['rev-parse', '--verify', 'HEAD'])) { stageAll(top); git(top, ['commit', '-q', '--no-verify', '--allow-empty', '-m', 'Project Hub: 最初の保存']); }
+  if (!tryGit(top, ['rev-parse', '--verify', 'HEAD'])) {
+    if (process.platform === 'win32') throw new Error('Windows 版需要先建立 Git 提交，才能建立隔離工作複本');
+    stageAll(top); git(top, ['commit', '-q', '--no-verify', '--allow-empty', '-m', 'Project Hub: 最初の保存']);
+  }
   const wt = path.join(workRoot, taskId);
   const rel = path.relative(top, base);
   if (fs.existsSync(wt)) return { dir: path.join(wt, rel), worktree: wt };
@@ -131,6 +140,7 @@ function prepare({ base, workRoot, taskId, direct }) {
 // Git に入っていない手元の設定（.env など）を作業用コピーにも写す。無いと AI のテストが動かないため
 const LOCAL_FILES = /^(\.env(\..*)?|\.dev\.vars(\..*)?|\.npmrc)$/;
 function copyLocalFiles(top, wt) {
+  if (process.platform === 'win32') return []; // Never copy local credentials into an AI worktree.
   const copied = [];
   const cands = [];
   try { for (const n of fs.readdirSync(top)) if (LOCAL_FILES.test(n)) cands.push(n); } catch (e) { return copied; }

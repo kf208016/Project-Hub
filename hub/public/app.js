@@ -72,6 +72,7 @@ try { const v = JSON.parse(localStorage.getItem('hub-view') || 'null'); if (v) v
 
 let stateTag = ''; // 一覧の印（本体が「変わっていない」を答えるために送り返す）
 async function api(path, body, headers) {
+  await window.hubAuthReady;
   const opt = body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub': '1' }, body: JSON.stringify(body) } : {};
   if (headers) opt.headers = { ...opt.headers, ...headers };
   const r = await fetch(path, opt);
@@ -326,6 +327,9 @@ function render() {
   const waiting = state.projects.flatMap(p => p.tasks.filter(t => NEEDS(t) || aiWaiting(p.id, t.id).length).map(t => ({ p, t })));
   updateTurnCounts();
   showVersion(state.version, state.latest);
+  const windowsNotice = $('#windows-notice');
+  if (windowsNotice) windowsNotice.hidden = !state.windowsBrowser;
+  if (state.windowsBrowser) $('#upd').hidden = true;
   $('#turn').setAttribute('aria-pressed', view.kind === 'turn');
   $('#gear').setAttribute('aria-pressed', view.kind === 'settings');
   renderTree();
@@ -1842,8 +1846,8 @@ function renderSettings() {
   const dirty = JSON.stringify(rolesDraft) !== JSON.stringify(state.roles.roles);
   $('#main').innerHTML = `<div class="view"><div class="settings">
     <div class="card"><h2>作業画面</h2>
-      <p><span class="badge ${state.terminal ? '' : 'off'}"><i></i>${state.terminal ? '画面の中で Claude Code / Codex / Agy CLI を動かせます' : '部品（node-pty）が未設定です。ターミナルで setup.sh を実行してください。それまでは別の窓で開きます'}</span></p>
-      <p>権限：Claude Code は <code>${esc(state.roles.permissions['claude-code'] || '')}</code>、Codex は <code>${esc(state.roles.permissions.codex || '')}</code></p></div>
+      <p><span class="badge ${state.terminal ? '' : 'off'}"><i></i>${state.windowsBrowser ? 'Windows 試作版：請使用 Codex 會話；內嵌終端機尚未驗證' : state.terminal ? '画面の中で Claude Code / Codex / Agy CLI を動かせます' : '部品（node-pty）が未設定です。ターミナルで setup.sh を実行してください。それまでは別の窓で開きます'}</span></p>
+      <p>${state.windowsBrowser ? 'Codex 固定使用 workspace-write；設定檔中的權限命令不會覆蓋此限制。' : `権限：Claude Code は <code>${esc(state.roles.permissions['claude-code'] || '')}</code>、Codex は <code>${esc(state.roles.permissions.codex || '')}</code>`}</p></div>
     <div class="card"><h2>AI の更新</h2>
       <p>それぞれの AI を確認して更新します。Agy CLI は Gemini 3.1 Pro (High) の手動選択専用です。モデル一覧だけを読み直すこともできます。今使っているモデルや役割は自動では変わりません。</p>
       <div id="ai-tools" aria-live="polite">確認中…</div></div>
@@ -1997,8 +2001,8 @@ function showVersion(version, latest) {
   $('#ver').textContent = version ? 'v' + version : '';
   const newer = latest && version && latest !== version;
   if ($('#upd').disabled) return; // 切り替え中
-  $('#upd').hidden = !newer;
-  if (newer) $('#upd').textContent = `新しい版 v${latest} にする`;
+  $('#upd').hidden = state.windowsBrowser || !newer;
+  if (newer && !state.windowsBrowser) $('#upd').textContent = `新しい版 v${latest} にする`;
 }
 let verOpen = false;
 async function loadChangelog() {

@@ -26,6 +26,7 @@ function imageFile(p, id, preview = false) {
 }
 function saveImage(p, name, data) {
   if (!IMAGE.test(name)) throw Error('画像は png／jpg／jpeg／webp／gif／heic に対応しています');
+  if (process.platform === 'win32' && !/\.(png|jpe?g)$/i.test(name)) throw Error('Windows 版目前僅支援 PNG、JPG、JPEG 附圖');
   if (!data.length || data.length > MAX) throw Error('画像は1枚50MBまでです');
   const id = randomUUID() + path.extname(name).toLowerCase();
   const file = imageFile(p, id);
@@ -43,7 +44,7 @@ function saveImage(p, name, data) {
 }
 function imageFromPath(p, raw) {
   const file = fs.realpathSync(String(raw));
-  const allowed = [os.homedir(), os.tmpdir(), '/private/tmp'].map(x => fs.realpathSync(x));
+  const allowed = [os.homedir(), os.tmpdir(), '/private/tmp'].flatMap(x => { try { return [fs.realpathSync(x)]; } catch { return []; } });
   if (!allowed.some(x => file.startsWith(x + path.sep)) || !IMAGE.test(file)) throw Error('この場所の画像は追加できません');
   const stat = fs.statSync(file);
   if (!stat.isFile() || stat.size > MAX) throw Error('画像は1枚50MBまでです');

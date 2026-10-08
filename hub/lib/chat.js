@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const cli = require('./cli-platform');
 const { randomUUID } = require('node:crypto');
 const launch = require('./launch');
 const instructions = require('./instructions');
@@ -119,7 +120,9 @@ function buildTurn({ ai, model, effort, meta, rows, text, basePrompt, policy, pe
     if (e) args.push('--effort', e);
     if (resume) args.push('--resume', sid);
   } else {
-    args = ['exec', ...base.slice(1), '--json', '--skip-git-repo-check', ...launch.CODEX_CONTEXT_ARGS];
+    args = [...(process.platform === 'win32' ? ['-a', 'never'] : []), 'exec', ...base.slice(1),
+      ...(process.platform === 'win32' ? ['--sandbox', 'workspace-write'] : []),
+      '--json', '--skip-git-repo-check', ...launch.CODEX_CONTEXT_ARGS];
     if (m) args.push('--model', m);
     if (e) args.push('-c', `model_reasoning_effort=${e}`);
     if (resume) args.push('resume', sid);
@@ -342,7 +345,9 @@ class ChatRunner {
 
   run(o, turn, meta, rows) {
     const { project, task, pdir, dir, ai, model, effort, env, onEnd } = o;
-    const child = spawn(turn.command, turn.args, { cwd: dir, env: launch.childEnv(ai, { ...process.env, ...(env || {}) }), stdio: ['pipe', 'pipe', 'pipe'] });
+    const childEnv = launch.childEnv(ai, { ...process.env, ...(env || {}) });
+    const command = cli.resolve(turn.command, turn.args, childEnv.PATH);
+    const child = spawn(command.file, command.args, { cwd: dir, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
     if (!o.started) o.started = Date.now(); // 思考の指定をやり直しても、最初に送った時から数える
     const run = { child, ai, model, effort, userRow: o.userRow, texts: [], err: '', done: null, sid: null, stopped: false, started: o.started, limitSwitch: o.limitSwitch, last: '', stopVersion: this.stops.get(this.key(project, task)) || 0 };
     run.startedP = new Promise(resolve => { child.once('spawn', () => { run.spawned = true; resolve(true); }); child.once('error', () => resolve(false)); });
