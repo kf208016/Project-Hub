@@ -8,6 +8,7 @@ const { spawn } = require('./managed-process');
 const { AIS, AI_LABEL, AGY_MODEL, childEnv, agyAccountError } = require('./launch');
 const { latestVersion, newer } = require('./update-check');
 const cli = require('./cli-platform');
+const { listModels: codexModelList } = require('./codex-models');
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,79}$/;
 const MAX_OUTPUT = 5 * 1024 * 1024;
 
@@ -178,6 +179,8 @@ class AiTools {
     this.home = opts.home || process.env.HUB_AI_HOME || os.homedir();
     this.file = path.join(this.root, '_hub', 'ai-tools-models.json');
     this.run = opts.run || runFile;
+    this.platform = opts.platform || process.platform;
+    this.refreshCodex = opts.refreshCodex || codexModelList;
     this.find = opts.find || executable;
     this.methods = opts.methods || {};
     this.busy = opts.busy || (() => 0);
@@ -320,7 +323,9 @@ class AiTools {
       try { return { models: agyModels(text), source: 'agy-cli' }; }
       catch (e) { if (!e.unavailable) throw e; return { models: [], source: 'agy-cli', unavailable: true }; }
     }
-    if (ai === 'codex') return { models: codexModels(await this.run(file, ['debug', 'models'], { timeout: 120000 })), source: 'codex-cli' };
+    if (ai === 'codex') return this.platform === 'win32'
+      ? { models: await this.refreshCodex(file), source: 'codex-app-server' }
+      : { models: codexModels(await this.run(file, ['debug', 'models'], { timeout: 120000 })), source: 'codex-cli' };
     const before = latestClaudeCache(this.home);
     const liveIds = await this.refreshClaude(file); // 応答の main/overflow は混在するので、モデル名は cache の main から取る
     const after = latestClaudeCache(this.home);

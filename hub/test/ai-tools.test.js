@@ -4,7 +4,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { AiTools, codexModels, claudeModels, claudeInitialize } = require('../lib/ai-tools');
+const { AiTools: PlatformAiTools, codexModels, claudeModels, claudeInitialize } = require('../lib/ai-tools');
+// These existing assertions exercise the original macOS CLI protocol. Native
+// Windows discovery has separate real-process tests in codex-models.test.js.
+class AiTools extends PlatformAiTools {
+  constructor(options = {}) { super({ ...options, platform: 'darwin' }); }
+}
 const launch = require('../lib/launch');
 const roles = require('../lib/roles');
 const { latestVersion, newer } = require('../lib/update-check');
