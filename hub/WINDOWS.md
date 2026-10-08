@@ -27,7 +27,13 @@ $env:HUB_ROOT = 'C:\path\to\isolated\AI-Workspace'
 - AI 工作目錄必須是 `Work/<專案>/<作業>` 下、指向該專案本體的 Git worktree。Windows 不複製本體未追蹤的 `.env`、`.npmrc` 等本機設定；不略過 Git hooks。
 - Windows 不支援 Claude、Agy、另開終端機、遠端存取、ChatGPT MCP、Hub 內更新 CLI、Hub 內重新啟動、背景程序監測、自動合併、成果移轉、自動清理與驗證腳本。請在 Hub 外人工檢查程序、差異與 Git 狀態後，再自行合併。
 - 圖片目前只接受 PNG/JPG/JPEG。會話、操作日誌與附件以一般檔案保存，未加密；分享前檢查內容。
-- 這個分支尚未對依賴完成 `npm audit`，也未完成 Windows 原生依賴與端到端 Codex 工作階段驗證。任何測試通過都不等於對來源、依賴或執行環境的完整安全保證。
+- 2026-10-08 的 `npm audit --package-lock-only --omit=dev --json` 已完成，lockfile 的已知弱點為 0；Windows 原生依賴與端到端 Codex 工作階段仍未驗證。任何測試通過都不等於對來源、依賴或執行環境的完整安全保證。
+
+## 後續驗證進度（2026-10-08）
+
+現有 Windows／Git 範圍測試再次通過 22/22。另以本機 Codex CLI 0.154.0 的 `codex sandbox -P :workspace --include-managed-config` 執行無模型的合成檔案測試：工作目錄內寫入成功、相鄰未授權目錄寫入被 `EPERM` 拒絕；測試檔已清除。該命令的 help 描述為 restricted-token 診斷，不能單憑本機 `elevated` 設定將結果宣稱為 Hub 真實 Agent、elevated 執行路徑或網路隔離驗收通過。未安裝 WSL 或變更全域 Codex 設定。
+
+使用者要求保留完整原版功能；本頁所列限制仍是目前程式的實際狀態，不能作為最終交付。後續實作計畫見 [Windows 完整功能實作計畫](../docs/superpowers/plans/2026-10-08-windows-feature-parity-implementation.md)。
 
 ## 維護者驗證
 
