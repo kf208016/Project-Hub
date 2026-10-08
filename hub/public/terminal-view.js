@@ -1,7 +1,7 @@
 (function (global) {
   'use strict';
   class TerminalView {
-    constructor({ api, project, task, ai, onState = () => {}, onError = () => {}, interval = setInterval, clear = clearInterval }) {
+    constructor({ api, project, task, ai, onState = () => {}, onError = () => {}, interval = (...args) => global.setInterval(...args), clear = (...args) => global.clearInterval(...args) }) {
       this.api = api; this.scope = { project, task, ai }; this.onState = onState; this.onError = onError;
       this.interval = interval; this.clear = clear; this.session = null; this.timer = null; this.closed = false; this.inputs = Promise.resolve();
     }

@@ -932,7 +932,7 @@ function renderWork() {
           <div class="phead"><span class="who w-${AI_KEY[a]}">${AI_LABEL[a]}</span><span class="pstat" data-ai="${a}">${statusText(sessOf(p.id, t.id, a))}</span>${specSelect(p, t, a, true)}<span class="sp"></span>
             ${AIS.filter(other => other !== a).map(other => UI`<button class="btn plain sm" data-act="handoff" data-from="${a}" data-to="${other}" ${k} type="button" ${other === 'agy' && !state.agyAvailable ? 'disabled' : ''} title="${a === 'agy' ? L('画面に残っている分だけを') : L('今までの会話を')}引き継ぎ資料にまとめて渡します">${AI_LABEL[other]}に交代 →</button>`).join('')}
             ${state.windowsBrowser ? UI`<span class="small" id="view-state-${a}"></span><button class="btn plain sm" data-act="termclaim" data-ai="${a}" ${k} type="button">接管輸入</button><button class="btn plain sm" data-act="termwindow" data-ai="${a}" ${k} type="button">獨立終端機視窗（Hub）</button>` : ''}
-            <button class="btn plain sm" data-act="stop" data-ai="${a}" ${k} type="button">停止</button></div>
+            <button class="btn plain sm" data-act="stop" data-ai="${a}" ${k} type="button">${L('止める')}</button></div>
           <div class="pbody" id="pane-${a}"></div></section>`).join('')
         : UI`<div class="pane"><div class="pempty">${ownerOf(t.owner).kind === 'chatgpt'
             ? UI`この作業は ChatGPT に頼んでいます。上の［① 貼る文をコピー］を押して ChatGPT アプリに貼り、返事を「② 返事を貼る」欄に貼って［Hub に戻す］を押してください。<br>ここで Claude Code・Codex・Agy CLI に手伝わせることもできます。`
@@ -1084,7 +1084,7 @@ function chatHtml(p, t) {
       </div>
       <div class="crow busyrow" id="chat-busyrow" hidden>
         <span class="sp"></span>
-        <button class="btn plain" id="chat-stop" type="button" title="今の作業を止めます（待っている指示も取り消します）">停止</button>
+        <button class="btn plain" id="chat-stop" type="button" title="今の作業を止めます（待っている指示も取り消します）">${L('止める')}</button>
         <button class="btn warn" id="chat-redo" type="button" hidden title="今の指示が間違いだった時。今の指示を取り消し、この指示でやり直します">① やり直し</button>
         <button class="btn" id="chat-amend" type="button" hidden title="今の指示に足りない所がある時。今の指示は続け、この指示も合わせて行います">② 追加指示</button>
         <button class="btn plain" id="chat-q" type="button" hidden title="別の作業を順番待ちにします。今の作業が終わったら自動で始めます（⌘ + Enter）">③ 次の作業</button>

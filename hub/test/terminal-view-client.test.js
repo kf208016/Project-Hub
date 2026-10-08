@@ -3,6 +3,14 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const TerminalView=require('../public/terminal-view');
 const owner={viewId:'v'.repeat(32),lease:'s'.repeat(43),role:'owner',readonly:false,epoch:1};
 function client(api,state=[]){return new TerminalView({api,project:'p',task:'t',ai:'codex',interval:()=>1,clear:()=>{},onState:x=>state.push(x)});}
+test('default terminal timers preserve the native Window receiver on connect, heartbeat, close and loss',async()=>{
+ const vm=require('node:vm'),timers=new Map(),cleared=[],calls=[],errors=[];let next=0,failHeartbeat=false;
+ const window={setInterval(callback,delay){if(this!==window)throw new TypeError('Illegal invocation');const id=++next;timers.set(id,{callback,delay});return id;},clearInterval(id){if(this!==window)throw new TypeError('Illegal invocation');cleared.push(id);timers.delete(id);}};
+ const context=vm.createContext({window,setInterval:window.setInterval,clearInterval:window.clearInterval});vm.runInContext(fs.readFileSync(path.join(__dirname,'../public/terminal-view.js'),'utf8'),context);
+ const api=async(route,body)=>{calls.push({route,body});if(route.endsWith('register'))return {...owner};if(route.endsWith('heartbeat')){if(failHeartbeat)throw Error('fixture lost heartbeat');return {...owner};}return {ok:true};};
+ const view=new window.HubTerminalView({api,project:'p',task:'t',ai:'codex',onError:error=>errors.push(error.message)});await view.connect();assert.equal(view.owner(),true);assert.equal(timers.size,1);assert.equal(timers.get(1).delay,10000);timers.get(1).callback();await new Promise(r=>setImmediate(r));assert.equal(calls.at(-1).route,'/api/term/view/heartbeat');assert.equal(calls.at(-1).body.lease,owner.lease);await view.close();assert.deepEqual(cleared,[1]);assert.equal(timers.size,0);assert.equal(calls.at(-1).route,'/api/term/view/disconnect');
+ const lost=new window.HubTerminalView({api,project:'p',task:'t',ai:'codex',onError:error=>errors.push(error.message)});await lost.connect();failHeartbeat=true;timers.get(2).callback();await new Promise(r=>setImmediate(r));assert.equal(lost.owner(),false);assert.deepEqual(cleared,[1,2]);assert.equal(timers.size,0);assert.deepEqual(errors,['fixture lost heartbeat']);
+});
 test('browser terminal preserves private credentials, serializes input and never sends watcher input/resize',async()=>{
  const calls=[],states=[];let release;
  const view=client(async(route,body)=>{calls.push({route,body});if(route.endsWith('register'))return {...owner};if(route.endsWith('input')&&body.data==='first')await new Promise(r=>release=r);return {ok:true};},states);
