@@ -6,7 +6,10 @@ const {expandHome}=require('./store');
 const hash=x=>createHash('sha256').update(x).digest('hex');
 const inside=(a,b)=>b===a||b.startsWith(a+path.sep);
 const exists=f=>{try{fs.lstatSync(f);return true;}catch(e){if(e.code==='ENOENT')return false;throw e;}};
-function noLinks(f) {for(let q=path.resolve(f);;q=path.dirname(q)){if(exists(q)&&fs.lstatSync(q).isSymbolicLink())throw Error('リンクを含む場所は移せません');if(q===path.dirname(q))break;}}
+function noLinks(f) {
+ if(process.platform==='win32'){try{require('./safe-path').localPath(f,{allowMissing:true});}catch(e){throw Error('リンクまたは無効な場所は移せません：'+e.message);}}
+ for(let q=path.resolve(f);;q=path.dirname(q)){if(exists(q)&&fs.lstatSync(q).isSymbolicLink())throw Error('リンクを含む場所は移せません');if(q===path.dirname(q))break;}
+}
 function snapshot(f) {
  noLinks(f);let n=0,bytes=0;const rows=[];
  const walk=q=>{if(++n>20000)throw Error('ファイルが多すぎて照合できません');const st=fs.lstatSync(q);if(st.isSymbolicLink()||!st.isFile()&&!st.isDirectory())throw Error('リンクや特殊なファイルを含むため移せません');bytes+=st.isFile()?st.size:0;if(bytes>256*1024*1024)throw Error('照合できる大きさを超えています');rows.push([path.relative(f,q),st.ino,st.size,st.mtimeMs,st.isFile()?hash(fs.readFileSync(q)):'']);if(st.isDirectory())for(const x of fs.readdirSync(q).sort())walk(path.join(q,x));};walk(f);return hash(JSON.stringify(rows));
@@ -115,7 +118,7 @@ class Removal {
   });
  }
  preview(project,task){const d=this.describe(project,task),token=randomUUID();for(const [k,v] of this.tokens)if(Date.now()-v.at>600000)this.tokens.delete(k);this.tokens.set(token,{at:Date.now(),d});return {...d,token};}
- save(r){noLinks(this.records);fs.mkdirSync(this.records,{recursive:true});const f=path.join(this.records,r.id+'.json');fs.writeFileSync(f+'.tmp',JSON.stringify(r,null,2));fs.renameSync(f+'.tmp',f);}
+ save(r){if(!/^[0-9a-f-]{36}$/.test(r.id))throw Error('記録の識別が不正です');noLinks(this.records);fs.mkdirSync(this.records,{recursive:true});const f=path.join(this.records,r.id+'.json'),tmp=f+'.'+randomUUID()+'.tmp';noLinks(f);noLinks(tmp);try{fs.writeFileSync(tmp,JSON.stringify(r,null,2),{flag:'wx'});fs.renameSync(tmp,f);}finally{if(exists(tmp))fs.unlinkSync(tmp);}}
  apply({token,optional=[],confirm,typed}){
   const old=this.tokens.get(token);if(confirm!==true||!old||Date.now()-old.at>600000)throw Error('もう一度削除内容を確認してください');
   const d=this.describe(old.d.project,old.d.task);if(d.blockers.length)throw Error(d.blockers.join(' / '));if(JSON.stringify(d)!==JSON.stringify(old.d))throw Error('確認中に変わりました。もう一度確認してください');

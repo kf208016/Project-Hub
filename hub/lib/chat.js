@@ -6,7 +6,7 @@
 // 会話は <台帳>/.ai/chat/<作業ID>.jsonl に1行ずつ、AI ごとの再開用の番号は <作業ID>.json、待っている指示は <作業ID>.queue.json に残す
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn } = require('./managed-process');
 const cli = require('./cli-platform');
 const { randomUUID } = require('node:crypto');
 const launch = require('./launch');
@@ -129,7 +129,7 @@ function buildTurn({ ai, model, effort, meta, rows, text, basePrompt, policy, pe
     for (const image of images) args.push('-i', image);
     args.push('-'); // 依頼は標準入力から渡す（長い引き継ぎでも入るように）
   }
-  return { command: base[0], args, stdin: ai === 'agy' ? '' : prompt, resume, modelFlag: m, effortFlag: e, rules: selected.rules, fixed: selected.fixed, shortRules: selected.short };
+  return { command: base[0], args, stdin: ai === 'agy' ? '' : prompt, resume, sessionId: resume ? sid : '', images, modelFlag: m, effortFlag: e, rules: selected.rules, fixed: selected.fixed, shortRules: selected.short };
 }
 
 // 道具の使い方を1行にする
@@ -187,6 +187,7 @@ function parse(ai, o) {
     return ev;
   }
   // Codex（新しい形）
+  if (o.type === 'hub.agent_snapshot' && typeof o.id === 'string' && typeof o.text === 'string') ev.push({kind:'textSnapshot',id:o.id,text:o.text});
   if (o.type === 'thread.started' && o.thread_id) ev.push({ kind: 'session', id: o.thread_id });
   if (o.type === 'item.completed' && o.item) {
     const it = o.item;
@@ -346,11 +347,18 @@ class ChatRunner {
   run(o, turn, meta, rows) {
     const { project, task, pdir, dir, ai, model, effort, env, onEnd } = o;
     const childEnv = launch.childEnv(ai, { ...process.env, ...(env || {}) });
-    const command = cli.resolve(turn.command, turn.args, childEnv.PATH);
-    const child = spawn(command.file, command.args, { cwd: dir, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    let child;
+    if (process.platform === 'win32' && ai === 'codex') {
+      child = require('./codex-bridge').start({ command: turn.command, cwd: dir, env: childEnv, model: turn.modelFlag, effort: turn.effortFlag, sessionId: turn.sessionId, images: turn.images });
+    } else {
+      const command = cli.resolve(turn.command, turn.args, childEnv.PATH);
+      child = spawn(command.file, command.args, { cwd: dir, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    }
+    child.on('approvals', approvals => this.emit(project, task, { type: 'approvals', approvals }));
     if (!o.started) o.started = Date.now(); // 思考の指定をやり直しても、最初に送った時から数える
     const run = { child, ai, model, effort, userRow: o.userRow, texts: [], err: '', done: null, sid: null, stopped: false, started: o.started, limitSwitch: o.limitSwitch, last: '', stopVersion: this.stops.get(this.key(project, task)) || 0 };
-    run.startedP = new Promise(resolve => { child.once('spawn', () => { run.spawned = true; resolve(true); }); child.once('error', () => resolve(false)); });
+    const spawned = new Promise(resolve => { child.once('spawn', () => { run.spawned = true; resolve(true); }); child.once('error', () => resolve(false)); child.once('close', () => resolve(Boolean(run.spawned))); });
+    run.startedP = child.ready || spawned;
     run.finishedP = new Promise(r => { run.resolveFinished = r; });
     this.running.set(this.key(project, task), run);
     this.emit(project, task, { type: 'busy', ai, model, started: run.started });
@@ -359,17 +367,19 @@ class ChatRunner {
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     let rest = '';
+    const textIndexes = new Map();
     const consume = l => {
       let x; try { x = JSON.parse(l); } catch (e) { return; }
       if (run.blocked) return;
       for (const ev of parse(ai, x)) {
         if (ev.kind === 'session') run.sid = ev.id;
         else if (ev.kind === 'text') { run.texts.push(ev.text); this.emit(project, task, { type: 'partial', ai, text: run.texts.join(ai === 'agy' ? '' : '\n\n') }); }
+        else if (ev.kind === 'textSnapshot') { if (!textIndexes.has(ev.id)) textIndexes.set(ev.id, run.texts.length); run.texts[textIndexes.get(ev.id)] = ev.text; this.emit(project, task, {type:'partial', ai, text:run.texts.join('\n\n')}); }
         else if (ev.kind === 'tool') { run.last = ev.text; this.emit(project, task, { type: 'row', row: append(pdir, task, { role: 'event', ai, tool: true, text: ev.text }) }); }
         else if (ev.kind === 'ask') run.asks = [...(run.asks || []), ...ev.asks];
         else if (ev.kind === 'limit') run.limit = ev.error;
         else if (ev.kind === 'compact') run.compact = true;
-        else if (ev.kind === 'done') { run.done = ev; if (ev.abort) { run.blocked = true; run.sid = null; child.kill('SIGTERM'); } }
+        else if (ev.kind === 'done') { if(!run.done?.error)run.done = ev; if (ev.abort) { run.blocked = true; run.sid = null; child.kill('SIGTERM'); } }
       }
     };
     child.stdout.on('data', d => {
@@ -387,6 +397,11 @@ class ChatRunner {
       else if (run.done && run.done.error) error = run.done.error;
       else if (code !== 0 && code !== null) error = (run.err.trim().split('\n').slice(-3).join(' ') || `終了コード ${code}`);
       else if (code === null && !text) error = run.err.trim() || '途中で終わりました';
+      if (ai === 'codex' && !run.stopped && !run.done) {
+        run.protocolFailed = true;
+        error = error || 'Codex 未回傳完整的完成事件；本次作業未確認成功，請檢查 CLI 連線與版本。';
+      }
+      if (ai === 'codex' && run.done?.error) run.protocolFailed = true;
       if (!run.stopped && run.limit && !run.done && !run.err.trim()) error = run.limit;
       const modelRejected = error && !text && turn.modelFlag && !run.stopped && MODEL_REJECTED.test(error + ' ' + run.err);
       if (modelRejected) error = `指定したモデル「${turn.modelFlag}」を ${LABEL[ai]} が受け付けませんでした。設定画面の「AI の更新」と「CLI に渡すモデル名」を確認してください。${error}`;
@@ -394,7 +409,9 @@ class ChatRunner {
       if (!modelRejected && error && !text && turn.effortFlag && !run.stopped && EFFORT_REJECTED.test(error + ' ' + run.err)) {
         this.emit(project, task, { type: 'row', row: append(pdir, task, { role: 'event', ai, text: `思考「${effort}」の指定は使えなかったため、指定なしでやり直します` }) });
         const next = { ...o, noEffort: true };
-        return this.run(next, buildTurn({ ...next, meta, rows }), meta, rows);
+        const retry = this.run(next, buildTurn({ ...next, meta, rows }), meta, rows);
+        retry.finishedP.then(run.resolveFinished, run.resolveFinished);
+        return retry;
       }
       if (run.sid && !modelRejected && !run.blocked) { meta.sessions = { ...(meta.sessions || {}), [ai]: run.sid }; meta.models = { ...(meta.models || {}), [ai]: model }; writeMeta(pdir, task, meta); }
       if (turn.rules) { meta.rulesSent = { ...(meta.rulesSent || {}), [ai]: { ...turn.rules, sid: run.sid || meta.sessions?.[ai], restore: Boolean(error || run.compact) } }; writeMeta(pdir, task, meta); }
@@ -444,7 +461,7 @@ class ChatRunner {
       const q = this.queue(project, task);
       if (cancelled() && !run.interrupting) { if (q.length) this.setQueue(project, task, []); }
       // CLI を起動できなかった時は、待ち順の同じ依頼や後続を勝手に再送しない。
-      else if (q.length && !run.interrupting && run.spawned && !run.limitSaveFailed && !this.busy(project, task)) {
+      else if (q.length && !run.interrupting && run.spawned && !run.protocolFailed && !run.limitSaveFailed && !this.busy(project, task)) {
         const next = q[0];
         const b = this.base.get(k) || o;
         const retain = error => {
@@ -464,7 +481,7 @@ class ChatRunner {
       }
       return undefined;
     };
-    child.on('error', e => { run.err = e.code === 'ENOENT' ? `「${turn.command}」が見つかりません。ターミナルで ${turn.command} が動くか確かめてください` : String(e.message); finish(1); });
+    child.on('error', e => { run.err = e.code === 'ENOENT' ? `「${turn.command}」が見つかりません。ターミナルで ${turn.command} が動くか確かめてください` : String(e.message); });
     child.on('close', (code, signal) => { if (rest.trim()) consume(rest); finish(code, !signal); });
     return run;
   }

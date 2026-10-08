@@ -607,3 +607,10 @@ input.cm{width:100%;border:1px solid var(--line);background:var(--panel);border-
   .gptbox .gpt-back, .gptbox .gpt-out{font-size:16px}
   .composer .crow select{min-width:0;max-width:100%}
 }
+:root .chat-approvals { max-height: 40vh; overflow: auto; padding: 12px 18px; border-bottom: 1px solid #b88a40; background: #fff8e8; color: #332b20; }
+.chat-approvals[hidden] { display: none; }
+.chat-approvals .approval + .approval { margin-top: 16px; padding-top: 12px; border-top: 1px solid #d2bf9d; }
+.chat-approvals pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 22vh; overflow: auto; font-size: 12px; }
+.chat-approvals label { display: grid; gap: 6px; margin: 10px 0; }
+.chat-approvals input { min-width: 0; width: 100%; padding: 8px; }
+.approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -81,6 +81,10 @@ test('busy state blocks apply, verification and restore before calling API',asyn
  assert.match(h,/AIが作業中/);assert.match(h,/data-maint-action="verify"[^>]*disabled/);
  for(const action of ['apply','verify','test','restore','unremove'])await a.click({maintAction:action});assert.equal(a.calls.length,0);
 });
+test('Windows unknown process state is explicit and an approved host script shows its authority',async()=>{
+ const blocked=fixture({busy:true,busyReason:'背景程序狀態未知 <fixture>'});assert.match(blocked.el('#maintenance-body').innerHTML,/背景程序狀態未知 &lt;fixture&gt;/);
+ const a=fixture({hostScript:true});let prompt='';a.el('#maintenance-script').value='test';a.ctx.confirm=text=>{prompt=text;return false;};await a.click({maintAction:'test'});assert.match(prompt,/Windows 使用者權限/);assert.match(prompt,/主機檔案與網路/);assert.equal(a.calls.length,0);
+});
 test('structural verification never sends a selected app script, test does',async()=>{
  const a=fixture();a.el('#maintenance-script').value='test';a.ctx.confirm=()=>true;
  a.ctx.api=async(route,body)=>{a.calls.push({route,body});return {ok:true,checks:[],note:'fixture'};};

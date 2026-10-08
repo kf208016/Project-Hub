@@ -21,7 +21,8 @@ test('preview protects recent, referenced, tracked, symlink and original materia
  f.old('.ai/memory/memory.md');const tracked=f.old('.ai/work/tracked.dat');
  fs.appendFileSync(path.join(f.dir,'PROJECT.md'),'\nReference '+keep+'\n');
  const recent=path.join(f.dir,'.ai/work/recent.dat');fs.writeFileSync(recent,'recent');
- fs.symlinkSync(safe,path.join(f.dir,'.ai/work/link.dat'));
+ if(process.platform==='win32'){const target=path.join(f.root,'link-target');fs.mkdirSync(target);fs.symlinkSync(target,path.join(f.dir,'.ai/work/link.dat'),'junction');}
+ else fs.symlinkSync(safe,path.join(f.dir,'.ai/work/link.dat'));
  execFileSync('git',['init','-q',f.dir]);execFileSync('git',['-C',f.dir,'add',tracked]);
  const d=f.m.preview('P');assert.equal(d.candidates.length,2);assert.ok(d.candidates.some(c=>c.paths.includes(safe)));
  assert.equal(d.excluded.length,4);assert.ok(d.excluded.some(e=>e.reason.includes('Git')));assert.ok(d.excluded.some(e=>e.reason.includes('参照')));
@@ -65,7 +66,7 @@ test('changed eligible content rejects a stale cleanup token',t=>{
 });
 test('partial move retains a transaction and allows recovery of successful moves',t=>{
  const f=fixture(t);f.old('.ai/work/a.dat');f.old('.ai/work/b.dat');const d=f.m.preview('P'),original=fs.renameSync;
- fs.renameSync=(src,dst)=>{if(src.endsWith('/b.dat')){const e=Error('fixture');e.code='EXDEV';throw e;}return original(src,dst);};
+ fs.renameSync=(src,dst)=>{if(path.basename(src)==='b.dat'){const e=Error('fixture');e.code='EXDEV';throw e;}return original(src,dst);};
  let r;try {r=f.m.apply('P',d.token,d.candidates.map(c=>c.id),true);}finally{fs.renameSync=original;}
  assert.equal(r.ok,false);assert.equal(r.moved,1);assert.equal(f.m.restore('P',r.id,true).restored,1);assert.equal(f.m.history('P')[0].restored,true);
 });
@@ -119,4 +120,20 @@ test('構造確認は資料の相対パスをプロジェクト基準に解決�
 test('stopped preview retains protected large reference path, size and busy state',t=>{
  const f=fixture(t),large=f.old('large.json','x'.repeat(1024*1024+1));f.busy(true);
  const d=f.m.preview('P');assert.equal(d.token,'');assert.equal(d.candidates.length,0);assert.equal(d.stopped.path,large);assert.equal(d.stopped.size,1024*1024+1);assert.equal(d.busy,true);assert.equal(fs.statSync(large).size,1024*1024+1);
+});
+test('interrupted restore journal recovers only the exact restored bytes after reopening',t=>{
+ const f=fixture(t),file=f.old('.ai/work/old.dat','keep bytes'),preview=f.m.preview('P');
+ const moved=f.m.apply('P',preview.token,preview.candidates.map(c=>c.id),true);assert.equal(moved.ok,true);
+ const save=f.m.save.bind(f.m);f.m.save=r=>{if(r.entries.some(e=>e.restored))throw Error('fixture journal failure');save(r);};
+ assert.throws(()=>f.m.restore('P',moved.id,true),/journal failure/);assert.equal(fs.readFileSync(file,'utf8'),'keep bytes');
+ const reopened=new Maintenance({store:f.store,baseOf:p=>p.dir,trash:f.trash});
+ assert.equal(reopened.history('P')[0].restored,true);assert.deepEqual(reopened.restore('P',moved.id,true),{ok:true,restored:0});
+});
+test('broken cleanup history never masquerades as an empty successful history',t=>{
+ const f=fixture(t);fs.mkdirSync(f.m.records,{recursive:true});fs.writeFileSync(path.join(f.m.records,'00000000-0000-4000-8000-000000000000.json'),'{broken');assert.throws(()=>f.m.history('P'));
+});
+test('cleanup rejects a corrupted boolean state instead of silently treating it as restored',t=>{
+ const f=fixture(t),file=f.old('.ai/work/old.dat'),preview=f.m.preview('P'),moved=f.m.apply('P',preview.token,preview.candidates.map(c=>c.id),true);
+ const recordFile=path.join(f.m.records,moved.id+'.json'),record=JSON.parse(fs.readFileSync(recordFile));record.entries[0].restored='false';fs.writeFileSync(recordFile,JSON.stringify(record));
+ assert.throws(()=>f.m.history('P'),/破損/);assert.throws(()=>f.m.restore('P',moved.id,true),/破損/);assert.equal(fs.existsSync(file),false);assert.equal(fs.existsSync(record.entries[0].dest),true);
 });

@@ -291,6 +291,14 @@ function reportChild(child, kind, text) {
 }
 // 裏で動いている AI（チャットの AI が nohup などで起動した codex / claude / agy）。終わったら、その作業を未読にする
 const procwatch = require('./lib/procwatch').create({ projects: () => store.listProjects(), baseOf });
+function windowsMutationBlocker() {
+  if(process.platform!=='win32')return '';
+  try{procwatch.assertKnown();return '';}catch(e){return e.message;}
+}
+async function assertFreshWindowsProcesses() {
+  if(process.platform!=='win32')return;
+  await procwatch.scan();procwatch.assertKnown();
+}
 procwatch.onChange((list, { removed }) => {
   for (const x of removed) {
     if (!x.project) continue;
@@ -388,6 +396,9 @@ function workDir(p, t) {
   const wd = expandHome(t.workdir);
   if (wd && fs.existsSync(wd)) {
     if (process.platform === 'win32') {
+      require('./lib/safe-path').localPath(wd);
+      require('./lib/safe-path').localPath(workRoot(p));
+      require('./lib/safe-path').localPath(baseOf(p));
       const actual = fs.realpathSync(wd);
       const root = path.resolve(workRoot(p));
       const rel = path.relative(root, actual);
@@ -536,7 +547,7 @@ async function api(req, res, url) {
       initialPick, initialPickError: modelError(initialPick.ai, initialPick.model),
       efforts: roles.EFFORTS, hiddenModels: modelView.hidden(modelSettings), modelOrder: modelView.saved(modelSettings), phoneLabels: modelView.phone(modelSettings),
       unread: [...unread].map(k => { const [project, task] = k.split('\u0000'); return { project, task }; }),
-      background: procwatch.list().filter(x => x.project), backgroundMonitoring: process.platform !== 'win32', windowsBrowser: process.platform === 'win32',
+      background: procwatch.list().filter(x => x.project), backgroundMonitoring: true, backgroundStatus: procwatch.status(), windowsBrowser: process.platform === 'win32',
         remote: { enabled: process.platform === 'win32' ? false : remote.enabled() }, chatgpt: gpt.settings(), hubDir: __dirname,
       agyAvailable: Boolean(aiTools.find('agy') && aiTools.catalog().agy.models.some(x => x.id === launch.AGY_MODEL.id) && !launch.agyAccountError()),
     };
@@ -550,7 +561,7 @@ async function api(req, res, url) {
     return res.end(body);
   }
   // 裏で動いている AI の全部（どのプロジェクトにも当たらない物も含む）
-  if (req.method === 'GET' && url.pathname === '/api/background') return send(res, 200, { items: procwatch.list(), supported: process.platform !== 'win32' });
+  if (req.method === 'GET' && url.pathname === '/api/background') return send(res, 200, { items: procwatch.list(), supported: true, status: procwatch.status() });
   if (req.method === 'GET' && url.pathname === '/api/ai-tools') {
     const status = await aiTools.status();
     applyModelCatalog();
@@ -579,7 +590,7 @@ async function api(req, res, url) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
     const emit = ev => res.write(`data: ${JSON.stringify(ev)}\n\n`);
     const run = chats.busy(project, task);
-    emit({ type: 'rows', rows: chat.read(p.dir, task), busy: run ? { ai: run.ai, model: run.model, text: run.texts.join(run.ai === 'agy' ? '' : '\n\n'), started: run.started, last: run.last } : null, queue: chats.queue(project, task) });
+    emit({ type: 'rows', rows: chat.read(p.dir, task), busy: run ? { ai: run.ai, model: run.model, text: run.texts.join(run.ai === 'agy' ? '' : '\n\n'), started: run.started, last: run.last } : null, queue: chats.queue(project, task), approvals: run?.child?.listApprovals?.() || [] });
     const off = chats.watch(project, task, emit);
     const ping = setInterval(() => res.write(': ping\n\n'), 20000);
     req.on('close', () => { off(); clearInterval(ping); });
@@ -844,6 +855,7 @@ async function api(req, res, url) {
     if (DRY) return send(res, 200, { ok: true, dry: true, dir, model, effort, ...argv });
     try {
       const s = sessions.start({ project: b.project, task: b.task, ai: b.ai, dir, command: argv.command, args: argv.args, cols: b.cols, rows: b.rows });
+      if(!await s.startedP)return send(res,409,{error:'終端機的 CLI 啟動失敗；請檢查終端機輸出'});
       record('start', b, { model, effort, dir });
       return send(res, 200, { ok: true, dir, note, model, effort, running: !s.exited });
     } catch (e) {
@@ -885,7 +897,11 @@ async function api(req, res, url) {
       spec = pickSpec(t, b.to);
       const argv = launch.buildArgv({ ai: b.to, prompt: msg + ' ' + taskPrompt(p, t, file, dir, 'terminal', { ai: b.to, model: spec.model }), cmd: permCmd(b.to), model: spec.model, effort: spec.effort });
       if (DRY) return send(res, 200, { ok: true, dry: true, packet: packetFile, kind: convo.kind, ...argv });
-      try { sessions.start({ project: b.project, task: b.task, ai: b.to, dir, command: argv.command, args: argv.args, cols: b.cols, rows: b.rows }); started = true; }
+      try {
+        const session = sessions.start({ project: b.project, task: b.task, ai: b.to, dir, command: argv.command, args: argv.args, cols: b.cols, rows: b.rows });
+        if(!await session.startedP)return send(res,409,{error:'交接 CLI 未成功啟動；原作業負責人保留',packet:packetFile});
+        started = true;
+      }
       catch (e) { return send(res, 500, { error: String(e.message || e), packet: packetFile }); }
     }
     store.updateTask(p.id, t.id, { owner: launch.AI_KEY[b.to], memo: `${LABEL[from]} から ${LABEL[b.to]} へ交代（引き継ぎ資料: ${packetFile}）` });
@@ -1095,7 +1111,7 @@ async function api(req, res, url) {
   }
   // 作業用コピーを本体に取り込んで片付ける
   if (url.pathname === '/api/task/merge') {
-    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版尚未監測背景程序；請人工確認並用 Git 合併工作複本' });
+    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 合併的預覽授權與外部程序歸屬尚未完成驗收；工作複本保持原位' });
     const p = store.readProject(b.project);
     const file = store.taskFile(b.project, b.task);
     if (!p || !file) return send(res, 400, { error: '作業が見つかりません' });
@@ -1295,12 +1311,27 @@ async function api(req, res, url) {
     setUnread(b.project, b.task, false);
     return send(res, 200, { ok: true });
   }
+  if (url.pathname === '/api/chat/approval') {
+    if (typeof b.project !== 'string' || typeof b.task !== 'string' || typeof b.token !== 'string') return send(res, 400, { error: '授權要求格式錯誤' });
+    if (!['accept', 'decline', 'cancel', 'answer'].includes(b.decision)) return send(res, 400, { error: '授權決定格式錯誤' });
+    const run = chats.busy(b.project, b.task);
+    if (!run?.child?.respond || !run.child.listApprovals().some(a => a.token === b.token)) return send(res, 409, { error: '授權要求已失效或不屬於此作業' });
+    try {
+      // This route is protected by the browser's local authentication. Never accept an AI/MCP token here.
+      const log = path.join(ROOT, '_hub', 'approvals.jsonl');
+      fs.mkdirSync(path.dirname(log), { recursive: true });
+      fs.appendFileSync(log, JSON.stringify({ at: new Date().toISOString(), project: b.project, task: b.task, tokenHash: crypto.createHash('sha256').update(b.token).digest('hex'), decision: b.decision, phase: 'requested' }) + '\n');
+      run.child.respond(b.token, b.decision, b.answers);
+      return send(res, 200, { ok: true });
+    } catch (e) { return send(res, 409, { error: String(e.message || e) }); }
+  }
   if (url.pathname === '/api/chat/unqueue') {
     if (fromRemote()) record('chatunqueue', b);
     return send(res, 200, { ok: true, queue: chats.unqueue(b.project, b.task, String(b.id || '')) });
   }
   if (url.pathname === '/api/chat/stop') {
-    const ok = Boolean(chats.stop(b.project, b.task));
+    const stopping=chats.stop(b.project,b.task),ok=Boolean(stopping);
+    if(stopping)await stopping;
     if (ok) record('chatstop', b);
     return send(res, 200, { ok });
   }
@@ -1317,7 +1348,7 @@ async function api(req, res, url) {
     return undefined;
   }
   if (url.pathname === '/api/restart') {
-    if (process.platform === 'win32') return send(res, 409, { error: 'Windows 版請關閉啟動器視窗，再重新執行 start-windows.ps1' });
+    if (process.platform === 'win32') return send(res, 409, { error: '請待 AI 作業結束，執行 start-windows.ps1 -Stop，再執行啟動器；關閉介面會保留背景服務' });
     if (aiTools.isOperating()) return send(res, 409, { error: 'AI の更新・モデル再取得が進行中です' });
     const busy = sessions.list().filter(x => x.running).length + chats.running.size;
     if (busy) return send(res, 409, { error: `動いている AI が ${busy} つあります。止めてから（または返事が終わってから）押してください` });
@@ -1399,10 +1430,10 @@ async function api(req, res, url) {
     return send(res, 200, { ok: true, ...r });
   }
   if (url.pathname.startsWith('/api/hierarchy/remove/')) {
-    if (process.platform === 'win32' && !url.pathname.endsWith('/preview') && !url.pathname.endsWith('/history')) return send(res, 409, { error: 'Windows 版尚不支援自動移除與還原' });
     try {
       let result;
-      if(url.pathname.endsWith('/preview')) result=removal.preview(b.project,b.task);
+      if(url.pathname.endsWith('/apply')||url.pathname.endsWith('/restore'))await assertFreshWindowsProcesses();
+      if(url.pathname.endsWith('/preview')) {result=removal.preview(b.project,b.task);const blocker=windowsMutationBlocker();if(blocker)result.blockers.push(blocker);}
       else if(url.pathname.endsWith('/apply')) {result=removal.apply(b);pruneUnread();record('remove',{}, {transaction:result.record,moved:result.moved.length});}
       else if(url.pathname.endsWith('/restore')) {result=removal.restore(b.record,b.confirm);record('removerestore',{}, {transaction:b.record});}
       else if(url.pathname.endsWith('/history')) result={history:removal.history()};
@@ -1411,10 +1442,10 @@ async function api(req, res, url) {
     }catch(e){return send(res,409,{error:e.message});}
   }
   if (url.pathname.startsWith('/api/maintenance/')) {
-    if (process.platform === 'win32' && url.pathname !== '/api/maintenance/preview') return send(res, 409, { error: 'Windows 版尚不支援自動整理與驗證腳本' });
     try {
       let result;
-      if (url.pathname === '/api/maintenance/preview') result=maintenance.preview(b.project);
+      if(['/api/maintenance/apply','/api/maintenance/restore','/api/maintenance/verify'].includes(url.pathname))await assertFreshWindowsProcesses();
+      if (url.pathname === '/api/maintenance/preview') {result=maintenance.preview(b.project);const blocker=windowsMutationBlocker();if(blocker){result.busy=true;result.busyReason=blocker;}result.hostScript=process.platform==='win32';}
       else if (url.pathname === '/api/maintenance/apply') {result=maintenance.apply(b.project,b.token,b.selected,b.confirm);record('cleanup', {project:b.project}, {transaction:result.id,moved:result.moved});}
       else if (url.pathname === '/api/maintenance/restore') {result=maintenance.restore(b.project,b.transaction,b.confirm);record('restore',{project:b.project},{transaction:b.transaction});}
       else if (url.pathname === '/api/maintenance/verify') {result=await maintenance.verify(b.project,b.script,b.expectedHash,b.confirm);record('verify',{project:b.project},{ok:result.ok,script:b.script});}
@@ -1546,6 +1577,10 @@ const server = http.createServer(async (req, res) => {
     if (remoteLib.isRemote(req)) return await reqCtx.run({ remote: true }, () => remoteGate(req, res, url));
     if (!allowed(req)) return send(res, 403, { error: 'forbidden' });
     if (localAuth) {
+      if(req.method==='GET'&&url.pathname==='/api/local/proof') {
+        try {return send(res,200,{proof:localAuth.proof(url.searchParams.get('challenge'))});}
+        catch {return send(res,400,{error:'Invalid challenge'});}
+      }
       if (req.method === 'POST' && url.pathname === '/api/local/login') {
         let body; try { body = await readBody(req); } catch { return send(res, 400, { error: 'invalid request' }); }
         if (!localAuth.login(body.token)) return send(res, 403, { error: 'forbidden' });
@@ -1581,7 +1616,7 @@ if (require.main === module) {
     console.log(`Project Hub: http://127.0.0.1:${PORT}  （台帳の場所: ${ROOT}）`);
     console.log(sessions.available() ? '作業画面: 使えます' : '作業画面: 部品（node-pty）が未設定。setup.sh を実行してください');
     console.log('止める時は、この窓で Control + C');
-    if (!DRY && process.platform !== 'win32') procwatch.start();
+    if (!DRY) procwatch.start();
   });
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

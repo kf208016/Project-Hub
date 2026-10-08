@@ -72,7 +72,7 @@ try { const v = JSON.parse(localStorage.getItem('hub-view') || 'null'); if (v) v
 
 let stateTag = ''; // 一覧の印（本体が「変わっていない」を答えるために送り返す）
 async function api(path, body, headers) {
-  await window.hubAuthReady;
+  if (window.hubAuthReady) await window.hubAuthReady;
   const opt = body ? { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub': '1' }, body: JSON.stringify(body) } : {};
   if (headers) opt.headers = { ...opt.headers, ...headers };
   const r = await fetch(path, opt);
@@ -328,7 +328,14 @@ function render() {
   updateTurnCounts();
   showVersion(state.version, state.latest);
   const windowsNotice = $('#windows-notice');
-  if (windowsNotice) windowsNotice.hidden = !state.windowsBrowser;
+  if (windowsNotice) {
+    windowsNotice.hidden = !state.windowsBrowser;
+    if(state.windowsBrowser) {
+      const monitoring=state.backgroundStatus;
+      const status=monitoring?.state==='ok' ? (monitoring.unassigned ? `偵測到 ${monitoring.unassigned} 個未歸屬的外部 AI 程序，無法確認其作業位置。` : '背景程序查詢成功。') : '背景程序狀態未知，不能視為沒有作業。';
+      windowsNotice.textContent=`Windows 試作版：Codex 會話與 ConPTY 已接入。${status} 整理／還原需確認沒有活動或未歸屬作業；合併及其他 AI 整合仍待驗收。`;
+    }
+  }
   if (state.windowsBrowser) $('#upd').hidden = true;
   $('#turn').setAttribute('aria-pressed', view.kind === 'turn');
   $('#gear').setAttribute('aria-pressed', view.kind === 'settings');
@@ -1003,6 +1010,7 @@ function chatHtml(p, t) {
     return chatModelOption(a, m, `${AI_LABEL[a]}・${m}${suffix}`, `${a === 'agy' && !state.agyAvailable ? 'disabled' : ''} ${pick.ai === a && pick.model === m ? 'selected' : ''}`, suffix);
   }).join('') + gptOpt;
   return `<div class="chat" data-p="${esc(p.id)}" data-t="${esc(t.id)}">
+    <section id="chat-approvals" class="chat-approvals" aria-label="待處理授權" hidden></section>
     <div class="msgs" id="msgs">${EMPTY_CHAT}</div>
     <button class="chat-latest btn plain sm" id="chat-latest" type="button" hidden>↓ 最新へ</button>
     <form class="composer" id="composer">
@@ -1276,6 +1284,22 @@ function dur(ms) { const t = Math.max(0, Math.round(ms / 1000)); return t < 60 ?
 let busyTimer = null;
 function openChat(p, t, savedScroll) {
   const box = $('#msgs');
+  const approvalsBox = $('#chat-approvals');
+  const drawApprovals = rows => {
+    approvalsBox.hidden = !rows?.length;
+    approvalsBox.innerHTML = (rows || []).map(a => `<div class="approval" data-approval-token="${esc(a.token)}"><b>${a.questions ? 'Codex 需要你的回答' : 'Codex 需要額外權限'}</b>
+      <p>${esc(a.reason || '')}</p><pre>${esc(a.detail)}</pre>
+      ${(a.questions || []).map(q => `<label>${esc(q.question)}<input data-question-id="${esc(q.id)}" type="${q.isSecret ? 'password' : 'text'}" autocomplete="off" maxlength="10000" placeholder="${esc((q.options || []).map(o => o.label).join(' / '))}"></label>`).join('')}
+      <div class="approval-actions">${a.questions ? '<button type="button" class="btn" data-approval-decision="answer">送出回答</button>' : `<button type="button" class="btn" data-approval-decision="accept">${a.kind.includes('/permissions/') ? '允許本回合權限' : '僅允許這次'}</button><button type="button" class="btn plain" data-approval-decision="decline">拒絕</button>`}<button type="button" class="btn plain" data-approval-decision="cancel">取消作業</button></div></div>`).join('');
+  };
+  approvalsBox.addEventListener('click', async e => {
+    const button=e.target.closest('[data-approval-decision]'); if(!button)return;
+    const card=button.closest('[data-approval-token]'); if(!card)return;
+    const answers=Object.fromEntries([...card.querySelectorAll('[data-question-id]')].map(input=>[input.dataset.questionId,input.value]));
+    const buttons=[...card.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+    try { await api('/api/chat/approval',{project:p.id,task:t.id,token:card.dataset.approvalToken,decision:button.dataset.approvalDecision,answers}); }
+    catch(error) { toast(error.message);buttons.forEach(b=>b.disabled=false); }
+  });
   box.dataset.askHistoryPending = '1';
   const ta = $('#chat-in');
   const draftKey = chatAttachmentKey(p.id, t.id);
@@ -1406,6 +1430,8 @@ function openChat(p, t, savedScroll) {
     const ev = JSON.parse(m.data);
     const before = position();
     if (ev.type === 'queue') { drawQueue(ev.queue); return; }
+    if (ev.type === 'approvals') { drawApprovals(ev.approvals); return; }
+    if (ev.type === 'rows') drawApprovals(ev.approvals);
     if (ev.type === 'rows') { setBusy(null); drawQueue(ev.queue); box.innerHTML = ev.rows.length ? ev.rows.map(msgHtml).join('') : EMPTY_CHAT; delete box.dataset.askHistoryPending; refreshAsks(box); setBusy(ev.busy); if(scroller) scroller.rows(before); else scroll(true); }
     else if (ev.type === 'row') {
       const e = box.querySelector('.chat-empty'); if (e) e.remove();
@@ -1846,7 +1872,7 @@ function renderSettings() {
   const dirty = JSON.stringify(rolesDraft) !== JSON.stringify(state.roles.roles);
   $('#main').innerHTML = `<div class="view"><div class="settings">
     <div class="card"><h2>作業画面</h2>
-      <p><span class="badge ${state.terminal ? '' : 'off'}"><i></i>${state.windowsBrowser ? 'Windows 試作版：請使用 Codex 會話；內嵌終端機尚未驗證' : state.terminal ? '画面の中で Claude Code / Codex / Agy CLI を動かせます' : '部品（node-pty）が未設定です。ターミナルで setup.sh を実行してください。それまでは別の窓で開きます'}</span></p>
+      <p><span class="badge ${state.terminal ? '' : 'off'}"><i></i>${state.windowsBrowser ? (state.terminal ? 'Windows 試作版：Codex 會話與 ConPTY 終端機；完整功能仍在驗收' : 'Codex 會話可用；缺少 node-pty 原生元件，無法開啟終端機') : state.terminal ? '画面の中で Claude Code / Codex / Agy CLI を動かせます' : '部品（node-pty）が未設定です。ターミナルで setup.sh を実行してください。それまでは別の窓で開きます'}</span></p>
       <p>${state.windowsBrowser ? 'Codex 固定使用 workspace-write；設定檔中的權限命令不會覆蓋此限制。' : `権限：Claude Code は <code>${esc(state.roles.permissions['claude-code'] || '')}</code>、Codex は <code>${esc(state.roles.permissions.codex || '')}</code>`}</p></div>
     <div class="card"><h2>AI の更新</h2>
       <p>それぞれの AI を確認して更新します。Agy CLI は Gemini 3.1 Pro (High) の手動選択専用です。モデル一覧だけを読み直すこともできます。今使っているモデルや役割は自動では変わりません。</p>

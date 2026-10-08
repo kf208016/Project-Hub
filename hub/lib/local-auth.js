@@ -22,6 +22,7 @@ function create(secret) {
   }
   return {
     check, login,
+    proof(challenge) { if(typeof challenge!=='string'||!/^[a-f0-9]{64}$/.test(challenge))throw Error('Invalid instance challenge');return crypto.createHmac('sha256',secret).update('project-hub-instance-v1:'+challenge).digest('hex'); },
     cookie: `${COOKIE}=${session}; Path=/; HttpOnly; SameSite=Strict`,
   };
 }

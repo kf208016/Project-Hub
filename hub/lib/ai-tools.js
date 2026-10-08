@@ -3,7 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile, spawn } = require('child_process');
+const { spawn } = require('./managed-process');
 
 const { AIS, AI_LABEL, AGY_MODEL, childEnv, agyAccountError } = require('./launch');
 const { latestVersion, newer } = require('./update-check');
@@ -23,9 +23,20 @@ function runFile(file, args, opts = {}) {
   return new Promise((resolve, reject) => {
     let command;
     try { command = cli.invocation(file, args); } catch (e) { return reject(e); }
-    execFile(command.file, command.args, { timeout: opts.timeout || 30000, maxBuffer: MAX_OUTPUT, env: childEnv(path.basename(file) === 'agy' ? 'agy' : '', process.env) }, (err, stdout, stderr) => {
-      if (err) return reject(err); // stdout/stderr には認証情報が入り得るので外へ出さない
-      resolve(String(stdout || ''));
+    let child;
+    try { child = spawn(command.file, command.args, { stdio: ['pipe','pipe','pipe'], env: childEnv(path.basename(file) === 'agy' ? 'agy' : '', process.env), windowsHide: true }); }
+    catch(e) { return reject(e); }
+    let stdout = '', bytes = 0, failure;
+    const stop = message => { failure = Object.assign(new Error(message), { killed: true }); child.kill(); };
+    const timer = setTimeout(() => stop('CLI timed out'), opts.timeout || 30000);
+    child.stdin.end();
+    child.stdout.on('data', data => { bytes += data.length; if (bytes > MAX_OUTPUT) stop('CLI output exceeded limit'); else stdout += data.toString('utf8'); });
+    child.stderr.on('data', data => { bytes += data.length; if (bytes > MAX_OUTPUT) stop('CLI output exceeded limit'); });
+    child.on('error', e => { failure = e; });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (failure || code !== 0 || signal) reject(failure || Object.assign(new Error('CLI failed'), { code }));
+      else resolve(stdout);
     });
   });
 }
@@ -121,7 +132,8 @@ function claudeInitialize(file, timeoutMs = 12000) {
     '--safe-mode', '--no-session-persistence', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
     '--tools', '', '--model', 'claude-fable-5-1'];
   return new Promise((resolve, reject) => {
-    const child = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+    const command = cli.invocation(file, args);
+    const child = spawn(command.file, command.args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env, windowsHide: true });
     let done = false, success = false, timedOut = false, buf = '', bytes = 0, modelIds = [], pendingError = null;
     let killTimer;
     const stopChild = () => {

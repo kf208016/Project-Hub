@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub cleanup record with optional recovery markers",
+  "description": "Existing records remain valid. Runtime verifies project membership, canonical source/trash paths, content fingerprints, active work and restore collisions before changing files.",
+  "type": "object",
+  "required": ["id", "project", "at", "entries", "error"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[0-9a-f-]{36}$"},
+    "project": {"type": "string", "minLength": 1},
+    "at": {"type": "string", "format": "date-time"},
+    "error": {"type": "string"},
+    "entries": {"type": "array", "items": {
+      "type": "object", "required": ["src", "dest", "fingerprint", "restored"],
+      "properties": {
+        "src": {"type": "string", "minLength": 1},
+        "dest": {"type": "string", "minLength": 1},
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "restored": {"type": "boolean"},
+        "moved": {"type": "boolean"},
+        "moving": {"type": "boolean"},
+        "restoring": {"type": "boolean"}
+      },
+      "additionalProperties": true
+    }}
+  },
+  "additionalProperties": true
+}

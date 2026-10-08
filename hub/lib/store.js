@@ -8,6 +8,7 @@ const { parseDoc, parseYaml, setScalar, scalar } = require('./frontmatter');
 const { Completion, hash } = require('./completion');
 
 const SAFE_NAME = /^[^/\\\0]+$/;
+function validatePath(file) {if(process.platform==='win32')require('./safe-path').localPath(file,{allowMissing:true});return file;}
 
 function expandHome(p) {
   if (!p || typeof p !== 'string') return '';
@@ -15,7 +16,7 @@ function expandHome(p) {
 }
 
 function read(file) {
-  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+  try { validatePath(file);return fs.readFileSync(file, 'utf8'); } catch { return null; }
 }
 
 // 読んで分けた結果の使い回し：ファイルの更新時刻と大きさが前と同じなら、読み直さずに前の結果を使う
@@ -132,6 +133,7 @@ function pick(secs, word) {
 
 class Store {
   constructor(root) {
+    validatePath(root);validatePath(path.join(root,'_hub'));validatePath(path.join(root,'Product'));
     this.root = root;
     this.product = path.join(root, 'Product');
     this.completion = new Completion(root, c => {
@@ -152,6 +154,7 @@ class Store {
   projectDir(id) {
     if (!SAFE_NAME.test(id || '') || id === '.' || id === '..') return null;
     const dir = path.join(this.product, id);
+    try{validatePath(path.join(dir,'PROJECT.md'));}catch{return null;}
     return fs.existsSync(path.join(dir, 'PROJECT.md')) ? dir : null;
   }
 
@@ -159,6 +162,7 @@ class Store {
     const dir = this.projectDir(projectId);
     if (!dir || !SAFE_NAME.test(taskId || '') || taskId.startsWith('_') || taskId.startsWith('.')) return null;
     const f = path.join(dir, '.ai', 'tasks', taskId + '.md');
+    try{validatePath(f);}catch{return null;}
     return fs.existsSync(f) ? f : null;
   }
 
@@ -245,6 +249,7 @@ class Store {
     try { parent = h.resolve(parent, projects); derivedFrom = h.resolve(derivedFrom, projects); } catch(e) { return { error: e.message }; }
     if (projects.some(p => p.name === nm)) return { error: '同じ名前のプロジェクトがあります' };
     const dir = path.join(this.product, nm);
+    try{validatePath(dir);if(templateDir&&process.platform==='win32')require('./safe-path').localTree(templateDir);}catch(e){return {error:e.message};}
     if (fs.existsSync(dir)) return { error: `「${nm}」はもうあります` };
     fs.mkdirSync(dir, { recursive: true });
     if (templateDir && fs.existsSync(templateDir)) {
@@ -467,6 +472,7 @@ class Store {
     if (!dir || !title || !String(title).trim()) return null;
     let context; try { context = require('./work-context').validateTask(this.readProject(projectId), null, {parent,kind,derivedFrom,workspaceMode}, this.listProjects()); } catch(e) { return null; }
     const tdir = path.join(dir, '.ai', 'tasks');
+    validatePath(tdir);
     fs.mkdirSync(tdir, { recursive: true });
     const day = now().slice(0, 10).replace(/-/g, '');
     const id = require('./task-ids').reserveTaskId(this, projectId, dir, day);

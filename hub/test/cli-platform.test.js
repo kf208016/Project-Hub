@@ -31,3 +31,19 @@ test('Windows rejects unknown command shims and missing Codex package entries', 
   assert.equal(cli.find('..\\bad', dir, 'win32'), '');
   assert.deepEqual(cli.resolve('./fixture', ['arg'], '', 'darwin'), { file: './fixture', args: ['arg'] });
 });
+
+test('Windows resolves Claude native package bin and rejects traversal and script shims', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-win-claude-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const shim = path.join(dir, 'claude.cmd'), root = path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code');
+  const entry = path.join(root, 'bin', 'claude.exe');
+  fs.mkdirSync(path.dirname(entry), {recursive:true}); fs.writeFileSync(shim,''); fs.writeFileSync(entry,'');
+  const manifest = path.join(root,'package.json');
+  fs.writeFileSync(manifest,JSON.stringify({name:'@anthropic-ai/claude-code',bin:{claude:'bin/claude.exe'}}));
+  assert.deepEqual(cli.invocation(shim,['a & b'],'win32'),{file:entry,args:['a & b']});
+  fs.writeFileSync(manifest,JSON.stringify({name:'@anthropic-ai/claude-code',bin:{claude:'../../outside.exe'}}));
+  assert.throws(()=>cli.invocation(shim,[],'win32'),/escapes/);
+  assert.throws(()=>cli.invocation('tool.bat',[],'win32'),/unsupported/);
+  assert.throws(()=>cli.invocation('tool.exe',[42],'win32'),/invalid/);
+  assert.throws(()=>cli.invocation('tool.exe',['x\0y'],'win32'),/invalid/);
+});

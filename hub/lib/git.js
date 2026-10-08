@@ -6,11 +6,14 @@ const path = require('path');
 const os = require('os');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('child_process');
+const {localPath,localTree}=require('./safe-path');
+const WINDOWS=process.platform==='win32';
 
 const MAX_FILES = 20000;          // これより多いフォルダは自動で保存を始めない
 const MAX_BYTES = 1024 ** 3;      // 1GB
 
 function git(dir, args) {
+  if(WINDOWS)localPath(dir);
   // 名前が未設定の Mac でも保存できるように、未設定の時だけ仮の名前を使う
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
   if (!hasIdentity(dir)) Object.assign(env, { GIT_AUTHOR_NAME: 'Project Hub', GIT_AUTHOR_EMAIL: 'hub@localhost', GIT_COMMITTER_NAME: 'Project Hub', GIT_COMMITTER_EMAIL: 'hub@localhost' });
@@ -98,15 +101,38 @@ const real = p => { try { return fs.realpathSync(p); } catch (e) { return path.r
 // ブランチ名に使えない文字だけ置き換える（日本語はそのまま）
 const branchName = s => 'hub/' + (String(s).replace(/[\s~^:?*[\\\x00-\x1f\x7f]+|\.\.|@\{/g, '-').replace(/^[-.]+|[-.]+$|\.lock$/g, '') || 'task');
 
+function validateWindowsRepo(dir) {
+  if(!WINDOWS)return;
+  localPath(dir);
+  const top=repoTop(dir);if(!top)throw Error('無法確認 Git 儲存庫');
+  localPath(top);
+  for(const flag of ['--git-dir','--git-common-dir'])localPath(git(dir,['rev-parse','--path-format=absolute',flag]));
+  localPath(path.join(top,'.git'));
+}
+function validateWindowsWorktree(top,wt) {
+  if(!WINDOWS)return;
+  validateWindowsRepo(top);validateWindowsRepo(wt);
+  const common=d=>git(d,['rev-parse','--path-format=absolute','--git-common-dir']).toLowerCase();
+  if(common(top)!==common(wt)||path.resolve(top).toLowerCase()===path.resolve(wt).toLowerCase())throw Error('既有作業目錄不屬於此 Git 儲存庫的工作複本');
+  const registered=git(top,['worktree','list','--porcelain','-z']).split('\0').filter(x=>x.startsWith('worktree ')).map(x=>path.resolve(x.slice(9)).toLowerCase());
+  if(!registered.includes(path.resolve(wt).toLowerCase()))throw Error('工作複本未登錄在此 Git 儲存庫');
+}
+
 // 作業を始める前の準備。作業する場所と、何をしたかを返す
 //   base: 本体のフォルダ / workRoot: AI-Workspace/Work/<プロジェクト>
 function prepare({ base, workRoot, taskId, direct }) {
+  if(WINDOWS) {
+    localPath(base);localPath(workRoot,{allowMissing:true});
+    if(typeof taskId!=='string'||!taskId||taskId==='.'||taskId==='..'||/[\\/]/.test(taskId))throw Error('工作複本識別不能包含路徑');
+    localPath(path.join(workRoot,taskId),{allowMissing:true});
+  }
   if (!available()) {
     if (process.platform === 'win32') throw new Error('Windows 版需要 Git 才能隔離 AI 工作');
     return { dir: base, note: 'Git が無いため、本体で作業します' };
   }
   if (process.platform === 'win32' && direct) throw new Error('Windows 版不允許 AI 直接修改專案本體');
   let top = repoTop(base);
+  if(top)validateWindowsRepo(top);
   // 台帳のフォルダが別の Git の中にある時は、台帳だけの保存を始める
   if (top && direct && real(top) !== real(base)) top = null;
   if (!top) {
@@ -128,11 +154,12 @@ function prepare({ base, workRoot, taskId, direct }) {
   }
   const wt = path.join(workRoot, taskId);
   const rel = path.relative(top, base);
-  if (fs.existsSync(wt)) return { dir: path.join(wt, rel), worktree: wt };
+  if (fs.existsSync(wt)) {validateWindowsWorktree(top,wt);return { dir: path.join(wt, rel), worktree: wt };}
   fs.mkdirSync(workRoot, { recursive: true });
   const branch = branchName(taskId);
   const exists = tryGit(top, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
   git(top, exists ? ['worktree', 'add', '-q', wt, branch] : ['worktree', 'add', '-q', '-b', branch, wt, 'HEAD']);
+  validateWindowsWorktree(top,wt);
   const copied = copyLocalFiles(top, wt);
   return { dir: path.join(wt, rel), worktree: wt, created: true, branch, copied, note: `この作業専用の作業用コピーを作りました${copied.length ? `（${copied.join('・')} も写しました）` : ''}` };
 }
@@ -160,6 +187,7 @@ function copyLocalFiles(top, wt) {
 
 // 取り込む前の見通し：変わったファイルの数・行数、本体とぶつかりそうか（本体は触らない）
 function preview({ dir, workRoot, target }) {
+  if(WINDOWS){localPath(dir);localPath(workRoot);if(target)localPath(target);}
   const wt = repoTop(dir);
   const main = target ? repoTop(target) : wt && mainOf(wt);
   if (!wt || !main) return null;
@@ -183,20 +211,24 @@ function preview({ dir, workRoot, target }) {
 
 // ゴミ箱へ移す（完全には消さない）
 function toTrash(dir, trash) {
+  if(WINDOWS)localTree(dir);
   const dest = trashPath(dir, trash);
   fs.renameSync(dir, dest);
   return dest;
 }
 function trashPath(dir, trash) {
   const bin = trash || process.env.HUB_TRASH || path.join(os.homedir(), '.Trash');
+  if(WINDOWS)localPath(bin,{allowMissing:true});
   fs.mkdirSync(bin, { recursive: true });
   let dest = path.join(bin, path.basename(dir));
   if (fs.existsSync(dest)) dest += ' ' + new Date().toISOString().replace(/[:.]/g, '-');
+  if(WINDOWS)localPath(dest,{allowMissing:true});
   return dest;
 }
 
 // 作業用コピーを本体に取り込み、片付ける。ぶつかったら何も変えずに conflict を返す
 function merge({ dir, workRoot, title, target, cleanup = true }) {
+  if(WINDOWS){localPath(dir);localPath(workRoot);if(target)localPath(target);}
   const wt = repoTop(dir);
   if (!wt) return { ok: false, error: '作業用コピーが見つかりません' };
   const inside = path.relative(workRoot, wt);
@@ -205,6 +237,7 @@ function merge({ dir, workRoot, title, target, cleanup = true }) {
   const main = target ? repoTop(target) : origin;
   if (!main) return { ok: false, error: 'Git の作業用コピーではありません' };
   if (!origin || main === wt || git(main, ['rev-parse', '--path-format=absolute', '--git-common-dir']) !== git(wt, ['rev-parse', '--path-format=absolute', '--git-common-dir'])) return { ok: false, error: '統合先は同じ本体の別の作業用コピーにしてください' };
+  if(WINDOWS){validateWindowsWorktree(main,wt);localTree(wt);localTree(main);}
   const branch = git(wt, ['rev-parse', '--abbrev-ref', 'HEAD']);
   save(wt, `${title}（作業の保存）`);
   save(main, '取り込み前の保存');
@@ -224,6 +257,7 @@ function merge({ dir, workRoot, title, target, cleanup = true }) {
 }
 function isAncestor(dir, commit) { return /^[a-f0-9]{40,64}$/.test(commit || '') && tryGit(dir, ['merge-base', '--is-ancestor', commit, 'HEAD']) !== null; }
 function inspect(dir) {
+  if(WINDOWS)validateWindowsRepo(dir);
   const wt = repoTop(dir); if (!wt) return null;
   // porcelainの同じ変更マークでも、中身・ステージ・未追跡ファイルが変われば拒否する。
   const digest = createHash('sha256');
@@ -235,6 +269,7 @@ function inspect(dir) {
   let bytes=0;if(files.length>MAX_FILES)throw Error('未追跡ファイルが多すぎて照合できません');
   for (const f of files) {
     const file=path.join(wt,f),st=fs.lstatSync(file);
+    if(WINDOWS)localPath(file);
     if((bytes+=st.size)>256*1024*1024)throw Error('未追跡ファイルが大きすぎて照合できません');
     const data=st.isSymbolicLink()?Buffer.from(fs.readlinkSync(file)):fs.readFileSync(file);
     digest.update(JSON.stringify([f,st.mode,data.length])).update(data);
@@ -242,6 +277,7 @@ function inspect(dir) {
   return { head: git(wt, ['rev-parse', 'HEAD']), branch: git(wt, ['rev-parse', '--abbrev-ref', 'HEAD']), status: git(wt, ['status', '--porcelain']), content: digest.digest('hex') };
 }
 function cleanupCopy({ dir, workRoot, target, expectedSnapshot, beforeMove = () => {} }) {
+  if(WINDOWS){localTree(dir);localPath(workRoot);validateWindowsWorktree(target,dir);}
   const wt = repoTop(dir), rel = wt && path.relative(workRoot, wt);
   if (!wt || !rel || rel.startsWith('..') || path.isAbsolute(rel) || !mainOf(wt)) throw Error('片付ける作業用コピーの場所が不正です');
   const branch = git(wt, ['rev-parse', '--abbrev-ref', 'HEAD']);

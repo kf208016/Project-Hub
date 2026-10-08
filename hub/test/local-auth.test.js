@@ -19,3 +19,8 @@ test('local browser authentication refuses absent and incorrect tokens', () => {
 test('local browser authentication rejects weak configuration', () => {
   assert.throws(() => create('short'), /invalid/);
 });
+test('instance proof is bound to a fresh challenge and cannot authenticate as a cookie',()=>{
+ const auth=create(secret),challenge='a'.repeat(64),proof=auth.proof(challenge);
+ assert.match(proof,/^[a-f0-9]{64}$/);assert.notEqual(proof,auth.proof('b'.repeat(64)));assert.notEqual(proof,create('B'.repeat(43)).proof(challenge));
+ assert.equal(auth.check({headers:{cookie:'hub_local_session='+proof}}),false);assert.throws(()=>auth.proof('bad'));assert.throws(()=>auth.proof('hub_local_session'));
+});

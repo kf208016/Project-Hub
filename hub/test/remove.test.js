@@ -18,7 +18,7 @@ test('task removal is explicit, leaves parent and other task unchanged, optional
 test('optional attachments are selected only by id; references, symlinks and shared folders are kept',t=>{
  const f=fixture(t);const a=f.write(path.join(f.dir,'attachments',f.task,'x.txt'),'attach');let d=f.r.preview('Child',f.task);assert.equal(d.optional.length,1);
  fs.appendFileSync(f.store.taskFile('Child',f.other),`\nReference attachments/${f.task}/x.txt`);d=f.r.preview('Child',f.task);assert.equal(d.optional.length,0);assert.match(d.keep.at(-1).why,/参照/);
- const b=fixture(t);b.write(path.join(b.dir,'作業',b.task,'x.txt'),'draft');fs.symlinkSync('/etc/hosts',path.join(b.dir,'作業',b.task,'link'));assert.match(b.r.preview('Child',b.task).keep.at(-1).why,/リンク/);
+ const b=fixture(t);b.write(path.join(b.dir,'作業',b.task,'x.txt'),'draft');const target=path.join(b.root,'link-target');fs.mkdirSync(target);fs.symlinkSync(target,path.join(b.dir,'作業',b.task,'link'),process.platform==='win32'?'junction':'dir');assert.match(b.r.preview('Child',b.task).keep.at(-1).why,/リンク/);
  const c=fixture(t);const file=c.write(path.join(c.dir,'attachments',c.task,'x.txt'),'attach');d=c.r.preview('Child',c.task);const out=c.r.apply({token:d.token,optional:[d.optional[0].id],confirm:true});assert.equal(fs.existsSync(file),false);assert.equal(c.r.restore(out.record,true).restored,3);
 });
 test('shared references resolve the whole path from the reader project, not a matching suffix',t=>{
@@ -74,7 +74,9 @@ test('project deletion rejects descendants, shared contained body, external Git 
  f=fixture(t);f.project('Another',`folders:\n  本体: ${f.dir}/作業\n`);assert.match(f.r.preview('Child').blockers.join(' '),/使っています/);
  f=fixture(t);execFileSync('git',['init','-q',f.root]);execFileSync('git',['-C',f.root,'add','Product/Child/PROJECT.md']);assert.match(f.r.preview('Child').blockers.join(' '),/外側/);
  f=fixture(t);f.project('Project Hub');assert.match(f.r.preview('Project Hub').blockers.join(' '),/自身/);
- f=fixture(t);fs.renameSync(f.dir,f.dir+'-real');fs.symlinkSync(f.dir+'-real',f.dir);assert.match(f.r.preview('Child').blockers.join(' '),/リンク/);
+ f=fixture(t);fs.renameSync(f.dir,f.dir+'-real');fs.symlinkSync(f.dir+'-real',f.dir,process.platform==='win32'?'junction':'dir');
+ if(process.platform==='win32')assert.throws(()=>f.r.preview('Child'),/プロジェクトがありません/);else assert.match(f.r.preview('Child').blockers.join(' '),/リンク/);
+ assert.ok(fs.lstatSync(f.dir).isSymbolicLink());assert.ok(fs.existsSync(path.join(f.dir+'-real','PROJECT.md')));
 });
 test('own Git root is recoverable, preview changes and invalid optional ids are refused',t=>{
  const f=fixture(t);execFileSync('git',['init','-q',f.dir]);execFileSync('git',['-C',f.dir,'add','PROJECT.md']);let d=f.r.preview('Child');assert.equal(d.blockers.length,0);

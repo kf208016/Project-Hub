@@ -23,10 +23,7 @@ winOnly('Windows API starts Codex only in a Git worktree and rejects a non-Git b
   const entry = path.join(bin, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
   fs.mkdirSync(path.dirname(entry), { recursive: true });
   fs.writeFileSync(path.join(bin, 'codex.cmd'), '@echo off\r\nexit /b 99\r\n');
-  fs.writeFileSync(entry, `process.stdin.resume();process.stdin.on('end',()=>{
-    const out=x=>console.log(JSON.stringify(x));out({type:'thread.started',thread_id:'fixture'});
-    out({type:'item.completed',item:{type:'agent_message',text:'fixture reply'}});out({type:'turn.completed'});
-  });`);
+  require('./helpers/codex-server').install(bin);
   const listener = net.createServer();
   await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
   const port = listener.address().port;

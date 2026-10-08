@@ -13,7 +13,7 @@ const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7,
 // 外のコマンドを動かして出力を返す。終わり方が 0 以外でも出力があれば使う（lsof は一部の番号が無いと 1 で終わる）
 function defaultExec(cmd, args) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: TIMEOUT, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } }, (e, stdout) => {
+    execFile(cmd, args, { timeout: TIMEOUT, windowsHide:true, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } }, (e, stdout) => {
       if (e && !(typeof e.code === 'number' && stdout)) return reject(e);
       resolve(String(stdout || ''));
     });
@@ -50,11 +50,22 @@ const RE_APP = new RegExp(`^/.*?\\.app/\\S*?/${NAME}`); // 空白のあるアプ
 const RE_INTERP = new RegExp(`^(?:\\S*/)?(?:node|nodejs|bun|deno)\\s+(?:-\\S+\\s+)*(?:\\S*/)?${NAME}`);
 const RE_PKG = /^(?:\S*\/)?(?:node|nodejs|bun)\s+(?:-\S+\s+)*\S*\/@(?:anthropic-ai\/claude-code|openai\/(codex))\/\S+(?=\s|$)/; // npm で入れた物
 function aiOf(command) {
-  const c = String(command || '');
+  const c = String(command || '').replace(/\\/g,'/').replace(/"([^"\r\n]+)"/g,(_,s)=>s.replace(/ /g,'\ue000')).replace(/\.exe(?=\s|$)/gi,'');
   const m = c.match(RE_FIRST) || c.match(RE_APP) || c.match(RE_INTERP);
   if (m) return m[1];
   const k = c.match(RE_PKG);
   return k ? (k[1] ? 'codex' : 'claude') : '';
+}
+
+const WINDOWS_QUERY = '$ErrorActionPreference="Stop"; $rows=@(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{pid=[int]$_.ProcessId;ppid=[int]$_.ParentProcessId;since=if($_.CreationDate){$_.CreationDate.ToUniversalTime().ToString("o")}else{""};command=[string]$_.CommandLine;name=[string]$_.Name} }); ConvertTo-Json -InputObject $rows -Compress';
+function parseWindows(text) {
+  const rows=JSON.parse(text);
+  if(!Array.isArray(rows)||!rows.length)throw Error('Windows 程序查詢沒有完整結果');
+  return rows.map(r=>{
+    if(!Number.isInteger(r.pid)||r.pid<0||!Number.isInteger(r.ppid)||r.ppid<0||typeof r.since!=='string'||typeof r.command!=='string'||typeof r.name!=='string')throw Error('Windows 程序查詢格式無效');
+    // If a candidate's command line is protected, preserve it as unassigned.
+    return {...r,command:r.command||r.name};
+  });
 }
 
 // 見せる時に、鍵らしい物を伏せる
@@ -87,18 +98,20 @@ function parseLsof(text) {
 }
 
 // 場所 → プロジェクト・作業。作業の workdir がいちばん長く一致する物、無ければ本体 / 台帳のフォルダ
-const inside = (dir, cwd) => Boolean(dir) && (cwd === dir || cwd.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep));
+const pathFor = value => /^[a-z]:[\\/]|^\\\\/i.test(value) ? path.win32 : path.posix;
+const inside = (dir, cwd) => { if(!dir)return false;const p=pathFor(cwd),rel=p.relative(dir,cwd);return !p.isAbsolute(rel)&&rel!=='..'&&!rel.startsWith('..'+p.sep); };
 function mapCwd(cwd, projects, baseOf, real = x => x) {
   if (!cwd) return { project: null, task: null };
   let best = null;
   const consider = (dir, project, task) => {
     for (const d of new Set([dir, real(dir)])) if (inside(d, cwd) && (!best || d.length > best.len || (d.length === best.len && task && !best.task))) best = { len: d.length, project, task };
   };
-  for (const p of projects || []) for (const t of p.tasks || []) { const wd = expandHome(t.workdir); if (wd) consider(path.resolve(wd), p.id, t.id); }
+  const paths=pathFor(cwd);
+  for (const p of projects || []) for (const t of p.tasks || []) { const wd = expandHome(t.workdir); if (wd) consider(paths.resolve(wd), p.id, t.id); }
   if (best) return { project: best.project, task: best.task };
   for (const p of projects || []) {
     let b = ''; try { b = baseOf ? baseOf(p) : ''; } catch (e) { b = ''; }
-    for (const d of [b, p.dir]) if (d) consider(path.resolve(expandHome(d)), p.id, null);
+    for (const d of [b, p.dir]) if (d) consider(paths.resolve(expandHome(d)), p.id, null);
   }
   return best ? { project: best.project, task: best.task } : { project: null, task: null };
 }
@@ -115,7 +128,8 @@ function create(opts = {}) {
   const real = d => { if (!realCache.has(d)) { if (realCache.size > 1000) realCache.clear(); let r = d; try { r = fs.realpathSync(d); } catch (e) { r = d; } realCache.set(d, r); } return realCache.get(d); };
   const cwdCache = new Map(); // "pid:since" → cwd
   const listeners = [];
-  let current = [], timer = null, busy = false, lastWarn = 0;
+  let current = [], timer = null, inFlight = null, lastWarn = 0;
+  let status = {state:'unknown',checkedAt:null,error:'尚未取得程序狀態'};
   const warn = m => { const now = Date.now(); if (now - lastWarn < WARN_EVERY) return; lastWarn = now; log(`[裏の作業の見張り] ${m}`); };
 
   async function cwds(rows) {
@@ -136,36 +150,41 @@ function create(opts = {}) {
     return rows.map(r => cwdCache.get(key(r)) || '');
   }
 
-  async function scan() {
-    if (busy) return current;
-    busy = true;
+  async function scanNow() {
     try {
-      let text;
-      try { text = await exec('ps', psArgs(platform)); }
-      catch (e) { warn(`ps が使えません：${String(e.message || e).split('\n')[0]}`); return current; }
-      const rows = parsePs(text);
-      if (!rows.length) { warn('ps の出力を読めませんでした'); return current; }
+      let rows;
+      try {
+        rows=platform==='win32'?parseWindows(await exec(path.join(process.env.SystemRoot||'C:\\Windows','System32/WindowsPowerShell/v1.0/powershell.exe'),['-NoProfile','-NonInteractive','-Command',WINDOWS_QUERY])):parsePs(await exec('ps',psArgs(platform)));
+        if(!rows.length)throw Error('程序查詢沒有完整結果');
+      } catch(e) { status={state:'unknown',checkedAt:status.checkedAt,error:'程序查詢失敗；無法確認是否有背景作業'};warn((platform==='win32'?'Windows':'ps')+'：'+status.error);return current; }
       const kept = pickAi(rows, selfPid);
-      const dirs = kept.length ? await cwds(kept) : [];
+      const dirs = platform==='win32'?kept.map(()=>''):kept.length ? await cwds(kept) : [];
       let all = [];
       if (kept.length) { try { all = projects() || []; } catch (e) { all = []; } }
       const next = kept.map((r, i) => ({ pid: r.pid, ai: r.ai, cmd: cleanCmd(r.command), since: r.since, cwd: dirs[i], ...mapCwd(dirs[i], all, baseOf, real) }));
-      const before = new Set(current.map(x => x.pid)), after = new Set(next.map(x => x.pid));
-      const removed = current.filter(x => !after.has(x.pid)), added = next.filter(x => !before.has(x.pid));
+      const identity=x=>`${x.pid}:${x.since}`;
+      const before = new Set(current.map(identity)), after = new Set(next.map(identity));
+      const removed = current.filter(x => !after.has(identity(x))), added = next.filter(x => !before.has(identity(x)));
       current = next;
+      status={state:'ok',checkedAt:new Date().toISOString(),error:''};
       if (removed.length || added.length) for (const fn of listeners) { try { fn(current, { added, removed }); } catch (e) { log(`[裏の作業の見張り] ${e.message}`); } }
       return current;
-    } catch (e) { warn(String(e.message || e)); return current; }
-    finally { busy = false; }
+    } catch (e) { status={state:'unknown',checkedAt:status.checkedAt,error:'程序狀態無法確認'};warn(status.error); return current; }
+  }
+  function scan() {
+    if(!inFlight)inFlight=scanNow().finally(()=>{inFlight=null;});
+    return inFlight;
   }
 
   return {
     scan,
     list: () => current.slice(),
+    status: () => ({...status,unassigned:current.filter(x=>!x.project).length}),
+    assertKnown() { if(status.state!=='ok'||Date.now()-Date.parse(status.checkedAt)>2*INTERVAL||current.some(x=>!x.project))throw Error('背景程序狀態未知或有未歸屬 AI；請先確認作業已停止'); },
     onChange: fn => { listeners.push(fn); },
     start(ms = INTERVAL) { if (timer) return; scan().catch(() => {}); timer = setInterval(() => { scan().catch(() => {}); }, ms); timer.unref?.(); },
     stop() { if (timer) clearInterval(timer); timer = null; },
   };
 }
 
-module.exports = { create, parsePs, parseLstart, parseLsof, aiOf, cleanCmd, pickAi, mapCwd, psArgs };
+module.exports = { create, parsePs, parseWindows, parseLstart, parseLsof, aiOf, cleanCmd, pickAi, mapCwd, psArgs };

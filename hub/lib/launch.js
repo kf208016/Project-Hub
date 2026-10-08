@@ -134,7 +134,7 @@ function buildArgv({ ai, prompt, cmd, model, effort }) {
   const base = (cmd || DEFAULT_CMD[ai] || '').trim().split(/\s+/).filter(Boolean);
   if (!base.length || !['claude', 'codex'].includes(ai)) throw new Error('unknown ai');
   const args = base.slice(1);
-  if (ai === 'codex' && process.platform === 'win32') args.push('-a', 'never', '-s', 'workspace-write');
+  if (ai === 'codex' && process.platform === 'win32') args.push('-a', 'on-request', '-s', 'workspace-write', '-c', 'windows.sandbox="elevated"', '-c', 'approvals_reviewer="user"', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true', '-c', 'sandbox_workspace_write.exclude_slash_tmp=true');
   const m = flagFor(ai, model);
   const e = effort && EFFORT_FLAG[ai][effort];
   if (ai === 'claude') {

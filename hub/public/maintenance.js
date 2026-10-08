@@ -7,7 +7,7 @@ function drawMaintenance() {
   const stopped=d.stopped||d.excluded[0];
   const records=[...d.history.map(r=>({...r,kind:'cleanup'})),...(d.removed||[]).map(r=>({...r,kind:'remove'}))].sort((a,b)=>b.at.localeCompare(a.at));
   $('#maintenance-title').textContent=p.name+'：整理と確認';
-  $('#maintenance-body').innerHTML=`<p class="maintenance-status" role="status">${d.busy?'AIが作業中のため使えません。終わってから押してください。':'片付けるものを選び、必要に応じて確認・復元できます。'}</p>
+  $('#maintenance-body').innerHTML=`<p class="maintenance-status" role="status">${d.busy?esc(d.busyReason||'AIが作業中のため使えません。終わってから押してください。'):'片付けるものを選び、必要に応じて確認・復元できます。'}</p>
     <h3>① 片付け</h3><p class="small">古い一時ファイルと過去版を探します。資料・成果物・作業台帳・Gitは対象外です。</p>
     <button class="btn plain" data-maint-action="refresh" type="button" ${maintenancePending?'disabled':''}>候補を探す</button>
     <p id="maintenance-preview-status" class="note" role="status">${d.token?d.candidates.length?`${d.candidates.length}件見つかりました（合計${maintenanceSize(d.candidates.reduce((n,x)=>n+x.bytes,0))}）。移すものを選んでください。`:`片付けるものはありませんでした。${esc(new Date().toLocaleTimeString('ja-JP'))}`:`確認しきれず止めました：${esc(stopped?.reason||'参照を確認できません')}`}</p>
@@ -49,7 +49,7 @@ document.addEventListener('click',async e=>{
     try {await refreshMaintenance();if(openBtn.dataset.maintenance==='verify')$('#maintenance-verify-title')?.scrollIntoView({block:'center'});}catch(err){$('#maintenance-body').textContent=err.message;}return;}
   if(e.target.id==='maintenance-close'){$('#maintenance-drawer').hidden=true;return;}
   const btn=e.target.closest('[data-maint-action]');if(!btn || btn.disabled || maintenancePending)return;
-  if(maintenanceData?.busy && btn.dataset.maintAction!=='refresh'){toast('AIが作業中です。終わってから操作してください');return;}
+  if(maintenanceData?.busy && btn.dataset.maintAction!=='refresh'){toast(maintenanceData.busyReason||'AIが作業中です。終わってから操作してください');return;}
   const action=btn.dataset.maintAction, project=maintenanceProject;
   let request,result;
   if(action==='apply') {
@@ -60,7 +60,7 @@ document.addEventListener('click',async e=>{
   else if(action==='restore') {if(!confirm('この整理でゴミ箱へ移したものを復元しますか？同名のファイルは上書きしません。'))return;request={project,transaction:btn.dataset.transaction,confirm:true};}
   else if(action==='verify'||action==='test') {
     const script=action==='test'?$('#maintenance-script').value:'', choice=maintenanceData.scripts.find(s=>s.name===script);
-    if(script && !confirm(`この検証コマンドを実行しますか？
+    if(script && !confirm(`${maintenanceData.hostScript?'此命令會以目前 Windows 使用者權限執行專案程式，可存取主機檔案與網路。請只執行已信任的程式。\n':''}この検証コマンドを実行しますか？
 ${script}: ${choice.command}`))return;
     request={project,script,expectedHash:choice?.hash,confirm:true};
   }

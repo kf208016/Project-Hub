@@ -65,11 +65,13 @@ class Sessions {
     catch (e) { throw new Error(`「${command}」を起動できません：${e.message}`); }
     let proc;
     try {
-      proc = pty.spawn(invocation.file, invocation.args, { name: 'xterm-256color', cols: cols || 100, rows: rows || 30, cwd: dir, env: fullEnv });
+      const terminal=process.platform==='win32'?require('./managed-pty'):pty;
+      proc = terminal.spawn(invocation.file, invocation.args, { name: 'xterm-256color', cols: cols || 100, rows: rows || 30, cwd: dir, env: fullEnv });
     } catch (e) {
       throw new Error(`作業画面を開けませんでした（${e.message}）`);
     }
-    const s = { proc, buf: '', watchers: new Set(), ai, dir, started: Date.now(), lastOut: Date.now(), exited: false, code: null };
+    const s = { proc, startedP:proc.started||Promise.resolve(true), buf: '', watchers: new Set(), ai, dir, started: Date.now(), lastOut: Date.now(), exited: false, code: null };
+    s.finishedP=new Promise(resolve=>s.resolveFinished=resolve);
     proc.onData(d => {
       // 大きさを変えた直後の描き直しは「作業中」に数えない
       if (Date.now() - (s.resizedAt || 0) > 1500) s.lastOut = Date.now();
@@ -79,6 +81,7 @@ class Sessions {
     });
     proc.onExit(({ exitCode }) => {
       s.exited = true; s.code = exitCode;
+      s.resolveFinished();
       for (const w of s.watchers) w({ type: 'exit', code: exitCode });
       if (this.onExit) { try { this.onExit(project, task, ai, s); } catch (e) { /* 無視 */ } }
     });
@@ -117,7 +120,7 @@ class Sessions {
     if (!s) return false;
     s.stopped = true; // 人が止めた（未読にしない）
     if (!s.exited) { try { s.proc.kill(); } catch (e) { /* 無視 */ } }
-    this.map.delete(this.key(project, task, ai));
+    // Keep the session visible to activity locks until its entire owned Job exits.
     return true;
   }
 

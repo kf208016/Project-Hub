@@ -676,6 +676,13 @@ test('送信失敗なら本文と画像を保持し、画像だけでも送信�
   assert.deepEqual(Array.from(a.context.chatImages('p','t'),x=>x.id), ['later']);
 });
 
+test('Codex approval cards escape untrusted preview text and reflect consumed requests',()=>{
+ const a=conversationApp();
+ a.stream().onmessage({data:JSON.stringify({type:'approvals',approvals:[{token:'synthetic-token',kind:'item/commandExecution/requestApproval',reason:'<script>alert(1)</script>',detail:'echo <img src=x onerror=alert(1)>',expiresAt:Date.now()+1000}]})});
+ const box=a.element('#chat-approvals');assert.equal(box.hidden,false);assert.doesNotMatch(box.innerHTML,/<script>|<img src=x/);assert.match(box.innerHTML,/&lt;script&gt;/);assert.match(box.innerHTML,/僅允許這次/);assert.match(box.innerHTML,/data-approval-decision="decline"/);
+ a.stream().onmessage({data:JSON.stringify({type:'approvals',approvals:[]})});assert.equal(box.hidden,true);assert.equal(box.innerHTML,'');
+});
+
 test('画像追加中の送信を待ち、完了後に画像付きで送れる', async () => {
   const a = conversationApp(); let finish, calls = 0;
   a.element('#chat-in').value = '依頼';
@@ -933,18 +940,22 @@ test('上下の回答は同じ送信枠を使い、受付までの連打を1回�
 });
 
 // 実サーバーが起動失敗時に配信する SSE と 409 を画面処理へ通す。
-test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後の再送は1回だけ受け付ける',async()=>{
+test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後の再送は1回だけ受け付ける',{timeout:20000},async()=>{
  const os=require('node:os');
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'hub-answer-r1-')),root=path.join(tmp,'root'),dir=path.join(root,'Product','p'),bin=path.join(tmp,'bin');
  fs.mkdirSync(path.join(root,'_hub'),{recursive:true});fs.copyFileSync(path.join(__dirname,'../../docs/project-hub/templates/_hub/roles.yaml'),path.join(root,'_hub/roles.yaml'));fs.mkdirSync(path.join(dir,'.ai/tasks'),{recursive:true});fs.mkdirSync(bin);
  fs.writeFileSync(path.join(dir,'PROJECT.md'),'---\nname: p\nstatus: 進行中\nphases: []\nfolders: {}\nrelated: []\n---\n');
  const question='選んでください',taskFile=path.join(dir,'.ai/tasks/t.md');fs.writeFileSync(taskFile,`---\nid: t\ntitle: R1\nowner: codex\nmodel: GPT-6.1-Sol\nworkspaceMode: direct\nstate: 返事待ち\nquestion: ${question}\n---\n`);
  require('../lib/chat').append(dir,'t',{role:'assistant',ai:'codex',text:'回答を選んでください',asks:[{question,options:['A','B'],multi:false}]});
- const command=path.join(bin,'codex');fs.writeFileSync(command,'#!/nonexistent/r1-fixture-interpreter\n',{mode:0o755});
- const env={PATH:bin+':/usr/bin:/bin',HUB_ROOT:root,HUB_PORT:'0',HUB_DRY_RUN:'1',HUB_AI_HOME:path.join(tmp,'home'),HUB_TRASH:path.join(tmp,'trash')},previous={};for(const k of Object.keys(env)){previous[k]=process.env[k];process.env[k]=env[k];}
+ const command=path.join(bin,process.platform==='win32'?'codex.exe':'codex');fs.writeFileSync(command,'#!/nonexistent/r1-fixture-interpreter\n',{mode:0o755});
+ const secret='R'.repeat(43);
+ const env={PATH:bin+path.delimiter+process.env.PATH,HUB_ROOT:root,HUB_PORT:'0',HUB_LOCAL_TOKEN:secret,HUB_DRY_RUN:'1',HUB_AI_HOME:path.join(tmp,'home'),HUB_TRASH:path.join(tmp,'trash')},previous={};for(const k of Object.keys(env)){previous[k]=process.env[k];process.env[k]=env[k];}
  const serverModule=require.resolve('../server');let server,reader,abort;const events=[];
  try{
-  delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));process.env.HUB_PORT=String(port);delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(port,'127.0.0.1',r));const base=`http://127.0.0.1:${port}`;
+  delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));process.env.HUB_PORT=String(port);process.env.HUB_LOCAL_TOKEN=secret;delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(port,'127.0.0.1',r));const base=`http://127.0.0.1:${port}`;
+  const login=await fetch(base+'/api/local/login',{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify({token:secret})});assert.equal(login.status,200);
+  const cookie=login.headers.get('set-cookie').split(';')[0];
+  const localFetch=(url,options={})=>fetch(url,{...options,headers:{...options.headers,Cookie:cookie}});
   const a=app(),s=snapshot('返事待ち');s.projects[0].tasks[0].question=question;vm.runInContext('state='+JSON.stringify(s)+';view={kind:"work",project:"p",task:"t"}',a.context);
   const asks=[{question,options:['A','B'],multi:false}],askKey=JSON.stringify(['p','t',asks]);const set=new Set(['ask']),status={textContent:''},option={disabled:false,value:'A'},free={disabled:false,value:'残す補足'},button={disabled:false,textContent:''};
   const ask={dataset:{askKey},classList:{contains:x=>set.has(x),add:(...xs)=>xs.forEach(x=>set.add(x)),toggle:(x,on)=>on?set.add(x):set.delete(x)},querySelector:s=>s==='.ask-status'?status:button,querySelectorAll:()=>[option,free,button]};
@@ -955,15 +966,15 @@ test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後�
   a.document.querySelectorAll=sel=>sel==='.ask'?[ask]:[];a.element('#chat-ai').value='codex|GPT-6.1-Sol';a.element('#chat-effort').value='極高';a.element('#chat-in').value='別の下書き';
   a.context.chatImages('p','t').push(attached('r1-retained'));a.context.load=async()=>{};a.context.refreshTree=async()=>{};a.context.toast=()=>{};let lower;a.context.bindAskAnswers=(_box,send)=>{lower=send;};a.context.openChat(s.projects[0],s.projects[0].tasks[0]);
   const installPartial=()=>a.elements.set('#msg-partial',{querySelector:s=>a.element('partial'+s),insertAdjacentHTML:box.insertAdjacentHTML,remove(){a.elements.delete('#msg-partial');}});
-  let calls=0,holdResponse;a.context.api=async(route,body)=>{calls++;const res=await fetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify(body)});const result=await res.json();if(holdResponse)await holdResponse;if(!res.ok)throw Error(result.error);return result;};
-  abort=new AbortController();const response=await fetch(base+'/api/chat/stream?project=p&task=t',{signal:abort.signal});reader=response.body.getReader();
+  let calls=0,holdResponse;a.context.api=async(route,body)=>{calls++;const res=await localFetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify(body)});const result=await res.json();if(holdResponse)await holdResponse;if(!res.ok)throw Error(result.error);return result;};
+  abort=new AbortController();const response=await localFetch(base+'/api/chat/stream?project=p&task=t',{signal:abort.signal});assert.equal(response.status,200);reader=response.body.getReader();
   let buffer='',idleResolve;const pump=(async()=>{while(true){const part=await reader.read();if(part.done)break;buffer+=Buffer.from(part.value).toString();let end;while((end=buffer.indexOf('\n\n'))!==-1){const chunk=buffer.slice(0,end);buffer=buffer.slice(end+2);const data=chunk.split('\n').find(l=>l.startsWith('data:'));if(!data)continue;const ev=JSON.parse(data.slice(5));events.push(ev);if(ev.type==='rows')continue;if(ev.type==='busy')installPartial();a.stream().onmessage({data:JSON.stringify(ev)});if(ev.type==='idle')idleResolve?.();}}})();pump.catch(()=>{});
   const reenter=async()=>{
    // 実openChatの再入場：空DOMでcontrolsを更新してから、実serverの履歴rowsを受け取る。
    vm.runInContext('view.kind="project"',a.context);rows.length=0;historyVisible=false;
    vm.runInContext('view.kind="work"',a.context);a.context.openChat(s.projects[0],s.projects[0].tasks[0]);
    const attempts=vm.runInContext('askAttempts',a.context);assert.equal(attempts.size,1,'初期rows待ちでは再送対象を消さない');
-   const historyAbort=new AbortController(),historyResponse=await fetch(base+'/api/chat/stream?project=p&task=t',{signal:historyAbort.signal}),historyReader=historyResponse.body.getReader();
+   const historyAbort=new AbortController(),historyResponse=await localFetch(base+'/api/chat/stream?project=p&task=t',{signal:historyAbort.signal}),historyReader=historyResponse.body.getReader();
    try{let data='';while(!data.includes('\n\n')){const part=await historyReader.read();assert.equal(part.done,false);data+=Buffer.from(part.value).toString();}const line=data.split('\n').find(l=>l.startsWith('data:'));const history=JSON.parse(line.slice(5));assert.equal(history.type,'rows');a.stream().onmessage({data:JSON.stringify(history)});}finally{historyAbort.abort();await historyReader.cancel().catch(()=>{});}
   };
   for(const path of ['lower','upper']){
@@ -976,11 +987,13 @@ test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後�
   }
   assert.ok(events.some(e=>e.type==='row'&&e.row.role==='user'));assert.ok(events.some(e=>e.type==='busy'));assert.ok(events.some(e=>e.type==='row'&&e.row.error));assert.ok(events.some(e=>e.type==='idle'));assert.match(fs.readFileSync(taskFile,'utf8'),/state: 返事待ち/);
   // fixtureの起動原因を直してから再送。上下の同時操作は1受付。
-  fs.writeFileSync(command,`#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>{console.log(JSON.stringify({type:'turn.completed'}));},2000));\n`,{mode:0o755});installPartial();const before=calls,pending=lower('A\n自由入力：残す補足');assert.equal(await vm.runInContext('sendWorkAnswer.send("二重回答")',a.context),false);assert.equal(await pending,true);assert.equal(calls,before+1);assert.match(fs.readFileSync(taskFile,'utf8'),/question: *\n/);
+  if(process.platform==='win32'){fs.unlinkSync(command);require('./helpers/codex-server').install(bin,{delay:2000});}
+  else fs.writeFileSync(command,`#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>{console.log(JSON.stringify({type:'turn.completed'}));},2000));\n`,{mode:0o755});
+  installPartial();const before=calls,pending=lower('A\n自由入力：残す補足');assert.equal(await vm.runInContext('sendWorkAnswer.send("二重回答")',a.context),false);assert.equal(await pending,true);assert.equal(calls,before+1);assert.match(fs.readFileSync(taskFile,'utf8'),/question: *\n/);
   // 成功済みは遅い失敗通知で戻らない。
   a.context.refreshAsks(box);assert.equal(button.disabled,true);
-  await fetch(base+'/api/chat/stop',{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify({project:'p',task:'t'})});
- }finally{abort?.abort();await reader?.cancel().catch(()=>{});if(server)await new Promise(r=>server.close(r));for(const k of Object.keys(env)){if(previous[k]===undefined)delete process.env[k];else process.env[k]=previous[k];}}
+  await localFetch(base+'/api/chat/stop',{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify({project:'p',task:'t'})});
+ }finally{abort?.abort();await reader?.cancel().catch(()=>{});if(server)await new Promise(r=>server.close(r));for(const k of Object.keys(env)){if(previous[k]===undefined)delete process.env[k];else process.env[k]=previous[k];}fs.rmSync(tmp,{recursive:true,force:true,maxRetries:20,retryDelay:50});}
 });
 
 test('GitHub creation appears only without any origin, and unavailable gh has a disabled button and reason', () => {

@@ -1,8 +1,9 @@
 'use strict';
 // 契約CLIの状態だけを読む。user prompt / thread / turn は送らず、秘密・生出力は公開しない。
-const { spawn } = require('node:child_process');
+const { spawn } = require('./managed-process');
 const os = require('node:os');
 const { executable } = require('./ai-tools');
+const cli = require('./cli-platform');
 
 const TTL = 5 * 60 * 1000;
 const COOLDOWN = 30 * 1000;
@@ -65,7 +66,7 @@ function readCli(ai, file, options = {}) {
     ['app-server','--listen','stdio://','-c','analytics.enabled=false'];
   return new Promise((resolve, reject) => {
     let child;
-    try { child = start(file, args, { stdio:['pipe','pipe','pipe'], cwd: os.tmpdir(), env: process.env }); }
+    try { const command = cli.invocation(file, args); child = start(command.file, command.args, { stdio:['pipe','pipe','pipe'], cwd: os.tmpdir(), env: process.env, windowsHide: true }); }
     catch { reject(error('start')); return; }
     let bytes = 0, buf = '', stopped = false, settled = false, value, failure, killTimer;
     const finish = () => {
