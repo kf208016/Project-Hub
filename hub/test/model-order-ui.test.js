@@ -1,6 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path');
 const ModelOrder=require('../public/model-order');
+const providers=require('../lib/provider-registry').list({platform:'darwin'});
 const models={'claude-code':['Opus 5.5','Fable 5.1'],codex:['GPT-6.1-Sol','GPT-6-Astra'],agy:['Gemini 3.1 Pro (High)']};
 const defaults=ModelOrder.ordered(models),mixed=[defaults[3],defaults[0],defaults[2],defaults[1],defaults[4]];
 function fixture() {
@@ -9,10 +10,10 @@ function fixture() {
  const el=s=>{if(!elements.has(s))elements.set(s,{innerHTML:'',hidden:false,dataset:{},querySelectorAll:()=>focusButtons,setAttribute(){},addEventListener(){}});return elements.get(s);};
  const document={querySelector:el,querySelectorAll:()=>[],addEventListener:(n,f)=>(events[n]||=[]).push(f)};
  const ctx=vm.createContext({document,window:{matchMedia:()=>({matches:false})},navigator:{userAgent:''},localStorage:{getItem:()=>null,setItem(){}},fetch:()=>new Promise(()=>{}),setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},requestAnimationFrame(){},console,URLSearchParams,ModelOrder,ProjectOrder:require('../public/project-order'),confirm:()=>true});
- const run=s=>vm.runInContext(s,ctx);run(fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8'));
+ const run=s=>vm.runInContext(s,ctx);run(fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8'));ctx.providerSnapshot=providers;
  ctx.stubApi=async(route,b)=>{calls.push({route,b:JSON.parse(JSON.stringify(b))});if(ctx.hold)await ctx.hold;if(ctx.fail){const e=Error(ctx.fail);e.status=ctx.status;throw e;}if(route==='/api/models/hidden')return{modelOrder:mixed,hiddenModels:{codex:b.hidden?[b.model]:[]}};return {modelOrder:b.order,hiddenModels:{codex:['GPT-6-Astra']}};};
  ctx.notice=x=>messages.push(x);
- run(`api=stubApi;toast=notice;loadAiTools=()=>{};loadCliModels=()=>{};loadChatgpt=()=>{};loadRemote=()=>{};loadLog=()=>{};loadChangelog=()=>{};state={roles:{models:${JSON.stringify(models)},roles:[{name:'調査',main:{ai:'claude-code',model:'Opus 5.5',effort:'中'},backup:{ai:'codex',model:'GPT-6.1-Sol',effort:'高'}}],permissions:{},switch:{auto:false}},cliFlags:{claude:{'Opus 5.5':'claude-opus-5-5'},codex:{'GPT-6.1-Sol':'gpt-6.1-sol'}},modelOrder:[],hiddenModels:{codex:['GPT-6-Astra']},projects:[{id:'p',name:'見本',phases:[],tasks:[{id:'t',title:'作業',owner:'codex',model:'GPT-6.1-Sol',effort:'高',state:'実行中',steps:[]}]}],sessions:[],chatting:[],unread:[],efforts:['中','高'],root:'/isolated',agyAvailable:false};view={kind:'settings',project:'p'};`);
+ run(`api=stubApi;toast=notice;loadAiTools=()=>{};loadCliModels=()=>{};loadChatgpt=()=>{};loadRemote=()=>{};loadLog=()=>{};loadChangelog=()=>{};state={providers:providerSnapshot,webChatAvailable:false,roles:{models:${JSON.stringify(models)},roles:[{name:'調査',main:{ai:'claude-code',model:'Opus 5.5',effort:'中'},backup:{ai:'codex',model:'GPT-6.1-Sol',effort:'高'}}],permissions:{},switch:{auto:false}},cliFlags:{claude:{'Opus 5.5':'claude-opus-5-5'},codex:{'GPT-6.1-Sol':'gpt-6.1-sol'}},modelOrder:[],hiddenModels:{codex:['GPT-6-Astra']},projects:[{id:'p',name:'見本',phases:[],tasks:[{id:'t',title:'作業',owner:'codex',model:'GPT-6.1-Sol',effort:'高',state:'実行中',steps:[]}]}],sessions:[],chatting:[],unread:[],efforts:['中','高'],root:'/isolated',agyAvailable:false};view={kind:'settings',project:'p'};`);
  return{ctx,run,el,calls,messages,events,focus:()=>focus};
 }
 test('並べ替え後も新規開始はSol・高、保存済みの開始選択と役割担当を保持する',async()=>{

@@ -8,6 +8,8 @@ const path = require('path');
 const os = require('os');
 const { Store, expandHome } = require('./lib/store');
 const launch = require('./lib/launch');
+const providers = require('./lib/provider-registry');
+const taskWrites = require('./lib/task-write-lock');
 const roles = require('./lib/roles');
 const { Sessions } = require('./lib/sessions');
 const gitw = require('./lib/git');
@@ -25,6 +27,16 @@ const { AsyncLocalStorage } = require('async_hooks');
 
 const PORT = Number(process.env.HUB_PORT || 4545);
 const ROOT = expandHome(process.env.HUB_ROOT || path.join(os.homedir(), 'Documents', 'AI-Workspace'));
+const webAdmission=process.platform==='win32'?require('./lib/web-chat-admission'):null;
+const RECOVERY_ONLY=process.env.HUB_RECOVERY_ONLY==='1';
+const dataAdmission=webAdmission?.check(ROOT,{hubDir:__dirname,recoveryOnly:RECOVERY_ONLY});
+if(RECOVERY_ONLY){
+  const recovery=require('./lib/web-chat-recovery-server').create({root:ROOT,hubDir:__dirname,port:PORT,secret:process.env.HUB_LOCAL_TOKEN,admission:dataAdmission});
+  delete process.env.HUB_LOCAL_TOKEN;
+  module.exports=recovery;
+  if(require.main===module)recovery.server.listen(PORT,'127.0.0.1',()=>console.log('Project Hub recovery-only '+recovery.server.address().port));
+  return;
+}
 if(process.platform==='win32')require('./lib/native-dependencies').apply(ROOT);
 const DRY = process.env.HUB_DRY_RUN === '1'; // テスト用：実際には起動しない
 const LOCAL_TOKEN = process.env.HUB_LOCAL_TOKEN || '';
@@ -421,6 +433,7 @@ function pickSpec(task, ai) {
 }
 
 function modelError(ai, model) {
+  try { const actor=providers.resolveActor(ai); if(actor.kind==='external-chat')return ''; providers.assertCapability(actor.id,'chat'); } catch(error) { return error.message; }
   if (process.platform === 'win32' && ai !== 'codex') return 'Windows 版目前只支援 Codex CLI';
   model = launch.modelLabel(ai, model);
   if (ai === 'agy') {
@@ -641,6 +654,7 @@ async function stopTaskCommands(project,task){
 }
 
 function assertNativeMutationUnlocked(project,{task,allowOwned=false}={}) {
+  if(taskWrites.active()||taskWrites.pending().length){const dir=project&&store.projectDir(project);if(!dir||taskWrites.blocked(dir))throw Object.assign(Error('網頁交接正在保存或待復原，請待交易完成後再變更'),{status:409,code:'HANDOFF_WRITE_BUSY'});}
   if(process.platform!=='win32')return;
   // Shared file references can be added by any Product while a helper awaits.
   // Freeze controller metadata until the transfer/integration transaction exits.
@@ -659,7 +673,27 @@ const taskTransfer = new (require('./lib/task-transfer').TaskTransfer)({store,re
 });
 const taskIntegrate = new (require('./lib/task-integrate').TaskIntegrate)({store,transfer:taskTransfer,removal,baseOf});
 const nativeEmpty=process.platform==='win32'?new (require('./lib/empty-native').NativeEmptyCleanup)({store,removal,busy:(project,task)=>{const p=store.readProject(project);return Boolean(sessions.list().some(x=>x.running&&x.project===project&&(!task||x.task===task))||[...chats.running.keys()].some(k=>k.split('\0')[0]===project&&(!task||k.split('\0')[1]===task))||procwatch.list().some(x=>x.project===project&&(!task||!x.task||x.task===task))||p&&(github.locked(baseOf(p))||reviewedMerge.pending(baseOf(p))||taskTransfer.nativeBusy(project)||taskIntegrate.nativeBusy(project)||maintenance.nativeBusy(project)||workspaceReview.operations.size||[...workspaceReview.runs.values()].some(x=>x.record.project===project)));}}):null;
-function nativeOperationsBusy(){return process.platform==='win32'&&Boolean(commandIntents.active()||reviewedMerge.active()||taskTransfer.nativeActive()||taskIntegrate.nativeActive()||workspaceReview.active()||workspaceRuntime.flows.size||secretSupply.active()||maintenance.nativeActive()||nativeEmpty.nativeActive()||require('./lib/scoped-file').active()||require('./lib/rooted-move').active()||nativeMcpRegistration?.active());}
+function nativeOperationsBusy(){return process.platform==='win32'&&Boolean(taskWrites.active()||require('./lib/web-handoff-writer').active()||commandIntents.active()||reviewedMerge.active()||taskTransfer.nativeActive()||taskIntegrate.nativeActive()||workspaceReview.active()||workspaceRuntime.flows.size||secretSupply.active()||maintenance.nativeActive()||nativeEmpty.nativeActive()||require('./lib/scoped-file').active()||require('./lib/rooted-move').active()||nativeMcpRegistration?.active());}
+
+const webChat=process.platform==='win32'?new (require('./lib/web-chat').WebChat)({
+  root:ROOT,store,chat,
+  admitPreview:()=>webAdmission.ensureFormat(ROOT,{hubDir:__dirname}),
+  lock:(project,task,operation,receiptId)=>{const dir=store.projectDir(project);if(!dir)throw Object.assign(Error('找不到交接專案'),{status:404});return taskWrites.run(dir,task,operation,{receiptId});},
+  hold:(project,task,receiptId)=>taskWrites.hold(store.projectDir(project),task,receiptId),
+  release:(project,task,receiptId)=>taskWrites.release(store.projectDir(project),task,receiptId),
+  busy:(project,task)=>{assertNativeMutationUnlocked(project,{task});return Boolean(workspaceRuntime.byTask.has(workspaceRuntime.key(project,task))||workspaceReview.busy(project,task)||chats.busy(project,task)||chats.queue(project,task).length||sessions.list().some(s=>s.project===project&&s.task===task&&s.running)||procwatch.list().some(s=>s.project===project&&(!s.task||s.task===task)));},
+  emitRow:(project,task,row)=>chats.emit(project,task,{type:'row',row})
+}):null;
+const WEB_REQUEST_KEYS={preview:['actor','project','task','text','responseLanguage'],confirm:['actor','project','task','receiptId','previewToken','expectedTaskHash','expectedPromptSHA256','confirm'],result:['actor','project','task','receiptId','taskHash','promptSHA256','requestId','resultSHA256','text','token'],status:['actor','project','task','receiptId'],'recover/preview':['actor','project','task','receiptId'],recover:['actor','project','task','receiptId','confirm','recoveryToken','expectedRecoverySHA256'],revoke:['actor','project','task','receiptId']};
+async function webChatRoute(req,res,action,input){
+  if(!webChat)return send(res,404,{error:'此交接版本目前適用於 Windows'});
+  if(reqCtx.getStore()?.mcpScope||!fromRemote()&&!localAuth?.check(req))return send(res,403,{error:'網頁交接僅限已登入的 Hub 使用者'});
+  const keys=WEB_REQUEST_KEYS[action];
+  if(!keys||!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).some(key=>!keys.includes(key)))return send(res,400,{error:'網頁交接請求格式無效',code:'HANDOFF_REQUEST_INVALID'});
+  if(!['status','revoke'].includes(action)){await procwatch.scan();procwatch.assertKnown();}
+  try{const result=await webChat[action==='recover/preview'?'recoverPreview':action]({...input,owner:'windows-hub-owner'});return send(res,result.partial?409:200,result);}
+  catch(error){return send(res,[400,403,404,409,413,415].includes(error.status)?error.status:409,{error:error.code?'網頁交接拒絕：'+error.code:'網頁交接未完成；請保留草稿並查看交易狀態',code:error.code||'HANDOFF_FAILED',...(error.partial?{partial:true,recoveryRequired:true}:{} )});}
+}
 
 // iPhone で開くアドレス（Tailscale の Mac の名前）。tailscale が無い・止まっている時は空。1分は覚えておく
 let tsCache = { at: 0, url: '' };
@@ -790,6 +824,11 @@ async function delegateTask(b){
   }
 
 async function api(req, res, url) {
+  if(req.method==='GET'&&url.pathname==='/api/web-chat/status'){
+    let input;try{input=JSON.parse(decodeURIComponent(req.headers['x-hub-web-receipt']||''));}catch{return send(res,400,{error:'請在 X-Hub-Web-Receipt 提供此次交易的範圍'});}
+    if(url.search)return send(res,400,{error:'交易查詢不接受 URL 參數'});
+    return webChatRoute(req,res,'status',input);
+  }
   if(process.platform==='win32'&&url.pathname.startsWith('/api/chatgpt/register')&&req.method==='GET')return nativeMcpRegistrationRoute(req,res,url);
   if(process.platform==='win32'&&fromRemote()&&['/api/quit','/api/restart','/api/pick-folder','/api/chatgpt','/api/chatgpt/register','/api/ai-tools/update'].includes(url.pathname)&&req.method!=='GET')return send(res,403,{error:'此主機管理操作僅限本機已登入使用者'});
   // Mac の許可が無くて中を読めない時の知らせ（Finder が違う場所で開くのを防ぐ）
@@ -810,6 +849,7 @@ async function api(req, res, url) {
     // 画面で使う物だけ送る：作業の「やったこと」「注意」「メモ」の本文は送らず、「次にやること」は1行目だけ（1MB → 数百KB）
     const slim = t => { const { done, note, memo, next, ...rest } = t; return { ...rest, next: String(next || '').split('\n')[0] }; };
     const state = {
+      providers:providers.list(),webChatAvailable:Boolean(webChat),
       root: ROOT, roles: roleData, version: VERSION, latest: readVersion(),
       github: github.summary(),
       completionWarning: store.completion.warning, projectOrder: projectOrder.read(), projectPins: projectOrder.readPins(),
@@ -1002,6 +1042,14 @@ async function api(req, res, url) {
   }
 
   const b = await readBody(req);
+  if(url.pathname.startsWith('/api/web-chat/'))return webChatRoute(req,res,url.pathname.slice('/api/web-chat/'.length),b);
+  if(process.platform==='win32'&&['/api/chatgpt/prompt','/api/chatgpt/result'].includes(url.pathname)){
+    const action=url.pathname.endsWith('/prompt')?'confirm':'result';
+    const mandatory=action==='confirm'?['receiptId','previewToken','expectedTaskHash','expectedPromptSHA256']:['receiptId','token','requestId','resultSHA256','taskHash','promptSHA256'];
+    if(!b||mandatory.some(key=>typeof b[key]!=='string')||action==='confirm'&&b.confirm!==true)return send(res,409,{error:'請先預覽並確認此次交接',code:'HANDOFF_PREVIEW_REQUIRED'});
+    if(Object.hasOwn(b,'actor')&&b.actor!=='chatgpt')return send(res,400,{error:'舊入口僅適用 ChatGPT'});
+    return webChatRoute(req,res,action,{...b,actor:'chatgpt'});
+  }
   if(process.platform==='win32'&&url.pathname.startsWith('/api/chatgpt/register'))return nativeMcpRegistrationRoute(req,res,url,b);
   const transactionReadRoutes=new Set(['/api/task/merge/preview','/api/task/merge','/api/task/handup/preview','/api/task/handup','/api/task/absorb','/api/task/integrate/preview','/api/task/integrate','/api/task/recovery','/api/github/owners','/api/github/preview','/api/chatgpt/prompt','/api/empty/scan','/api/empty/preview','/api/hierarchy/remove/preview','/api/hierarchy/remove/history','/api/maintenance/preview','/api/maintenance/restore/preview','/api/term/view/register','/api/term/view/heartbeat','/api/term/view/claim','/api/term/view/disconnect','/api/term/input','/api/term/resize','/api/term/stop','/api/chat/stop','/api/mcp/capability/revoke','/api/commands/cancel','/api/commands/decide','/api/quit']);
   const workflowRoutes=['/api/task/workspace/discover','/api/task/workspace/preview','/api/task/workspace/prepare','/api/task/workspace/close','/api/chat/send','/api/delegate','/api/term/start','/api/term/handoff','/api/continue'];
@@ -1169,19 +1217,25 @@ async function api(req, res, url) {
   if (url.pathname === '/api/start') {
     const p = store.readProject(b.project), text = String(b.text || '').trim();
     const ai = b.ai === 'claude-code' ? 'claude' : b.ai;
+    const manual=process.platform==='win32'&&providers.isActor(ai)&&providers.resolveActor(ai).kind==='external-chat';
+    if(manual&&(typeof b.text!=='string'||!b.text.isWellFormed()||b.text.includes('\0')||b.request!==undefined&&(typeof b.request!=='string'||b.request.length>120)))return send(res,400,{error:'人工交接的文字與請求識別碼無效'});
     const agents = new Set([...rolesData().agents, ...store.listProjects().flatMap(x => x.tasks.map(t => t.owner).filter(o => o && !/claude|codex|agy|^chatgpt$|^(人|あなた)$/i.test(o)).map(o => o.replace(/^discord:\s*/i, '')))]);
     const agent = typeof ai === 'string' && ai.startsWith('discord:') && agents.has(ai.slice(8));
-    if (!p || (!text && !(b.images || []).length) || (!launch.AIS.includes(ai) && !agent)) return send(res, 400, { error: '依頼と担当を確認してください' });
+    if (!p || (!text && !(b.images || []).length) || (!launch.AIS.includes(ai) && !agent&&!manual)) return send(res, 400, { error: '依頼と担当を確認してください' });
     if (text.length > 4000 || !Array.isArray(b.images) || b.images.length > 10) return send(res, 400, { error: '依頼は4000文字、画像は10枚までです' });
+    if(manual&&b.images.length)return send(res,400,{error:'網頁交接不會自動傳送圖片，請自行在網站選擇'});
+    if(manual&&b.task!==undefined&&b.task!==null&&(typeof b.task!=='string'||b.task&&!store.taskFile(p.id,b.task)))return send(res,400,{error:'人工交接指定的既有作業不存在'});
     if (!agent && aiTools.isOperating()) return send(res, 409, { error: 'AI の更新・モデル再取得が進行中です' });
     const ph = p.phases.find(x => x.state !== '完了');
-    const spec = agent ? { model: '', effort: '' } : pickSpec({ role: ph?.role, model: b.model, effort: b.effort }, ai);
-    const invalid = !agent && modelError(ai, spec.model);
+    const spec = agent||manual ? { model: '', effort: '' } : pickSpec({ role: ph?.role, model: b.model, effort: b.effort }, ai);
+    const invalid = !agent&&!manual && modelError(ai, spec.model);
     if (invalid) return send(res, 409, { error: invalid });
     const receiptFile = path.join(p.dir, '.ai', 'start-request.json');
-    let receipt; try { receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')); } catch { /* 初回 */ }
-    if (b.request && receipt?.request === b.request && receipt.result) return send(res, 200, receipt.result);
-    const writeReceipt = value => { if (b.request) { fs.mkdirSync(path.dirname(receiptFile), { recursive: true }); fs.writeFileSync(receiptFile, JSON.stringify({ request: b.request, ...value })); } };
+    const manualRequestHash=manual?crypto.createHash('sha256').update(JSON.stringify({actor:ai,text,project:p.id})).digest('hex'):null;
+    let receipt; try { receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')); } catch { if(manual&&fs.existsSync(receiptFile))return send(res,409,{error:'開始請求記錄無法核對；未建立新作業'}); }
+    if(manual&&b.request&&receipt?.request===b.request&&receipt.manualRequestHash!==manualRequestHash)return send(res,409,{error:'此請求識別碼已綁定不同內容或入口'});
+    if (b.request && receipt?.request === b.request && receipt.result) {if(manual&&(receipt.result.actor!==ai||!receipt.result.webManual))return send(res,409,{error:'此請求識別碼已綁定不同入口'});return send(res, 200, receipt.result);}
+    const writeReceipt = value => { if (b.request) { taskWrites.assertPathWritable(receiptFile);fs.mkdirSync(path.dirname(receiptFile), { recursive: true }); fs.writeFileSync(receiptFile, JSON.stringify({ request: b.request, ...(manual?{manualRequestHash}:{}), ...value })); } };
     let t,workspaceFlow;
     try {
       for (const id of b.images) if (!fs.existsSync(start.imageFile(p, id))) throw Error('添付画像が見つかりません');
@@ -1189,8 +1243,10 @@ async function api(req, res, url) {
       if (b.request && receipt?.request === b.request) b.task = receipt.task;
       t = b.task && store.taskFile(p.id, b.task) ? store.readTask(store.taskFile(p.id, b.task)) : null;
       if (t && chats.busy(p.id, t.id)) throw Error('この作業はすでに始まっています');
-      t ||= store.createTask(p.id, { title: (text.split('\n')[0] || '画像を確認する').slice(0, 40), owner: agent ? ai : launch.AI_KEY[ai], role: ph?.role || '', phase: ph?.name || '' });
+      if(manual)require('./lib/web-chat-admission').ensureFormat(ROOT,{hubDir:__dirname});
+      t ||= store.createTask(p.id, { title: (text.split('\n')[0] || '画像を確認する').slice(0, 40), owner: agent||manual ? ai : launch.AI_KEY[ai], role: ph?.role || '', phase: ph?.name || '' });
       writeReceipt({ task: t.id });
+      if(manual){const result={ok:true,task:t.id,webManual:true,actor:ai};writeReceipt({task:t.id,result});return send(res,200,result);}
       const prepared=agent?startDir(p,t):await nativeStartDir(p,t,{workspacePermit:b.workspacePermit});const {dir,note}=prepared;workspaceFlow=prepared.workspaceFlow;
       const images = start.copyImages(p, b.images, dir, t.id);
       store.updateTask(p.id, t.id, { owner: agent ? ai : launch.AI_KEY[ai], ...spec });
@@ -1904,6 +1960,7 @@ async function api(req, res, url) {
     return send(res, 200, r.project);
   }
   if (url.pathname === '/api/task/new') {
+    if(process.platform==='win32'&&providers.isActor(b.owner)&&providers.resolveActor(b.owner).kind==='external-chat')webAdmission.ensureFormat(ROOT,{hubDir:__dirname});
     const t = store.createTask(b.project, b);
     if (t) record('newtask', { project: b.project, task: t.id }, { title: t.title });
     return t ? send(res, 200, t) : send(res, 400, { error: '作業名・親作業・派生元を確認してください' });
@@ -1911,7 +1968,7 @@ async function api(req, res, url) {
 
   // 選ぶ欄にモデルを出す・出さない
   if (url.pathname === '/api/models/hidden') {
-    if (!['claude-code', 'codex', 'agy'].includes(b.ai) || typeof b.model !== 'string' || !b.model) return send(res, 400, { error: '形式が違います' });
+    if (!providers.ownerKeys.filter(key=>providers.resolveActor(key).kind==='cli').includes(b.ai) || typeof b.model !== 'string' || !b.model) return send(res, 400, { error: '形式が違います' });
     return send(res, 200, { ok: true, ...modelView.setHidden(b.ai, b.model, Boolean(b.hidden)) });
   }
   if (url.pathname === '/api/models/initial') {
@@ -2051,4 +2108,4 @@ if (require.main === module) {
   process.on('SIGTERM', shutdown);
 }
 
-module.exports = { server, PORT, sessions, taskPrompt, nativeRemote, workspaceReview, workspaceRuntime };
+module.exports = { server, PORT, sessions, taskPrompt, nativeRemote, workspaceReview, workspaceRuntime, webChat };

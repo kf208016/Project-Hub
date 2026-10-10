@@ -2,6 +2,7 @@
 // Resolve CLI entry points without invoking a shell with user-controlled arguments.
 const fs = require('fs');
 const path = require('path');
+const registry = require('./provider-registry');
 
 function executable(file) {
   try { return fs.statSync(file).isFile(); } catch { return false; }
@@ -58,4 +59,11 @@ function resolve(name, args = [], envPath = process.env.PATH || '', platform = p
   return invocation(file, args, platform);
 }
 
-module.exports = { find, invocation, resolve };
+// Provider execution uses this guarded route. Generic find/invocation remain
+// usable for read-only binary metadata and synthetic fixture inspection.
+function resolveProvider(actor, args = [], envPath = process.env.PATH || '', platform = process.platform) {
+  const provider=registry.assertCapability(actor,'spawn',{platform});
+  return resolve(provider.id,args,envPath,platform);
+}
+
+module.exports = { find, invocation, resolve, resolveProvider };

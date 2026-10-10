@@ -226,13 +226,15 @@ test('Claude制御プロセスはSIGTERMを無視してもSIGKILLで回収する
     const pidFile = path.join(f.tmp, 'pid');
     const cli = path.join(f.tmp, 'claude-fixture');
     fs.writeFileSync(cli, `#!/usr/bin/env node\nconst fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);process.stdin.on('data',()=>console.log(JSON.stringify({type:'control_response',response:{subtype:'success',response:{models:[{value:'claude-opus-5-5'}]}}})));\n`, { mode: 0o755 });
-    assert.deepEqual(await claudeInitialize(runnable(cli), 5000), ['claude-opus-5-5']);
+    // Explicit macOS protocol fixture: the native Windows provider path is
+    // separately verified to reject before process creation.
+    assert.deepEqual(await claudeInitialize(runnable(cli), 5000, {platform:'darwin'}), ['claude-opus-5-5']);
     const pid = Number(fs.readFileSync(pidFile, 'utf8'));
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
 
     const silent = path.join(f.tmp, 'claude-silent');
     fs.writeFileSync(silent, `#!/usr/bin/env node\nconst fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);\n`, { mode: 0o755 });
-    await assert.rejects(claudeInitialize(runnable(silent), process.platform === 'win32' ? 2000 : 150), e => e.stage === 'models' && /時間切れ/.test(e.reason));
+    await assert.rejects(claudeInitialize(runnable(silent), process.platform === 'win32' ? 2000 : 150, {platform:'darwin'}), e => e.stage === 'models' && /時間切れ/.test(e.reason));
     const silentPid = Number(fs.readFileSync(pidFile, 'utf8'));
     assert.throws(() => process.kill(silentPid, 0), { code: 'ESRCH' });
   } finally { f.close(); }

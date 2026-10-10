@@ -9,6 +9,8 @@ class WorkspaceRuntime {
   current(p,t){const id=this.byTask.get(this.key(p,t)),x=id&&this.flows.get(id);return x&&!x.closing?x:null;}
   summary(project,task){const x=this.flows.get(this.byTask.get(this.key(project,task)));if(!x)return null;const state=x.cleanupErrorCode?'cleanup-failed':x.closing?(x.finishing?'cleaning':'stopping'):x.verificationBlocked?'verification-blocked':x.starting?'starting':x.children.size?'active':'waiting';return {kind:x.kind,state,ownedChildren:x.children.size,retryClose:!['starting','active'].includes(state),errorCode:x.cleanupErrorCode||''};}
   async begin({project,task,permit,kind,verifySource=false}){
+    const projectDir=this.store?.readProject?.(project)?.dir;
+    if(projectDir)require('./task-write-lock').assertPathWritable(projectDir);
     if(this.byTask.has(this.key(project,task))&&!this.current(project,task))throw Error('此工作區仍在停止或清理；請等待 owned 程序退出與紀錄完成');
     let old=this.current(project,task);if(old){if(old.kind!==kind)throw Error('此作業的另一種工作畫面仍在執行；請先停止原流程');if(old.children.size&&!this.chats.busy(project,task)&&kind==='chat')throw Error('前一個 owned 工作程序仍在退出，請等待程序樹 close 後再開始');const reserved=!old.children.size&&!this.chats.busy(project,task),starting=old.starting;if(reserved){clearTimeout(old.finishTimer);old.starting=true;}try{await this.review.verifiedBinding(project,task,{verifySource});if(this.current(project,task)!==old)throw Error('工作區流程已停止，請重新核准');old.verificationBlocked=false;return old;}catch(error){if(verifySource)old.verificationBlocked=true;if(reserved){old.starting=starting;if(!verifySource)this.deferFinish(old);}throw error;}}
     if(typeof permit!=='string'||!permit)throw Object.assign(Error('請先預覽並核准此次工作區'),{status:409,code:'WORKSPACE_REQUIRED',workspaceRequired:true,project,task});

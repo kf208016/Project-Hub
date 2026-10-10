@@ -7,7 +7,7 @@ const { execFile } = require('child_process');
 const { expandHome } = require('./store');
 const processCwd = require('./process-cwd');
 
-const AIS = ['codex', 'claude', 'agy'];
+const AIS = require('./provider-registry').cliIds;
 const INTERVAL = 10000, TIMEOUT = 5000, WARN_EVERY = 5 * 60 * 1000;
 const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
 
@@ -45,7 +45,7 @@ function parsePs(text) {
 }
 
 // コマンドから AI の種類を見分ける（実行する物の名前が codex / claude / agy の時だけ。引数に出てくるだけの物は除く）
-const NAME = '(codex|claude|agy)(?:\\.[cm]?js)?(?=\\s|$)';
+const NAME = '(codex|claude|agy|grok)(?:\\.[cm]?js)?(?=\\s|$)';
 const RE_FIRST = new RegExp(`^(?:\\S*/)?${NAME}`);
 const RE_APP = new RegExp(`^/.*?\\.app/\\S*?/${NAME}`); // 空白のあるアプリの中の場所
 const RE_INTERP = new RegExp(`^(?:\\S*/)?(?:node|nodejs|bun|deno)\\s+(?:-\\S+\\s+)*(?:\\S*/)?${NAME}`);

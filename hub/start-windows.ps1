@@ -1,7 +1,8 @@
 # Start/reopen local Hub. Closing the interface keeps owned jobs alive.
-param([switch]$Stop, [switch]$Restart, [switch]$NoBrowser, [int]$ExpectedPid = 0, [string]$ExpectedCreatedTicks = '')
+param([switch]$Stop, [switch]$Restart, [switch]$NoBrowser, [switch]$RecoveryOnly, [int]$ExpectedPid = 0, [string]$ExpectedCreatedTicks = '')
 $ErrorActionPreference = 'Stop'
 if ($Stop -and $Restart) { throw 'Stop and Restart are mutually exclusive.' }
+if ($Stop -and $RecoveryOnly) { throw 'RecoveryOnly cannot be combined with Stop.' }
 if (-not $Restart -and ($ExpectedPid -ne 0 -or $ExpectedCreatedTicks)) { throw 'Expected identity is only valid for Restart.' }
 [void][Reflection.Assembly]::Load('System.Security, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a')
 $entropy = [Text.Encoding]::UTF8.GetBytes('ProjectHub.Windows.Launcher.v1')
@@ -15,14 +16,22 @@ function Confirm-LocalPaths([string[]]$paths) {
     if ($LASTEXITCODE -ne 0) { throw 'The workspace and launcher files must be local paths without filesystem aliases.' }
 }
 if ([int]((& $node --version).TrimStart('v').Split('.')[0]) -lt 22) { throw 'Node.js 22 or newer is required.' }
-Get-Command git.exe -ErrorAction Stop | Out-Null
-Push-Location $hubDir
-try { $codexPath = & $node -e "const p=require('./lib/cli-platform').resolve('codex');process.stdout.write(p.file)" 2>$null }
-finally { Pop-Location }
-if ($LASTEXITCODE -ne 0 -or -not $codexPath) { throw 'Codex CLI was not found in PATH.' }
+if (-not $RecoveryOnly -and -not $Stop) { Get-Command git.exe -ErrorAction Stop | Out-Null }
+if (-not $RecoveryOnly -and -not $Stop) {
+    Push-Location $hubDir
+    try { $codexPath = & $node -e "const p=require('./lib/cli-platform').resolveProvider('codex');process.stdout.write(p.file)" 2>$null }
+    finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0 -or -not $codexPath) { throw 'Codex CLI was not found in PATH.' }
+}
 $root = [IO.Path]::GetFullPath($(if ($env:HUB_ROOT) { $env:HUB_ROOT } else { Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'AI-Workspace' }))
 $logDir = Join-Path $root '_hub'
 Confirm-LocalPaths @($root, $logDir)
+if (-not $Stop) {
+    Push-Location $hubDir
+    try { & $node -e "try{require('./lib/web-chat-admission').check(process.argv[1],{hubDir:process.cwd(),recoveryOnly:process.argv[2]==='1'})}catch(error){process.stderr.write(error.message);process.exit(1)}" $root $(if ($RecoveryOnly) { '1' } else { '0' }) }
+    finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw 'The selected release cannot start this DataRoot in the requested mode.' }
+}
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $statePath = Join-Path $logDir 'desktop-state.json'
 $lockPath = Join-Path $logDir 'desktop-launch.lock'
@@ -54,6 +63,7 @@ try {
         $stateFile = Get-Item -LiteralPath $statePath
         if ($stateFile.PSIsContainer -or $stateFile.Length -gt 16384) { throw 'The saved launcher state is not a bounded regular file.' }
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        if ($null -ne $state.recoveryOnly -and $state.recoveryOnly -isnot [bool]) { throw 'The saved launcher recovery mode is invalid.' }
         if ($state.version -isnot [int] -or $state.version -ne 1 -or $state.root -isnot [string] -or $state.hubDir -isnot [string] -or $state.root -cne $root -or $state.hubDir -cne $hubDir) { throw 'The saved launcher state belongs to a different workspace/version directory.' }
         if ($state.pid -isnot [int] -or $state.pid -le 0 -or $state.port -isnot [int] -or $state.port -lt 1024 -or $state.port -gt 65535 -or
             $state.createdTicks -isnot [string] -or $state.createdTicks -notmatch '^[0-9]{1,19}$' -or
@@ -65,6 +75,7 @@ try {
             if ($token -cnotmatch '^[A-Za-z0-9_-]{43}$') { throw 'The saved launcher credential is invalid.' }
             Confirm-Instance $port $token
             $running = $true
+            if (-not $Stop -and [bool]$state.recoveryOnly -ne [bool]$RecoveryOnly) { throw 'The running instance uses a different recovery mode. Stop its verified instance first.' }
         }
     }
     $restartToken = $null
@@ -106,6 +117,7 @@ try {
         $env:HUB_TRASH = Join-Path $logDir 'Trash'
         $env:HUB_PORT = "$port"
         $env:HUB_LOCAL_TOKEN = $token
+        $env:HUB_RECOVERY_ONLY = $(if ($RecoveryOnly) { '1' } else { '0' })
         try {
             $ownedProcess = Start-Process -FilePath $node -ArgumentList @('server.js') -WorkingDirectory $hubDir -WindowStyle Hidden -PassThru `
                 -RedirectStandardOutput (Join-Path $logDir 'server.stdout.log') -RedirectStandardError (Join-Path $logDir 'server.stderr.log')
@@ -118,7 +130,7 @@ try {
         }
         if (-not $ready) { throw "Hub did not pass instance verification. Check $logDir." }
         $protected = [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($token), $entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser))
-        $state = @{version=1;root=$root;hubDir=$hubDir;pid=$ownedProcess.Id;createdTicks=$ownedProcess.StartTime.ToUniversalTime().Ticks.ToString();port=$port;protectedToken=$protected}
+        $state = @{version=1;root=$root;hubDir=$hubDir;pid=$ownedProcess.Id;createdTicks=$ownedProcess.StartTime.ToUniversalTime().Ticks.ToString();port=$port;protectedToken=$protected;recoveryOnly=[bool]$RecoveryOnly}
         $tempState = $statePath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
         Confirm-LocalPaths @($statePath, $tempState)
         [IO.File]::WriteAllText($tempState, ($state|ConvertTo-Json), [Text.UTF8Encoding]::new($false))

@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Owner confirmation of exact accepted web handoff recovery",
+  "$ref": "web-chat-contract.schema.json#/$defs/recover"
+}

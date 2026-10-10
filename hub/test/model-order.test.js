@@ -24,7 +24,7 @@ test('新候補は同AIの最後へ、消失・非表示・復帰で既存の位
 test('並びと非表示を相互保持、未知の設定も保持、再生成後も同じ。リセットは非表示を保持',t=>{
   const {file,view}=fixture(t);fs.writeFileSync(file,JSON.stringify({hidden:{codex:['Sol']},future:{keep:true}}));
   assert.equal(view.setOrder(mixed,defaults,models).error,undefined);view.setHidden('claude-code','Fable',true);
-  const again=new ModelView(file);assert.deepEqual(again.saved(),mixed);assert.deepEqual(again.hidden(),{'claude-code':['Fable'],codex:['Sol'],agy:[]});assert.deepEqual(JSON.parse(fs.readFileSync(file)).future,{keep:true});
+  const again=new ModelView(file);assert.deepEqual(again.saved(),mixed);assert.deepEqual(again.hidden(),{'claude-code':['Fable'],codex:['Sol'],agy:[],grok:[]});assert.deepEqual(JSON.parse(fs.readFileSync(file)).future,{keep:true});
   again.setHidden('codex','Sol',false);assert.deepEqual(again.saved(),mixed);
   assert.equal(again.setOrder([],mixed,models).error,undefined);assert.deepEqual(again.hidden()['claude-code'],['Fable']);assert.deepEqual(order.ordered(models,again.saved()),defaults);
 });
@@ -51,11 +51,11 @@ test('並べ替え前後でfake CLIが受け取る --model と思考は同一',t
   assert.deepEqual(after,before);assert.equal(after[after.indexOf('--model')+1],'gpt-6.1-sol');assert.ok(after.includes('model_reasoning_effort=xhigh'));
 });
 
-test('初期AIは未設定・形式不正でSol高、保存/再読込と表示・順の相互保持', t => {
+test('初期AIは未設定でSol高、既知担当保持・不正拒否、保存/再読込と表示・順の相互保持', t => {
   const { file, view } = fixture(t), catalog = { 'claude-code': ['Opus 5.5'], codex: ['GPT-6.1-Sol'] };
   assert.deepEqual(view.initial(), { ai: 'codex', model: 'GPT-6.1-Sol', effort: '高' });
   fs.writeFileSync(file, JSON.stringify({ initial: { ai: 'agy', model: 'Gemini', effort: '高' }, future: true }));
-  assert.equal(view.initial().ai, 'codex');
+  assert.equal(view.initial().ai, 'agy','known deferred actors remain their own saved selection; readiness never replaces them with Codex');
   view.setHidden('codex', 'Sol', true); view.setOrder(mixed, defaults, models);
   const spec = { ai: 'claude', model: 'Opus 5.5', effort: '中' };
   assert.deepEqual(view.setInitial({ ...spec, model: 'claude-opus-5-5' }, catalog).initialPick, spec);

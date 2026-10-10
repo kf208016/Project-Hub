@@ -55,6 +55,8 @@ class Sessions {
 
   // 作業画面を開く。すでに動いていればそれを返す
   start({ project, task, ai, dir, command, args, env, cols, rows, dirPin }) {
+    require('./provider-registry').assertCapability(ai,'terminal');
+    require('./task-write-lock').assertPathWritable(dir);
     if (!pty) throw new Error('作業画面の部品（node-pty）が入っていません。setup.sh を実行してください');
     const k = this.key(project, task, ai);
     const cur = this.map.get(k);

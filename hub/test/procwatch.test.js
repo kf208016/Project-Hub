@@ -37,6 +37,7 @@ test('parse ps rows on both platforms',()=>{
 });
 
 test('recognize AI executables only',()=>{
+ assert.equal(pw.aiOf('"C:\\Synthetic\\grok.exe" run'),'grok');assert.equal(pw.aiOf('"C:\\Synthetic\\Grok Bot.exe"'),'', 'desktop Bot is not a CLI process');assert.equal(pw.aiOf('echo grok'),'');
  const cases={'codex exec x':'codex','/opt/bin/claude -p hi':'claude','agy':'agy','node /x/claude':'claude','node --no-warnings /x/codex.js exec':'codex',
   '/Applications/Claude Code.app/Contents/Resources/bin/claude --resume':'claude','grep codex':'','vim /tmp/claude':'','/bin/zsh -c claude':'','claudex':'','node /x/cli.js':'','node /opt/lib/node_modules/@anthropic-ai/claude-code/cli.js':'claude',
   '/Applications/Claude.app/Contents/MacOS/Claude':''};

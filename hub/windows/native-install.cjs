@@ -7,6 +7,7 @@ const {
 const {
   localPath
 } = require ( '../lib/safe-path' ) ;
+const admission = require ( '../lib/web-chat-admission' ) ;
 const HEX = /^[a-f0-9]{64}$/ , RELEASE = /^4\.68\.2-windows-codex-[a-f0-9]{12}$/ ;
 const FFMPEG = {
   version : '9.0.2-essentials_build-www.gyan.dev' , sha256 : '3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec'
@@ -55,6 +56,17 @@ function exact ( value , keys ) {
   for ( const key of [ 'HUB_LOCAL_TOKEN' , 'HUB_MCP_TOKEN' , 'HUB_MCP_RUN_ID' , 'OPENAI_API_KEY' , 'ANTHROPIC_API_KEY' , 'ANTHROPIC_AUTH_TOKEN' , 'GOOGLE_API_KEY' , 'GEMINI_API_KEY' ] ) delete env [ key ] ;
   return env ;
 } let helper , helperHash ;
+function actionOptions(action,value){
+  if(!value||typeof value!=='object'||Array.isArray(value))fail('OPTIONS_REJECTED');
+  if(['preview','install'].includes(action)){exact(value,['packageRoot','manifestSha256']);return value;}
+  if(action==='recover-current'){exact(value,['backup','expectedHash']);return value;}
+  if(action==='start'){
+    if(Object.keys(value).some(key=>!['noBrowser','recoveryOnly'].includes(key))||Object.values(value).some(item=>typeof item!=='boolean'))fail('OPTIONS_REJECTED');
+    return value;
+  }
+  if(['stop','rollback','status'].includes(action)){exact(value,[]);return value;}
+  fail('ACTION_REJECTED');
+}
 function native ( request ) {
   if ( process . platform !== 'win32' || process . arch !== 'x64' ) fail ( 'WINDOWS_X64_REQUIRED' ) ;
   if ( ! helper ) {
@@ -200,6 +212,7 @@ function native ( request ) {
     const source = packageInfo ( packageRoot , manifestSha256 ) , previous = this . snapshot ( ) ;
     this . assertStopped ( ) ;
     this . dependencies ( ) ;
+    admission.check(this.root,{hubDir:path.join(source.root,'hub'),switching:true});
     const destination = this . slot ( {
       id : source . manifest . releaseId
     } ) ;
@@ -240,6 +253,7 @@ function native ( request ) {
       } ) , expectedHash : 'missing'
     } ) ;
     this . assertStopped ( ) ;
+    admission.check(this.root,{hubDir:path.join(plan.destination,'hub'),switching:true});
     const value = {
       version : 1 , installBase : this . base , dataRoot : this . root , port : this . port , release : {
         id : plan . releaseId , manifestSha256 : source . sha256
@@ -254,8 +268,10 @@ function native ( request ) {
     return {
       ok : true , releaseId : plan . releaseId , currentSha256 : saved . sha256 , slotFingerprint : copied . rootFingerprint , backup : saved . backup || null , started : false
     } ;
-  } launch ( stop = false , noBrowser = false ) {
+  } launch ( stop = false , noBrowser = false , recoveryOnly = false ) {
     const selected = this . selected ( ) ;
+    if(typeof recoveryOnly!=='boolean'||stop&&recoveryOnly)fail('RECOVERY_INPUT_REJECTED');
+    if(!stop)admission.check(this.root,{hubDir:path.join(selected.slot,'hub'),recoveryOnly});
     let priorState = null ;
     if ( stop && fs . existsSync ( path . join ( this . root , '_hub/desktop-state.json' ) ) ) {
       const state = native ( {
@@ -263,10 +279,10 @@ function native ( request ) {
       } ) , value = JSON . parse ( state . text ) ;
       if ( value . version !== 1 || value . root !== this . root || value . hubDir !== path . join ( selected . slot , 'hub' ) ) fail ( 'LAUNCHER_STATE_BINDING_CHANGED' ) ;
       priorState = state ;
-    } const ps = local ( path . join ( process . env . SystemRoot || 'C:\\Windows' , 'System32/WindowsPowerShell/v1.0/powershell.exe' ) ) , args = [ '-NoProfile' , '-NonInteractive' , '-File' , path . join ( selected . slot , 'hub/start-windows.ps1' ) , ... ( stop ? [ '-Stop' ] : [ ] ) , ... ( noBrowser ? [ '-NoBrowser' ] : [ ] ) ] ;
+    } const ps = local ( path . join ( process . env . SystemRoot || 'C:\\Windows' , 'System32/WindowsPowerShell/v1.0/powershell.exe' ) ) , args = [ '-NoProfile' , '-NonInteractive' , '-File' , path . join ( selected . slot , 'hub/start-windows.ps1' ) , ... ( stop ? [ '-Stop' ] : [ ] ) , ... ( noBrowser ? [ '-NoBrowser' ] : [ ] ), ...(recoveryOnly?['-RecoveryOnly']:[]) ] ;
     const output = execFileSync ( ps , args , {
       windowsHide : true , env : secureEnv ( {
-        ... this . environment , HUB_ROOT : this . root , HUB_PORT : String ( this . port )
+        ... this . environment , HUB_ROOT : this . root , HUB_PORT : String ( this . port ), HUB_RECOVERY_ONLY:recoveryOnly?'1':'0'
       } ) , timeout : 45000 , stdio : 'ignore'
     } ) || '' ;
     if ( stop && fs . existsSync ( path . join ( this . root , '_hub/desktop-state.json' ) ) ) {
@@ -280,7 +296,7 @@ function native ( request ) {
     }
     if ( stop ) native ( { mode : 'port-check' , port : this . port } ) ;
     return {
-      ok : true , action : stop ? 'stop' : 'start' , releaseId : selected . info . manifest . releaseId , stopped : stop && priorState !== null , alreadyStopped : stop && priorState === null , output : stop ? '已完成停止入口且服務埠空閒' : '已完成已驗證版本的啟動入口'
+      ok : true , action : stop ? 'stop' : 'start' , releaseId : selected . info . manifest . releaseId , recoveryOnly, stopped : stop && priorState !== null , alreadyStopped : stop && priorState === null , output : stop ? '已完成停止入口且服務埠空閒' : recoveryOnly?'已完成同版資料恢復專用入口':'已完成已驗證版本的啟動入口'
     } ;
   } rollback ( ) {
     const before = this . snapshot ( ) ;
@@ -288,6 +304,7 @@ function native ( request ) {
     this . assertStopped ( ) ;
     const info = packageInfo ( this . slot ( before . value . previous ) , before . value . previous . manifestSha256 ) ;
     verifyFiles ( info . root , info . manifest , info . rootFingerprint ) ;
+    admission.check(this.root,{hubDir:path.join(info.root,'hub'),switching:true});
     const value = {
       ... before . value , release : before . value . previous , previous : before . value . release
     } ;
@@ -308,6 +325,7 @@ function native ( request ) {
     if ( value . dataRoot !== this . root || value . port !== this . port ) fail ( 'CURRENT_BINDING_CHANGED' ) ;
     const info = packageInfo ( this . slot ( value . release ) , value . release . manifestSha256 ) ;
     verifyFiles ( info . root , info . manifest , info . rootFingerprint ) ;
+    admission.check(this.root,{hubDir:path.join(info.root,'hub'),switching:true});
     const journal = native ( {
       mode : 'inspect' , root : this . base , path : backup . replace ( 'current-' , 'change-' ) , text : true
     } ) , receipt = JSON . parse ( journal . text ) ;
@@ -325,12 +343,13 @@ function native ( request ) {
     } ;
   }
 } module . exports = {
-  Installer , native , manifest , packageInfo , verifyFiles , fileHash , digest , FFMPEG , json
+  Installer , native , manifest , packageInfo , verifyFiles , fileHash , digest , FFMPEG , json, actionOptions
 } ;
 if ( require . main === module ) {
   try {
     const input = JSON . parse ( fs . readFileSync ( 0 , 'utf8' ) ) ;
     exact ( input , [ 'action' , 'installBase' , 'dataRoot' , 'port' , 'options' ] ) ;
+    actionOptions(input.action,input.options);
     const install = new Installer ( input ) ;
     let result ;
     switch ( input . action ) {
@@ -338,7 +357,7 @@ if ( require . main === module ) {
       break ;
       case 'install' : result = install . install ( input . options ) ;
       break ;
-      case 'start' : result = install . launch ( false , input . options . noBrowser === true ) ;
+      case 'start' : result = install . launch ( false , input . options . noBrowser === true, input.options.recoveryOnly===true ) ;
       break ;
       case 'stop' : result = install . launch ( true , true ) ;
       break ;

@@ -1,0 +1,12 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Project Hub release data capabilities v1",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["version","dataFormats","recoveryOnly"],
+  "properties":{
+    "version":{"const":1},
+    "dataFormats":{"type":"array","minItems":2,"maxItems":2,"uniqueItems":true,"prefixItems":[{"const":"legacy"},{"const":"web-manual-v2"}],"items":false},
+    "recoveryOnly":{"const":true}
+  }
+}

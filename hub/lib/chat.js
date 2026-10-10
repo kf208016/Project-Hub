@@ -11,6 +11,7 @@ const cli = require('./cli-platform');
 const { randomUUID } = require('node:crypto');
 const launch = require('./launch');
 const instructions = require('./instructions');
+const taskWrites = require('./task-write-lock');
 const { snapshot, buildHandoffCard } = require('./handoff-card');
 
 const LIMIT = 60000; // 引き継ぎの文字数。モデル全体のトークン上限とは別。
@@ -27,6 +28,7 @@ function read(pdir, task) {
 }
 function append(pdir, task, row) {
   const f = files(pdir, task).log;
+  taskWrites.assertPathWritable(f);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   const r = { at: new Date().toISOString(), ...row };
   fs.appendFileSync(f, JSON.stringify(r) + '\n');
@@ -37,6 +39,7 @@ function readMeta(pdir, task) {
 }
 function writeMeta(pdir, task, meta) {
   const f = files(pdir, task).meta;
+  taskWrites.assertPathWritable(f);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(f, JSON.stringify(meta, null, 2));
 }
@@ -291,6 +294,8 @@ class ChatRunner {
         text: o.limitSwitch.original || o.shown || o.text, shown: o.limitSwitch.original || o.shown || o.text, limitSwitch: undefined };
     }
     ({ ai, model } = o);
+    require('./provider-registry').assertCapability(ai,'chat');
+    taskWrites.assertPathWritable(pdir);
     const original = o.shown || o.text;
     const repeated = o.request && read(pdir, task).findLast(r => r.role === 'user' && r.request === o.request &&
       (r.text === original || r.limitSwitch?.original === original));
@@ -516,6 +521,7 @@ class ChatRunner {
   }
   setQueue(p, t, q, requireSave = false) {
     const d = this.dirOf && this.dirOf(p);
+    if(d)taskWrites.assertPathWritable(d);
     if (d) {
       const f = files(d, t).queue;
       try {

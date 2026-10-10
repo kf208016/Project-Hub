@@ -4,9 +4,10 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const AIS = ['claude', 'codex', 'agy'];
-const AI_KEY = { claude: 'claude-code', codex: 'codex', agy: 'agy' };
-const AI_LABEL = { claude: 'Claude Code', codex: 'Codex', agy: 'Agy CLI' };
+const registry = require('./provider-registry');
+const AIS = registry.cliIds;
+const AI_KEY = Object.freeze(Object.fromEntries(registry.actorIds.map(id=>[id,registry.resolveActor(id).ownerKey])));
+const AI_LABEL = Object.freeze(Object.fromEntries(registry.actorIds.map(id=>[id,registry.resolveActor(id).label])));
 const AGY_MODEL = Object.freeze({ id: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)' });
 const API_ENV = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_GENAI_USE_VERTEXAI', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY'];
 let agyCache = null; // { key, result }：一覧のたびに設定ファイルを読まないため
@@ -27,6 +28,7 @@ function agyAccountErrorNow(file) {
   return '';
 }
 function childEnv(ai, env) {
+  ai = registry.cliActor(ai).id;
   const out = { ...env };
   // Hub login/instance/control values belong to the owner controller.
   // Native CLI authentication retains its existing provider login environment.
@@ -70,6 +72,7 @@ function setDiscoveredModels(catalog) {
 }
 // 登録済みの呼び名と正式 ID の両方を受け付ける。上書きされた ID は使わない。
 function modelNames(ai) {
+  ai = registry.cliActor(ai).id;
   return { ...(discovered[ai] || {}), ...(MODEL_FLAG[ai] || {}), ...(overrides[ai] || {}) };
 }
 function modelLabel(ai, model) {
@@ -79,12 +82,14 @@ function modelLabel(ai, model) {
 }
 // 画面の呼び名・正式 ID → CLI に渡す名前（無ければ ''）
 function flagFor(ai, model) {
+  ai = registry.cliActor(ai).id;
   if (!model) return '';
   const names = modelNames(ai), label = modelLabel(ai, model);
   return Object.prototype.hasOwnProperty.call(names, label) ? String(names[label] || '') : '';
 }
 // CLIへ渡す起動設定。実際に応答したモデルの証明とは区別する。
 function startupInfo(ai, model, modelFlag = flagFor(ai, model)) {
+  ai = registry.cliActor(ai).id;
   const oneLine = s => String(s || '').replace(/[\r\n]+/g, ' ');
   const label = ai === 'agy' && modelFlag === AGY_MODEL.id ? AGY_MODEL.label : modelLabel(ai, model);
   const setting = modelFlag ? `${oneLine(label)}（CLI 引数 --model ${oneLine(modelFlag)}）` : 'モデル指定なし（CLI の既定）';
@@ -104,6 +109,7 @@ const SWITCH_CMD = {
 };
 
 function switchCommand(ai, field, value) {
+  ai = registry.cliActor(ai).id;
   const v = field === 'model' ? flagFor(ai, value) : (EFFORT_FLAG[ai] && EFFORT_FLAG[ai][value]);
   const f = SWITCH_CMD[ai] && SWITCH_CMD[ai][field];
   return v && f ? f(v) : '';
@@ -114,6 +120,8 @@ function as(s) { return String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
 
 // シェル用の1行（ターミナルの窓を開く時に使う）
 function buildCommand({ ai, dir, prompt, cmd, model, effort }) {
+  ai = registry.cliActor(ai).id;
+  if (!Object.hasOwn(DEFAULT_CMD, ai)) registry.assertCapability(ai, 'spawn');
   if (ai === 'agy') {
     const argv = buildArgv({ ai, prompt, model, effort });
     return `cd ${sq(dir)} && env ${API_ENV.flatMap(k => ['-u', k]).map(sq).join(' ')} ${[argv.command, ...argv.args].map(sq).join(' ')}`;
@@ -130,6 +138,7 @@ function buildCommand({ ai, dir, prompt, cmd, model, effort }) {
 
 // 画面の中の作業画面用：実行ファイルと引数に分ける（シェルを通さない）
 function buildArgv({ ai, prompt, cmd, model, effort }) {
+  ai = registry.cliActor(ai).id;
   if (ai === 'agy') {
     if (model && !flagFor(ai, model)) throw new Error('Agy で承認されているモデルは Gemini 3.1 Pro (High) だけです');
     return { command: 'agy', args: ['--dangerously-skip-permissions', '--model', AGY_MODEL.id, ...(prompt ? [`--prompt-interactive=${prompt}`] : [])] };
