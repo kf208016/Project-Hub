@@ -59,7 +59,7 @@
      try{await action();}catch(err){entry.message=err.message||local('操作失敗，草稿已保留。','操作に失敗しました。下書きは残しています。');}
      finally{entry.busy=false;if(current===entry){render(entry);error(entry.message||'');}}
    };};
-   const copy=async()=>{const text=entry.preview?.text||entry.preview?.prompt||'';try{await global.navigator.clipboard.writeText(text);entry.message=local('已複製；尚未送到網站。','コピーしました。サイトには未送信です。');}catch{entry.message=local('複製失敗；請手動選取完整交接內容並複製。尚未送出。','コピーに失敗しました。全文を選択して手動コピーしてください。未送信です。');}};
+   const copy=async()=>{const text=entry.preview?.text||entry.preview?.prompt||'';let timer;try{await Promise.race([global.navigator.clipboard.writeText(text),new Promise((_,reject)=>{timer=global.setTimeout(()=>reject(Object.assign(Error('CLIPBOARD_UNCONFIRMED'),{unconfirmed:true})),5000);})]);entry.message=local('已複製；尚未送到網站。','コピーしました。サイトには未送信です。');}catch(cause){entry.message=cause?.unconfirmed?local('複製尚未確認；請手動選取完整交接內容並複製。尚未送出。','コピーの完了を確認できません。全文を選択して手動コピーしてください。未送信です。'):local('複製失敗；請手動選取完整交接內容並複製。尚未送出。','コピーに失敗しました。全文を選択して手動コピーしてください。未送信です。');}finally{global.clearTimeout(timer);}};
    bind('[data-web-preview]',async()=>{
      if(!scalar(entry.text))throw Error(local('需求包含無效文字。','依頼の文字が無効です。'));
      const value=await entry.options.api('/api/web-chat/preview',{actor:entry.actor,project:entry.project,task:entry.task,text:entry.text,responseLanguage:global.HubI18n?.locale==='ja'?'ja':'zh-TW'});
