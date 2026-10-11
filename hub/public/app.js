@@ -104,7 +104,13 @@ async function api(path, body, headers, workspaceRetried = false) {
       const permit = await requestNativeWorkspace(j.project, j.task);
       return api(path, {...body, task:j.task, workspacePermit:permit}, headers, true);
     }
-    const e = new Error(j.error || L('失敗しました')); e.status = r.status; e.reason = j.reason; e.stage = j.stage; e.task = j.task; e.notStarted = j.notStarted === true; throw e;
+    const e = new Error(j.error || L('失敗しました')); e.status = r.status; e.reason = j.reason; e.stage = j.stage; e.task = j.task; e.notStarted = j.notStarted === true;
+    const webRoutes=['/api/web-chat/result','/api/web-chat/status','/api/web-chat/recover'];
+    if(r.status===409&&webRoutes.includes(path)){
+      e.webChatStatus=window.HubWebChat?.failureStatus(path,r.status,j,body)||null;
+      e.webChatRecoveryRequired=j.partial===true&&j.recoveryRequired===true;
+    }
+    throw e;
   }
   return j;
 }
@@ -917,6 +923,7 @@ async function acceptedWorkAnswer(p, t, question, result, askKey) {
   try { await load({ preserveMain: true }); } catch (err) { toast(L('回答は受け付けました。表示の再取得に失敗しました：') + err.message); }
 }
 
+const workDetailsOpen = new Set();
 function renderWork() {
   const scrollKey = JSON.stringify([view.project,view.task]);
   const savedScroll = window.HubChatScroll?.capture($('#msgs'),scrollKey);
@@ -948,10 +955,9 @@ function renderWork() {
     </div>
     <div id="workspace-lifecycle">${workspaceLifecycleHtml(p,t)}</div>
     ${taskTarget(p,t) && transferNeedsUpdate() ? UI`<div class="wq"><p class="transfer-hint">${esc(transferUpdateMessage())}</p></div>` : ''}
-    ${mode === 'chat' || state.windowsBrowser && webActor(ownerOf(t.owner).kind) ? gptBox(p, t, webActor(chatPick(p, t).ai)) : ''}
     ${bgOf(p.id, t.id).length || (!t.parent && bgOf(p.id).filter(x => !x.task).length) ? UI`<div class="wq bg-note"><b>裏で作業中：</b><span>${esc(bgText(bgOf(p.id, t.id).length ? bgOf(p.id, t.id) : bgOf(p.id).filter(x => !x.task)))}</span><span class="small">Hub を通さずに起動された AI です。終わると「新」が付きます。次からは「渡す」（Hub 経由）を使うよう AI に伝えてあります</span></div>` : ''}
     <div id="work-question" data-question="${esc(t.question || '')}">${workQuestionHtml(p,t)}</div>
-    ${taskContext(p, t, isPhone())}${kidsDoneBar(p, t)}<div class="wdone">${completionButtons(p, t)}</div>
+    <div class="work-meta">${taskContext(p, t, isPhone())}<div class="wdone">${completionButtons(p, t)}</div></div>${kidsDoneBar(p, t)}
     ${mode === 'chat' ? chatHtml(p, t) : UI`<div class="panes ${shown.length >= 2 ? 'two' : ''}" id="panes">
       ${shown.length ? shown.map(a => UI`<section class="pane" data-ai="${a}">
           <div class="phead"><span class="who w-${AI_KEY[a]}">${AI_LABEL[a]}</span><span class="pstat" data-ai="${a}">${statusText(sessOf(p.id, t.id, a))}</span>${specSelect(p, t, a, true)}<span class="sp"></span>
@@ -970,6 +976,8 @@ function renderWork() {
             ? UI`まだ AI は動いていません。<br>上の「${AI_LABEL[main]}で始める」を押すと、ここで作業が始まります。<br>ファイルやスクショは、この画面に落とす（または ⌘V で貼る）と AI に渡せます。<br>${esc(t.next ? L('次にやること：') + t.next.split('\n')[0] : '')}`
             : UI`作業画面の部品が未設定です。［設定］をご覧ください。<br>それまでは、始めると別の窓で開きます。`}</div></div>`}
     </div>`}
+    <details class="work-details" ${workDetailsOpen.has(scrollKey)?'open':''}><summary>作業設定、記事與網頁交接</summary>
+    ${mode === 'chat' || state.windowsBrowser && webActor(ownerOf(t.owner).kind) ? gptBox(p, t, webActor(chatPick(p, t).ai)) : ''}
     <div class="wfoot">
       <select data-act="state" ${k} aria-label="状態">${!STATES.includes(t.state) ? UI`<option selected disabled value="${esc(t.state)}">${esc(t.state)}</option>` : ''}${STATES.map(s => UI`<option value="${esc(s)}" ${s === t.state ? 'selected' : ''}>${esc(L(s))}</option>`).join('')}</select>
       ${mode === 'term' && CLI(t.owner) && !shown.length ? specSelect(p, t, main) : ''}
@@ -982,8 +990,10 @@ function renderWork() {
       <input id="memo" maxlength="300" placeholder="メモ（例：デザイン案Aに決めた）" aria-label="メモ">
       <button class="btn plain sm" data-act="memo" ${k} type="button">メモを残す</button>
       ${t.skills.length ? UI`<details class="more"><summary>使ったスキル（${t.skills.length}）</summary><ul class="skills">${t.skills.map(s => UI`<li>${esc(s)}</li>`).join('')}</ul></details>` : ''}
-    </div></div>`;
+    </div></details></div>`;
   closePanes();
+  const workDetails = $('.work-details');
+  workDetails?.addEventListener('toggle', () => { if (workDetails.open) workDetailsOpen.add(scrollKey); else workDetailsOpen.delete(scrollKey); });
   window.HubMobile?.mount(scrollKey);
   if (mode === 'chat') openChat(p, t, savedScroll); else shown.forEach(a => attach(p.id, t.id, a));
   if (t.copy && !t.mergeExcluded) loadPreview(p.id, t.id);
@@ -1044,7 +1054,7 @@ function clearSentChatImages(project, task, sent) {
   chatAttachments.set(chatAttachmentKey(project, task), chatImages(project, task).filter(x => !ids.has(x.id)));
   drawChatImages(project, task);
 }
-const isPhone = () => typeof matchMedia === 'function' && matchMedia('(max-width:720px)').matches;
+const isPhone = () => typeof matchMedia === 'function' && matchMedia('(max-width:900px)').matches;
 // 表示用の文字だけを短縮する。選択値やCLIに渡すモデル名には使わない。
 function shortModelLabel(ai, model) {
   if (ai === 'chatgpt') return 'ChatGPT';
@@ -1054,6 +1064,7 @@ function shortModelLabel(ai, model) {
   return String(model);
 }
 function phoneModelLabel(ai, model, full, suffix = '') {
+  if (state.windowsBrowser && (webActor(ai) || model === 'unavailable')) return full;
   const phone = state.phoneLabels, key = `${AI_KEY[ai] || ai}|${webActor(ai)?'app':model}`;
   return phone?.labels === 'full' ? full : (phone?.names?.[key] || shortModelLabel(ai, model)) + suffix;
 }
@@ -1071,12 +1082,18 @@ function syncChatPhoneLabels() {
 }
 function workMode() { try { return localStorage.getItem('hub-mode') === 'term' ? 'term' : 'chat'; } catch (e) { return 'chat'; } }
 function setMode(m) { try { localStorage.setItem('hub-mode', m); } catch (e) { /* 無視 */ } render(); }
-const EMPTY_CHAT = () => UI`<p class="chat-empty">ここで AI と話します。<br>下で答える AI とモデルを選び、依頼を書いて送ってください（⌘ + Enter でも送れます）。<br>途中で AI を変えると、それまでの会話を自動で引き継ぎます。ファイルやスクショは、ここに落とすか ⌘V で貼れます。</p>`;
+const EMPTY_CHAT = () => state.windowsBrowser ? UI`<div class="chat-empty"><span class="empty-kicker">PROJECT HUB</span><h3>從一個清楚的需求開始</h3><p>選擇 AI，寫下要完成的事。<br>Codex 可在此執行；網頁 AI 會先開啟手動交接。</p></div>` : UI`<p class="chat-empty">ここで AI と話します。<br>下で答える AI とモデルを選び、依頼を書いて送ってください（⌘ + Enter でも送れます）。<br>途中で AI を変えると、それまでの会話を自動で引き継ぎます。ファイルやスクショは、ここに落とすか ⌘V で貼れます。</p>`;
 // 選ぶ欄に出すモデル（設定で隠したものは出さない。ただし今選んでいるものは残す）
 function orderedModels() { return ModelOrder.ordered(state.roles.models, state.modelOrder); }
 function shownModels(key, ...keep) {
   const hidden = (state.hiddenModels || {})[key] || [];
   return orderedModels().filter(id => id.startsWith(key + '|')).map(id => id.slice(key.length + 1)).filter(m => !hidden.includes(m) || keep.includes(m));
+}
+function chatActionLabel(ai) {
+  return state.windowsBrowser ? webActor(ai) ? L('準備手動交接') : L('交由') + ' ' + AI_LABEL[ai] + ' ' + L('執行') : L('送る');
+}
+function chatRouteHint(ai) {
+  return state.windowsBrowser && webActor(ai) ? L('先預覽與確認內容，再自行到網站貼上送出。') : L('選擇 AI 與模型，確認需求後送出。');
 }
 function chatHtml(p, t) {
   const pick = chatPick(p, t);
@@ -1089,12 +1106,14 @@ function chatHtml(p, t) {
   const available = webActor(pick.ai) || (state.roles.models[AI_KEY[pick.ai]] || []).includes(pick.model);
   const unavailable = L('（利用できません。選び直してください）');
   const old = pick.model && !available ? chatModelOption(pick.ai, pick.model, UI`${AI_LABEL[pick.ai]}・${pick.model}${unavailable}`, 'selected disabled', unavailable) : '';
-  const gptOpt = state.windowsBrowser ? ['chatgpt','claude-chat'].map(actor=>chatModelOption(actor,'web-manual',AI_LABEL[actor]+' · '+L('手動引き継ぎ'),`${pick.ai===actor?'selected':''} ${manualReady(actor)?'':'disabled'}`)).join('') + ['claude','agy','grok'].filter(actor=>!actorReady(actor)).map(actor=>chatModelOption(actor,'unavailable',AI_LABEL[actor]+' · '+L('まだ利用できません'),'disabled')).join('') : chatModelOption('chatgpt', 'app', L('ChatGPT（アプリで作業。送ると貼る文をコピー）'), pick.ai === 'chatgpt' ? 'selected' : '');
-  const opts = old + orderedModels().filter(id => { const [key, m] = id.split('|'); const a = key === 'claude-code' ? 'claude' : key; return shownModels(key, pick.ai === a ? pick.model : '').includes(m); }).map(id => {
+  const gptOpt = state.windowsBrowser ? ['chatgpt','claude-chat'].map(actor=>chatModelOption(actor,'web-manual',AI_LABEL[actor]+' · '+L('手動引き継ぎ'),`${pick.ai===actor?'selected':''} ${manualReady(actor)?'':'disabled'}`)).join('') : chatModelOption('chatgpt', 'app', L('ChatGPT（アプリで作業。送ると貼る文をコピー）'), pick.ai === 'chatgpt' ? 'selected' : '');
+  const modelOpts = orderedModels().filter(id => { const [key, m] = id.split('|'); const a = key === 'claude-code' ? 'claude' : key; return shownModels(key, pick.ai === a ? pick.model : '').includes(m); }).map(id => {
     const [key, m] = id.split('|'), a = key === 'claude-code' ? 'claude' : key;
     const suffix = flag(a, m) === '' ? '（既定）' : '';
     return chatModelOption(a, m, UI`${AI_LABEL[a]}・${m}${suffix}`, `${!cliReady(a) ? 'disabled' : ''} ${pick.ai === a && pick.model === m ? 'selected' : ''}`, suffix);
-  }).join('') + gptOpt;
+  }).join('');
+  const blockedOpts = ['claude','agy','grok'].filter(actor=>!actorReady(actor)).map(actor=>chatModelOption(actor,'unavailable',AI_LABEL[actor]+' · '+L('まだ利用できません'),'disabled')).join('');
+  const opts = old + (state.windowsBrowser ? `<optgroup label="${esc(L('本機執行'))}">${modelOpts}</optgroup><optgroup label="${esc(L('網頁手動交接'))}">${gptOpt}</optgroup><optgroup label="${esc(L('尚未就緒'))}">${blockedOpts}</optgroup>` : modelOpts + gptOpt);
   return UI`<div class="chat" data-p="${esc(p.id)}" data-t="${esc(t.id)}">
     <section id="chat-approvals" class="chat-approvals" aria-label="待處理授權" hidden></section>
     <div class="msgs" id="msgs">${EMPTY_CHAT()}</div>
@@ -1103,13 +1122,15 @@ function chatHtml(p, t) {
       <div class="queue" id="chat-queue" hidden></div>
       <div class="quick-images" id="chat-images" aria-label="添付画像" ${chatImages(p.id, t.id).length ? '' : 'hidden'}>${chatImagesHtml(p.id, t.id)}</div>
       <span class="small" id="chat-image-state" role="status" ${chatImageUploads.get(chatAttachmentKey(p.id, t.id)) ? '' : 'hidden'}>画像を追加中…</span>
-      <textarea id="chat-in" rows="3" maxlength="100000" placeholder="依頼を書く（例：このスクショの崩れを直して）" aria-label="依頼">${esc(chatDraft[chatAttachmentKey(p.id, t.id)] || '')}</textarea>
+      <label class="composer-label" for="chat-in">此次需求</label>
+      <textarea id="chat-in" rows="2" maxlength="100000" placeholder="依頼を書く（例：このスクショの崩れを直して）" aria-label="依頼">${esc(chatDraft[chatAttachmentKey(p.id, t.id)] || '')}</textarea>
       <div class="crow">
-        <select id="chat-ai" aria-label="答える AI とモデル">${opts}</select>
-        <select id="chat-effort" aria-label="思考" ${pick.ai === 'agy' || webActor(pick.ai) ? 'disabled' : ''}>${(webActor(pick.ai) ? [] : pick.ai === 'agy' ? ['高'] : state.efforts).map(e => UI`<option ${(pick.ai === 'agy' ? '高' : pick.effort) === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select>
+        <select id="chat-ai" aria-label="答える AI とモデル" aria-describedby="chat-route-hint">${opts}</select>
+        <select id="chat-effort" aria-label="思考" ${webActor(pick.ai)?'hidden':''} ${pick.ai === 'agy' || webActor(pick.ai) ? 'disabled' : ''}>${(webActor(pick.ai) ? [] : pick.ai === 'agy' ? ['高'] : state.efforts).map(e => UI`<option ${(pick.ai === 'agy' ? '高' : pick.effort) === e ? 'selected' : ''}>${esc(e)}</option>`).join('')}</select>
         <span class="small" id="chat-state"></span><span class="sp"></span>
-        <button class="btn" id="chat-send" type="submit">送る</button>
+        <button class="btn" id="chat-send" type="submit">${esc(chatActionLabel(pick.ai))}</button>
       </div>
+      <p id="chat-route-hint" class="route-hint">${esc(chatRouteHint(pick.ai))}</p>
       <div class="crow busyrow" id="chat-busyrow" hidden>
         <span class="sp"></span>
         <button class="btn plain" id="chat-stop" type="button" title="今の作業を止めます（待っている指示も取り消します）">${L('止める')}</button>
@@ -1397,7 +1418,7 @@ function openChat(p, t, savedScroll) {
   ta.addEventListener('keydown', e => { if (isSendKey(e)) { e.preventDefault(); $('#composer').requestSubmit(); } });
   const keep = () => { const [ai, model] = $('#chat-ai').value.split('|'); try { localStorage.setItem('hub-chat-' + p.id + '/' + t.id, JSON.stringify({ ai, model, effort: $('#chat-effort').value })); } catch (e) { /* 無視 */ } };
   $('#chat-ai').addEventListener('change', () => { document.querySelectorAll('.gptbox').forEach(b => { b.hidden = state.windowsBrowser ? false : !$('#chat-ai').value.startsWith('chatgpt|'); }); });
-  $('#chat-ai').addEventListener('change', () => { const selected = $('#chat-ai').value.split('|')[0], agy = selected === 'agy', web = webActor(selected); const e = $('#chat-effort'), previous = e.value; e.disabled = agy || web; e.innerHTML = (web ? [] : agy ? ['高'] : state.efforts).map(v => UI`<option ${v === (agy ? '高' : previous) ? 'selected' : ''}>${esc(v)}</option>`).join(''); keep(); }); $('#chat-effort').addEventListener('change', keep);
+  $('#chat-ai').addEventListener('change', () => { const selected = $('#chat-ai').value.split('|')[0], agy = selected === 'agy', web = webActor(selected); $('#chat-send').textContent = chatActionLabel(selected); $('#chat-route-hint').textContent = chatRouteHint(selected); const e = $('#chat-effort'), previous = e.value; e.hidden = web; e.disabled = agy || web; e.innerHTML = (web ? [] : agy ? ['高'] : state.efforts).map(v => UI`<option ${v === (agy ? '高' : previous) ? 'selected' : ''}>${esc(v)}</option>`).join(''); keep(); }); $('#chat-effort').addEventListener('change', keep);
   $('#chat-stop').addEventListener('click', () => api('/api/chat/stop', { project: p.id, task: t.id }).catch(e => toast(e.message)));
   // mode: ''（普通）／'interrupt'（① 中断して送る）／'queue'（② 追加：終わったら続けて）
   const sendChat = async (mode, answer) => {
@@ -1853,7 +1874,7 @@ document.addEventListener('click', e => {
 document.addEventListener('dragstart', e => {
   const grip = e.target.closest('[data-mo-grip]');
   if (!grip) return;
-  if (modelViewSaving || window.matchMedia?.('(max-width:720px)').matches) { e.preventDefault(); return; }
+  if (modelViewSaving || window.matchMedia?.('(max-width:900px)').matches) { e.preventDefault(); return; }
   modelOrderDrag = grip.dataset.moGrip; e.dataTransfer.setData('text/plain', modelOrderDrag); e.dataTransfer.effectAllowed = 'move';
 });
 function clearModelDrop() { document.querySelectorAll('.model-order-row').forEach(x => x.classList.remove('model-drop-before','model-drop-after')); }
@@ -2704,8 +2725,8 @@ window.hubNativePaste = paths => {
   toast(L('画像は依頼の入力欄か作業画面で貼り付けてください'));
 };
 // スマホ：☰ で左の一覧を出し入れ。一覧で何かを選んだらしまう
-$('#menu-toggle').addEventListener('click', () => { const on = document.body.classList.toggle('show-list'); $('#menu-toggle').setAttribute('aria-expanded', String(on)); });
-function closeDrawer() { document.body.classList.remove('show-list'); $('#menu-toggle').setAttribute('aria-expanded', 'false'); }
+$('#menu-toggle').addEventListener('click', () => window.HubNavigation?.toggle());
+function closeDrawer() { window.HubNavigation?.close(); }
 // 一覧の外を押したら、引き出しをしまう（一覧の中の選択は、下の [data-go] の処理でしまう）
 document.addEventListener('click', e => { const b=e.target.closest?.('[data-steps-close]'); if(b){const d=b.closest('.steps');if(d)d.open=false;stepsOpen=false;return;} if (document.body.classList.contains('show-list') && e.target.closest && !e.target.closest('#list') && !e.target.closest('#menu-toggle')) closeDrawer(); }, true);
 $('#gear').addEventListener('click', () => { view = { ...view, kind: view.kind === 'settings' ? 'project' : 'settings' }; rolesDraft = null; render(); });

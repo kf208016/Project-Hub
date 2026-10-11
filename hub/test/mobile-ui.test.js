@@ -15,7 +15,7 @@ function fixture(){
   blur(){doc.activeElement=null;}
  }
  const elements=new Map();const el=s=>{if(!elements.has(s))elements.set(s,new Element());return elements.get(s);};
- const work=el('.work'),chat=el('.chat'),composer=el('#composer');work.appendChild(el('.whead'));work.appendChild(chat);work.appendChild(el('.wfoot'));chat.appendChild(composer);composer.appendChild(el('#chat-in'));el('#chat-images').hidden=true;
+ const work=el('.work'),chat=el('.chat'),composer=el('#composer');work.appendChild(el('.whead'));work.appendChild(chat);work.appendChild(el('.work-details'));el('.work-details').appendChild(el('.wfoot'));chat.appendChild(composer);composer.appendChild(el('#chat-in'));el('#chat-images').hidden=true;
  const values=new Map(),media={matches:true,addEventListener(n,cb){this[n]=cb;}},vv={scale:1,height:700,offsetTop:0,addEventListener(n,cb){this[n]=cb;}};
  const properties={},doc={querySelector(s){if(s==='#mobile-work-info'||s==='#mobile-compose')return [...elements.values()].flatMap(e=>e.children).find(e=>e.id===s.slice(1))||null;if(s==='.working'||s==='.whead .s-実行中')return null;return el(s);},createElement(){return new Element();},body:new Element(),documentElement:{style:{setProperty(n,v){properties[n]=v;}}}};
  const scrollCalls=[],frames=[];
@@ -66,7 +66,7 @@ test('Information preference and current name remain discoverable; keyboard size
  a.el('#mobile-info').handlers.click();assert.equal(a.el('#mobile-info').textContent,'▼');assert.equal(a.el('#mobile-info').attrs['aria-label'],'情報と操作を開く');assert.equal(a.el('#mobile-badges').textContent,'固定機能');
  a.vv.height=340;a.vv.resize();assert.equal(a.properties['--hub-visible-height'],'340px');assert.equal(a.doc.body.attrs['mobile-keyboard'],true);a.vv.height=700;a.vv.resize();assert.equal(a.properties['--hub-visible-height'],'700px');assert.equal(a.doc.body.attrs['mobile-keyboard'],false);
  a.vv.scale=2;a.vv.resize();assert.equal(a.properties['--hub-visible-height'],'100dvh');
- a.media.matches=false;a.media.change();assert.equal(a.work.children.at(-1),a.el('.wfoot'));
+ a.media.matches=false;a.media.change();assert.equal(a.work.children.at(-1),a.el('.work-details'));assert.equal(a.el('.work-details').children[0],a.el('.wfoot'));
 });
 test('Information name follows the current work or project and clears when leaving both',()=>{
  const a=fixture();a.el('.whead h2').textContent='固定機能';a.api.mount('p/t');

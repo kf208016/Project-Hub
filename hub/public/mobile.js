@@ -1,6 +1,6 @@
 /* スマホの収納欄。開閉では入力欄を作り直さない。 */
 (() => {
-  const $ = s => document.querySelector(s), media = matchMedia('(max-width:720px)');
+  const $ = s => document.querySelector(s), media = matchMedia('(max-width:900px)');
   let infoOpen = false, composerOpen = false, workKey = '';
   try { infoOpen = localStorage.getItem('hub-mobile-info') === 'open'; } catch (_) {}
   function draft() {
@@ -26,7 +26,7 @@
     $('#mobile-badges').title = name;
   }
   function layout() {
-    const work = $('.work'), info = $('#mobile-work-info'), foot = $('.wfoot');
+    const work = $('.work'), info = $('#mobile-work-info'), foot = $('.work-details') || $('.wfoot');
     if (work && info && foot) { if (media.matches) info.appendChild(foot); else work.appendChild(foot); }
     const vv = window.visualViewport;
     document.body.classList.toggle('mobile-keyboard', Boolean(media.matches && vv && vv.scale === 1 && vv.height < window.innerHeight - 100));

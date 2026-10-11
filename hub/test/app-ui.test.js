@@ -7,6 +7,28 @@ const vm = require('node:vm');
 const registry = require('../lib/provider-registry');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+test('Windows chat separates execution from manual handoff and preserves provider identity on phones',()=>{
+ const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:'win32'});s.webChatAvailable=true;
+ s.roles.models={codex:['GPT-6.1-Sol']};vm.runInContext('state='+JSON.stringify(s),a.context);
+ a.context.matchMedia=()=>({matches:true});
+ const html=a.context.chatHtml(s.projects[0],s.projects[0].tasks[0]);
+ for(const label of ['本機執行','網頁手動交接','尚未就緒'])assert.ok(html.includes('optgroup label="'+label+'"'));
+ for(const name of ['Claude Code','Agy CLI','Grok CLI'])assert.ok(html.includes(name+' · '));
+ assert.match(html,/value="grok\|unavailable"[^>]*disabled/);
+ assert.equal(a.context.chatActionLabel('codex'),'交由 Codex 執行');
+ assert.equal(a.context.chatActionLabel('chatgpt'),'準備手動交接');
+ assert.equal(a.context.chatActionLabel('claude-chat'),'準備手動交接');
+});
+test('API preserves bound web partial status as an error and keeps ordinary 409 failures rejected',async()=>{
+ const a=app(),request={actor:'chatgpt',project:'p',task:'t',receiptId:'r'};
+ a.context.window.HubWebChat=require('../public/web-chat');
+ const value={...request,ok:false,state:'chat_saved',durableStage:'chat_saved',partial:true,recoveryRequired:true,actualTargets:{chat:'saved',task:'before'},token:'PRIVATE_TOKEN'};
+ a.context.fetch=async()=>({ok:false,status:409,json:async()=>value});
+ await assert.rejects(a.context.api('/api/web-chat/result',request),error=>error.status===409&&error.webChatStatus?.actualTargets.task==='before'&&!JSON.stringify(error).includes('PRIVATE_TOKEN'));
+ await assert.rejects(a.context.api('/api/start',{project:'p'}),error=>!error.webChatStatus);
+ a.context.fetch=async()=>({ok:false,status:409,json:async()=>({...value,task:'other'})});
+ await assert.rejects(a.context.api('/api/web-chat/result',request),error=>error.webChatStatus===null&&error.webChatRecoveryRequired===true);
+});
 test('controller failed chat cleanup keeps an independent retry control visible after chat is idle',async()=>{const {WorkspaceRuntime}=require('../lib/workspace-runtime'),binding={run:'SYNTHETIC_PRIVATE_RUN',dir:process.cwd()},review={permits:new Map([['SYNTHETIC_PERMIT',{record:{secrets:{files:[]}}}]]),consumeRun:async()=>binding,binding:()=>binding,releaseRun:async()=>{throw Error('SYNTHETIC_SECRET_ERROR_NOT_PUBLIC');}},runtime=new WorkspaceRuntime({review,chats:{busy:()=>null,queue:()=>[],stop(){}},sessions:{stop(){}},store:{},stopExtra:async()=>({stopped:true,treeExited:true})});const flow=await runtime.begin({project:'p',task:'t',permit:'SYNTHETIC_PERMIT',kind:'chat'});flow.starting=false;await assert.rejects(runtime.finish(flow.id),/SYNTHETIC_SECRET/);const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;s.projects[0].tasks[0].workspaceLifecycle=runtime.summary('p','t');vm.runInContext('state='+JSON.stringify(s)+';view={kind:"work",project:"p",task:"t"}',a.context);a.context.render();a.stream().onmessage({data:JSON.stringify({type:'rows',rows:[],busy:null,queue:[],approvals:[]})});assert.equal(a.element('#chat-busyrow').hidden,true);assert.match(a.element('#main').innerHTML,/data-act="workspaceclose"/);assert.match(a.element('#main').innerHTML,/重試停止／清理工作區/);assert.doesNotMatch(a.element('#main').innerHTML,/SYNTHETIC_PRIVATE|SYNTHETIC_PERMIT|SYNTHETIC_SECRET/);s.projects[0].tasks[0].workspaceLifecycle=null;vm.runInContext('state='+JSON.stringify(s),a.context);a.context.render();assert.doesNotMatch(a.element('#main').innerHTML,/data-act="workspaceclose"/);});
 
 test('workspace close requires confirmation, prevents double click and reloads only after proved completion',async()=>{const a=app(),button={disabled:false,textContent:'重試停止／清理工作區'},calls=[],messages=[];let loads=0,confirms=0,resolve;a.context.toast=text=>messages.push(text);a.context.load=async()=>{loads++;};a.context.confirm=()=>false;a.context.api=async(...args)=>calls.push(args);await a.context.closeNativeWorkspace('p','t',button);assert.equal(calls.length,0);a.context.confirm=text=>{confirms++;assert.match(text,/owned 程序.*撤銷 MCP/);return true;};a.context.api=(...args)=>{calls.push(args);return new Promise(r=>resolve=r);};const pending=a.context.closeNativeWorkspace('p','t',button);await a.context.closeNativeWorkspace('p','t',button);assert.equal(calls.length,1);assert.equal(confirms,1);assert.equal(button.disabled,true);assert.equal(JSON.parse(JSON.stringify(calls[0][1])).confirm,true);resolve({ok:true,partial:true,workspaceLifecycle:null});await assert.rejects(pending,/未顯示成功/);assert.equal(loads,0);assert.equal(messages.length,0);assert.equal(button.disabled,false);a.context.api=async()=>({ok:true,workspaceLifecycle:null});await a.context.closeNativeWorkspace('p','t',button);assert.equal(loads,1);assert.equal(messages.length,1);assert.match(messages[0],/授權已撤銷，清理已完成/);});
