@@ -86,6 +86,9 @@ function managedSpawn(file, args, options = {}) {
         if (match && !ready) { ready = true; child.commandPid = Number(match[1]); clearTimeout(timer); child.emit('spawn'); }
         else child.stderr.write(line + '\n');
       }
+      // After readiness, stderr is a stream; send this chunk's unfinished tail
+      // before the next chunk instead of holding it until the runner closes.
+      if (ready && pending) { const tail = pending; pending = ''; child.stderr.write(tail); }
     });
     real.on('error', e => { child.emit('error', e); });
     real.on('close', (code, signal) => { if (pending) child.stderr.write(pending); finish(code, signal); });
