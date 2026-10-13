@@ -23,6 +23,14 @@ The operator's SSH transport remains responsible for authentication, exact
 host pin and its own independent deadline; an unconfirmed disconnect is not
 proof of remote completion or cleanup.
 
+The Windows operator uses `../lib/worker-bootstrap.js`: a Python loader command
+bounded to 1024 UTF-8 bytes, followed by a four-byte length and compressed source
+on SSH stdin. Fixed length/digests, bounded decompression and the same buffered
+stdin preserve subsequent typed frames. This avoids observed truncation of long
+quoted argv by Git/MSYS when launched from native Windows Node. Dynamic source
+bootstrap belongs only to the approved owner deployment password channel; it
+must not be accepted by a future restricted connection-key entrypoint.
+
 `stage-request.example.json` uses the exact digest of this fixed artifact set.
 Its example nonce must be replaced with a fresh cryptographic nonce for a real
 connection. Runtime input must also satisfy `../windows/worker-stage.schema.json`
