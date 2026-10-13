@@ -1,5 +1,7 @@
 # Project Hub 多 CLI／網頁 Chat 實作計畫
 
+> 2026-10-13 核准補充：使用者提供獨立 Linux，核准 `2026-10-13-ssh-linux-worker-design.md` 及保留 Grok 未簽章來源限制，由目前 Codex 在同一聊天／分支依原執行方式繼續。下方 Hyper-V 專屬 R0–R2 條目保留歷史；本次執行以 §15 差異為準。模型／provider 登入、sudo 與全域系統變更未包含於本次核准。
+
 日期：2026-10-10（Asia/Taipei）｜狀態：**計畫待審閱；本輪未寫產品程式、安裝系統功能或呼叫模型。**
 
 ## 1. 核准範圍、來源與執行方式
@@ -229,3 +231,35 @@ python -m unittest discover -s tests -v
 VM 部分採獨立 Hyper-V Linux worker 候選、無 vNIC＋受限 socket/relay、單活動 run、provider 專用 profile；系統條件、來源、通道／proxy 或 Agy 互動未通過即保留未就緒並提出具體修正，不影響已驗證批次繼續。使用者需審閱本計畫與執行方式；核准前不寫產品程式、不安裝 OS 元件、不執行新 CLI／模型。
 
 本輪完成定義是這份實作計畫與一致性審查，不是新增功能已可使用；本機硬體唯讀結果與官方文件能力皆與產品端到端驗收分開。
+
+## 15. 2026-10-13：已核准獨立 Linux／SSH 差異及執行批次
+
+### 15.1 核准與範圍
+
+依已核准 SSH 補充，沿用原完整 M 矩陣及原 Codex／manual Chat 回歸；不再執行此路線的 Windows Hyper-V 預檢／啟用、LocalSystem helper、VHDX、service GUID 或 socket 註冊。指定主機／user／已確認 pin 僅保存在 task 私有登錄／evidence，不寫入可散布規格或產品預設值。未知 provider 仍拒絕，Agy 後續獨立驗收。
+
+### 15.2 第一個批次：來源與無模型 worker 部署
+
+1. 保留上一資源探針失敗紀錄；以 v2 bounded SSH capture 重跑 kernel cgroup limits、owned double-fork／setsid 退出及 unit 收尾。逾時不等待 `close` 作成功；失聯標記 remote unknown。讀取 glibc／systemd／工具版本及實際 user root 身分；不 sudo、不裝系統 package。
+2. 從 Ubuntu 官方 HTTPS 分發的 signed InRelease／Packages 固定 socat deb 及所有缺少的必要 libraries，核對 archive key fingerprint、signature、index SHA／package exact SHA／length／dependencies／license。只取 amd64 相容產物；取不到固定可信鏈即拒絕，不執行 maintainer scripts、apt source 變更或 installer。
+3. 新增 `hub/worker/` Python stdlib 的 typed channel／private deployment／sandbox supervisor，schemas 與 offline tests；Windows 新增 `hub/lib/worker-channel.js`／`worker-controller.js` 的固定目標 SSH transport。部署工具先核對 task 已量測 source digests、private root owner／held-FD identity，create-only 寫入 `~/.local/share/project-hub-worker/`；既有無所有權 root／path 不覆寫。
+4. 私有 release manifest 固定 Claude 2.1.295、Grok 1.0.50、socat／libs／worker bytes；收尾 fsync／重算 digest 後才 stage-complete。CLI 暫無 runtime readiness；Grok trust limit 如實保存。部署回應只傳固定 evidence fields，不傳 auth／私有設定；來源或既有物件異動拒絕 activation。
+5. 無網路／無 auth 的 whole-process 內做 `--version`／`--help` 與本機協定探針；先驗 namespace、mount、caps、NoNewPrivs、manager／cgroup／控制 channel 不可見、resource limits／owned tree 全退出。任何 gate 未通過不執行新 CLI；未提供真實能力的介面不得冒充完成。
+
+### 15.3 後續實作檔案與 gates
+
+- R1／R2：`hub/worker/protocol.py`、`deployment.py`、`sandbox.py`、`supervisor.py`、`egress.py`、`artifacts.py`；`hub/windows/worker-*.schema.json`；`hub/test/worker-*.test.js` 與 Linux worker stdlib unittest。typed messages 最多 1 MiB，unknown type／sequence／nonce／permit／root 皆 fail closed；沒有任意 shell RPC。
+- 資源／FD：task 2 GiB、provider home 256 MiB、tmp 512 MiB 的 bounded tmpfs；整個 run memory 6 GiB、swap0、CPUQuota150%、TasksMax256、30分鐘；admission RAM10GiB／disk20GiB／persistent8GiB。先驗 held root-FDs 收尾與 accounting、OOM／quota／pids／cancel／crash／reboot unknown；不能僅看 package 存在或 manager bus 取成功。
+- Profile／網路：controller state、其他 profile／Windows auth／SSH agent／manager IPC 不掛進 CLI；只選定 provider 的經驗配置與可變登入資料。允許的 per-run TLS destinations 與 UDS relay 分離管理 channel；驗 DNS／IP／LAN／redirect／ignore-proxy／socket bypass。bootstrap grant、登入 grant、模型 permit 各自綁定，不擴大來源或 vendor。
+- C1／C2：沿 §12 逐 provider offline protocol → 精確官方登入 → 合成模型工作核准 → 原 M 矩陣；新增 Claude／Grok adapters 接入真正 worker，resume／工具核准／queue／terminal／transcript／usage／MCP／Git 回收均有成功與拒絕證據。能力／版本不足保留未就緒，不能更改 ready boolean 取代驗收。
+- D1：原 §13 的 package／source／rollback／資料相容 gates 保留；worker 私有 artifacts 與 provider 登入不打進 Windows ZIP。正式 package 增加 worker code／schemas／文件／license；核对目前 source／installation state 後安裝，再驗實際 UI 成功與失敗路徑。
+
+### 15.4 驗證、復原與報告
+
+每批執行相關 Node tests／Linux stdlib tests，程式變更後亦跑使用者要求的 Python discovery；若 repo 無 `tests` directory，保存實際 exit1，不建立 dummy tests。mock／offline protocol／--help 不算模型或 Hub 完整驗收。
+
+本次已新增實際 worker protocol 的 Python 測試於 repo `tests/`，以使用者指定的 discovery 指令驗證；舊批次缺目錄的失敗紀錄保留，不套用為目前測試狀態。
+
+每批記錄 exact source SHA、SSH／worker／boot／unit identities、scope／command、exit／log SHA、產品能力與未量測項目。停止只對確認擁有的 run／unit，失聯保留 unknown lease；不 shutdown 整台 Linux。撤回僅本次 create-only 且身分／內容未變的物件，登入／使用者成果保留；任何修復需超出核准 root／sudo／全域系統範圍時先提出精確差異。
+
+本節按使用者已核准的 SSH 書面補充與既有 execution method 編排；不重啟相同範圍的審閱輪次。真正登入／模型送出仍使用原精確批次核准。

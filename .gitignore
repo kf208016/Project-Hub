@@ -16,3 +16,5 @@ public-release/
 .ai/work/
 _hub/log*.jsonl
 Inbox/hub/
+__pycache__/
+*.py[cod]

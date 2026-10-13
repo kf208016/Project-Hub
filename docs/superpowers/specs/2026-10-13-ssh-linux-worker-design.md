@@ -2,7 +2,7 @@
 
 日期：2026-10-13（Asia/Taipei）
 
-狀態：**書面設計補充待使用者審閱。尚未安裝 Linux CLI、實作 SSH worker 或啟用 Claude／Grok。**
+狀態：**2026-10-13 使用者核准「同意，繼續 Claude／Grok（保留 Grok 來源限制）」；沿原已核准執行方式推進。核准不代表 Linux CLI 已安裝、worker 已實作或 provider 已就緒。**
 
 基準：`windows-browser-mvp`，產品 commit `dbabda4b4f22bb63d5da8ab598b89e59e50083ba`。本補充延續已核准的 `2026-10-09-multi-provider-cli-web-chat-design.md` 與 `2026-10-10-multi-provider-cli-web-chat-implementation.md`；差異限於使用者提供的獨立 Linux、SSH 通道、既有主機資源與私有 native CLI 部署。原規格的能力、授權、隔離、秘密、成果回收及驗收門檻繼續適用。
 
