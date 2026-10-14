@@ -263,3 +263,15 @@ VM 部分採獨立 Hyper-V Linux worker 候選、無 vNIC＋受限 socket/relay�
 每批記錄 exact source SHA、SSH／worker／boot／unit identities、scope／command、exit／log SHA、產品能力與未量測項目。停止只對確認擁有的 run／unit，失聯保留 unknown lease；不 shutdown 整台 Linux。撤回僅本次 create-only 且身分／內容未變的物件，登入／使用者成果保留；任何修復需超出核准 root／sudo／全域系統範圍時先提出精確差異。
 
 本節按使用者已核准的 SSH 書面補充與既有 execution method 編排；不重啟相同範圍的審閱輪次。真正登入／模型送出仍使用原精確批次核准。
+
+## 16. 2026-10-14：已核准 Windows 密碼保管補充
+
+使用者審閱 `2026-10-14-ssh-password-vault-design.md` 後回覆「好」，沿目前聊天的原執行方式繼續。依既有直接編排計畫授權，以下將已核准規格落成工作批次；不新增 OS 服務、外部依賴、Linux policy 或 provider 登入授權。
+
+1. **V1 native store**：新增 `hub/windows/ssh-vault-store.cs`，只允許 exact 產品 TargetName；CredUI 原生錄入、嚴格 UTF-8、清零、驗證後才 CredWrite、readback／精確刪除。不使用 Credential enumeration。
+2. **V2 native transport**：新增 `ssh-vault-transport.cs`；SSH suspended → Job → resume，私人 pipe 的 owner ACL／remote 拒絕、peer PID／SID／建立時間／image／Job／已量測 ancestry、一次 nonce。固定 SSH options／host key pin，錯誤與逾時收束 owned tree。
+3. **V3 broker/controller**：新增 `ssh-vault-broker.cs` 與 `hub/lib/ssh-password-vault.js`，封閉 descriptor／Schema／收據與例子。收據只含非秘密 binding，登錄持有鎖並驗 root／source／SID；enroll 的唯讀 identity probe 驗 nonce／UID 才保存。一般 connect 不開 UI；更新及忘記只能明確執行。
+4. **V4 本機驗證**：編譯及拒絕測試；本機 loopback SSH fixture 實際驗 Git/MSYS ancestry、UTF-8、一次供應／重放拒絕、錯誤／timeout／owner crash。使用全新產品 synthetic target 驗存取／刪除，不枚舉或讀既有 vault。Node 範圍回歸及根目錄 Python discover。
+5. **V5 一次正式錄入**：前述 gates 過後，顯示一次明確目標的 CredUI；候選密碼只留 native buffer，連線固定 readonly probe 成功才保存。取消或錯誤即停止，不能重彈。新 controller 兩次 cached probe 均無 UI，再將已核准 stage operator 改接 broker。正式 Linux staging／provider readiness 另記錄，不能以 vault 成功代替。
+
+每批只在相稱證據存在時標記通過。native fixture、正式 SSH、套件安裝及模型流程各自報告；此補充尚未通過正式 SSH／vault／安裝驗收。

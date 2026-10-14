@@ -1,6 +1,6 @@
 # Project Hub：Windows 認證管理員保存 SSH 密碼
 
-日期：2026-10-14（Asia/Taipei）。狀態：**書面方案待審閱；未建立認證、未讀取密碼、未開新 SSH 或密碼視窗。**
+日期：2026-10-14（Asia/Taipei）。狀態：**使用者在書面方案呈現後回覆「好」，核准本方案並沿目前聊天執行；實作中，尚未保存真實認證。**
 
 使用者要求採其他記憶密碼工具、不要一直重複輸入，並確認先前已輸入且按確定。本补充以 Windows 內建認證管理員取代反覆 Git Tcl askpass；不採尚未核准的持久 SSH key 方案，不修改 Linux authorized_keys、sudo 或模型送出範圍。原 worker／CLI 隔離及 readiness gates 保留。
 
