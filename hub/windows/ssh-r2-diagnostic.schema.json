@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:project-hub:ssh-r2-diagnostic-grant:v1",
+  "title": "Single-use read-only failed R2 run inspection grant",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "grantId",
+    "issuedAt",
+    "expiresAt",
+    "operation",
+    "reviewReference",
+    "reviewDocumentSHA256",
+    "manifestReference",
+    "manifestSHA256",
+    "destinationBindingSHA256",
+    "registrationReceiptSHA256",
+    "activationReceiptSHA256",
+    "pointerSHA256",
+    "runReceiptSHA256",
+    "runPermitSHA256",
+    "originalCatalogSHA256",
+    "helperSHA256",
+    "sourceSetSHA256",
+    "diagnosticCatalogSHA256",
+    "diagnosticPayloadSHA256",
+    "diagnosticPayloadLength",
+    "failureEvidenceSHA256",
+    "runNonce",
+    "uid",
+    "bootId",
+    "grantRoot",
+    "grantRootFingerprint",
+    "maxSessions",
+    "deadlineSeconds",
+    "maxOutputBytes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "grantId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "issuedAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "operation": {
+      "const": "inspect-r2-run-v1"
+    },
+    "reviewReference": {
+      "const": "docs/superpowers/specs/2026-10-15-r2-readonly-diagnostic-design.md"
+    },
+    "reviewDocumentSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "manifestReference": {
+      "type": "string",
+      "pattern": "^[A-Za-z]:\\\\",
+      "maxLength": 239
+    },
+    "manifestSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "destinationBindingSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "registrationReceiptSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "activationReceiptSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pointerSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "runReceiptSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "runPermitSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "originalCatalogSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "helperSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "sourceSetSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "diagnosticCatalogSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "diagnosticPayloadSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "diagnosticPayloadLength": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 131076
+    },
+    "failureEvidenceSHA256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "runNonce": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "uid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "bootId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+    },
+    "grantRoot": {
+      "type": "string",
+      "pattern": "^[A-Za-z]:\\\\",
+      "maxLength": 239
+    },
+    "grantRootFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "maxSessions": {
+      "const": 1
+    },
+    "deadlineSeconds": {
+      "const": 45
+    },
+    "maxOutputBytes": {
+      "const": 131072
+    }
+  },
+  "description": "The runtime also checks canonical paths and UUIDs, nonzero nonce/boot ID, issuedAt <= now < expiresAt, a window <= 600 seconds, exact immutable capsule and file bindings, and durable one-use admission. This schema is not an authorization signature."
+}

@@ -1,0 +1,838 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "op",
+    "sequence",
+    "nonce",
+    "uid",
+    "bootId",
+    "ok",
+    "code",
+    "records",
+    "unit",
+    "cgroup",
+    "cleanupHistorical",
+    "providerReady",
+    "snapshotAtomic"
+  ],
+  "properties": {
+    "protocol": {
+      "const": 1
+    },
+    "op": {
+      "const": "inspection-result"
+    },
+    "sequence": {
+      "const": 1
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "uid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "bootId": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "code": {
+      "type": "string",
+      "enum": [
+        "OK",
+        "NOT_READ",
+        "MISSING",
+        "JSON_REJECTED",
+        "SCHEMA_REJECTED",
+        "BINDING_REJECTED",
+        "METADATA_REJECTED",
+        "IDENTITY_CHANGED",
+        "CONTENT_CHANGED",
+        "SIZE_BOUND",
+        "TOTAL_BOUND",
+        "IO_REJECTED",
+        "LINUX_REQUIRED",
+        "ROOT_REJECTED",
+        "DEADLINE",
+        "REQUEST_REJECTED",
+        "REQUEST_EXPIRED",
+        "BOOT_REJECTED",
+        "UID_REJECTED",
+        "RECEIPT_REJECTED",
+        "LEASE_REJECTED",
+        "RUNTIME_REJECTED",
+        "TOOL_FAILED",
+        "TOOL_OUTPUT_BOUND",
+        "UNIT_REJECTED",
+        "UNIT_MISSING",
+        "SAVED_IDENTITY_UNAVAILABLE",
+        "UNIT_IDENTITY_CHANGED",
+        "CGROUP_REJECTED",
+        "CGROUP_MISSING",
+        "CGROUP_IDENTITY_CHANGED",
+        "INSPECTION_FAILED",
+        "PARTIAL",
+        "OUTPUT_REJECTED"
+      ]
+    },
+    "records": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "prefixItems": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "intent.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "runtime.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "unit.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "service-kernel.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "execution-gate.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "service-error.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "measurement.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "result.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "closed.json"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/record"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "const": "active.json"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "items": false
+    },
+    "unit": {
+      "$ref": "#/$defs/unit"
+    },
+    "cgroup": {
+      "$ref": "#/$defs/cgroup"
+    },
+    "cleanupHistorical": {
+      "const": "unknown"
+    },
+    "providerReady": {
+      "const": false
+    },
+    "snapshotAtomic": {
+      "const": false
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:project-hub:worker-r2-inspect-result:v1",
+  "title": "Closed read-only R2 inspection result",
+  "$defs": {
+    "facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bindingMatches",
+        "recordedCode",
+        "recordedOk",
+        "recordedCleanupVerified",
+        "completionState",
+        "recordedGuardPassed",
+        "measurementShapeValid",
+        "invocationId",
+        "pid",
+        "startTicks",
+        "cgroupPathSHA256"
+      ],
+      "properties": {
+        "bindingMatches": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "recordedCode": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "R2_UNIT_IDENTITY_CHANGED",
+            "R2_OPERATION_FAILED",
+            "R2_SERVICE_FAILED",
+            "R2_BOOT_CHANGED",
+            "R2_CAPABILITIES_REJECTED",
+            "R2_CASE_FAILED",
+            "R2_CGROUP_EVENTS_REJECTED",
+            "R2_CGROUP_IDENTITY_CHANGED",
+            "R2_CGROUP_IDENTITY_REJECTED",
+            "R2_CGROUP_PATH_CHANGED",
+            "R2_CGROUP_V2_REQUIRED",
+            "R2_CLEANUP_UNKNOWN",
+            "R2_CONTROLLER_DISCONNECTED",
+            "R2_CONTROLLER_NOT_READING",
+            "R2_DIRECTORY_CHANGED",
+            "R2_DIRECTORY_OWNER_REJECTED",
+            "R2_EXECUTION_GATE_EXPIRED",
+            "R2_EXECUTION_GATE_REJECTED",
+            "R2_EXTRA_FD_REJECTED",
+            "R2_FILE_CHANGED",
+            "R2_FILE_METADATA_REJECTED",
+            "R2_FILE_OWNER_REJECTED",
+            "R2_FORBIDDEN_PATH_VISIBLE",
+            "R2_KERNEL_GATE_BINDING_REJECTED",
+            "R2_KERNEL_GATE_UNAVAILABLE",
+            "R2_KERNEL_LIMITS_REJECTED",
+            "R2_MEASUREMENT_REJECTED",
+            "R2_NAMESPACE_REJECTED",
+            "R2_NETWORK_NAMESPACE_REJECTED",
+            "R2_PARENT_DEATH_GUARD_FAILED",
+            "R2_PARENT_IDENTITY_REJECTED",
+            "R2_READONLY_RUNTIME_REJECTED",
+            "R2_REMOTE_DEADLINE",
+            "R2_RESULT_PERSISTENCE_FAILED",
+            "R2_RUNTIME_CHANGED",
+            "R2_RUNTIME_LINK_ESCAPED",
+            "R2_RUNTIME_OWNER_REJECTED",
+            "R2_RUNTIME_PATH_REJECTED",
+            "R2_RUNTIME_TYPE_REJECTED",
+            "R2_SANDBOX_DEADLINE",
+            "R2_SANDBOX_FAILED",
+            "R2_SANDBOX_OUTPUT_BOUND",
+            "R2_SANDBOX_RESULT_REJECTED",
+            "R2_SANDBOX_UID_REJECTED",
+            "R2_SERVICE_BINDING_REJECTED",
+            "R2_SERVICE_COMMAND_REJECTED",
+            "R2_SERVICE_CONFIGURATION_REJECTED",
+            "R2_SERVICE_EXECUTABLE_REJECTED",
+            "R2_SERVICE_INTENT_CHANGED",
+            "R2_SERVICE_INVOCATION_REJECTED",
+            "R2_SERVICE_PROCESS_REJECTED",
+            "R2_SERVICE_PROCESS_REUSED",
+            "R2_SERVICE_PROGRAM_BOUND",
+            "R2_SERVICE_ROOT_CHANGED",
+            "R2_SYNTHETIC_READBACK",
+            "R2_SYNTHETIC_WRITE",
+            "R2_SYSTEMD_OUTPUT_BOUND",
+            "R2_SYSTEMD_PROPERTIES_REJECTED",
+            "R2_SYSTEMD_QUERY_FAILED",
+            "R2_TMPFS_LIMIT_REJECTED",
+            "R2_TOOL_DEADLINE",
+            "R2_TOOL_OUTPUT_BOUND",
+            "R2_UNIT_IDENTITY_UNAVAILABLE",
+            "R2_UNIT_KILL_FAILED",
+            "R2_UNIT_START_FAILED",
+            "R2_UNIT_STOP_FAILED",
+            "R2_WRITE_FAILED",
+            "R2_WRITE_READBACK_REJECTED",
+            "R2_CREATE_ONLY_PUBLICATION_FAILED",
+            "R2_CREATE_ONLY_TARGET_EXISTS",
+            "R2_CREATE_INPUT_REJECTED",
+            "R2_ATOMIC_PUBLICATION_UNAVAILABLE",
+            null
+          ]
+        },
+        "recordedOk": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "recordedCleanupVerified": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "completionState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "closed",
+            "lease-release-pending",
+            null
+          ]
+        },
+        "recordedGuardPassed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "measurementShapeValid": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "invocationId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "startTicks": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "cgroupPathSHA256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "status",
+        "code",
+        "sha256",
+        "facts"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": [
+            "intent.json",
+            "runtime.json",
+            "unit.json",
+            "service-kernel.json",
+            "execution-gate.json",
+            "service-error.json",
+            "measurement.json",
+            "result.json",
+            "closed.json",
+            "active.json"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "missing",
+            "rejected",
+            "changed",
+            "unread",
+            "unknown"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "OK",
+            "NOT_READ",
+            "MISSING",
+            "JSON_REJECTED",
+            "SCHEMA_REJECTED",
+            "BINDING_REJECTED",
+            "METADATA_REJECTED",
+            "IDENTITY_CHANGED",
+            "CONTENT_CHANGED",
+            "SIZE_BOUND",
+            "TOTAL_BOUND",
+            "IO_REJECTED",
+            "LINUX_REQUIRED",
+            "ROOT_REJECTED",
+            "DEADLINE",
+            "REQUEST_REJECTED",
+            "REQUEST_EXPIRED",
+            "BOOT_REJECTED",
+            "UID_REJECTED",
+            "RECEIPT_REJECTED",
+            "LEASE_REJECTED",
+            "RUNTIME_REJECTED",
+            "TOOL_FAILED",
+            "TOOL_OUTPUT_BOUND",
+            "UNIT_REJECTED",
+            "UNIT_MISSING",
+            "SAVED_IDENTITY_UNAVAILABLE",
+            "UNIT_IDENTITY_CHANGED",
+            "CGROUP_REJECTED",
+            "CGROUP_MISSING",
+            "CGROUP_IDENTITY_CHANGED",
+            "INSPECTION_FAILED",
+            "PARTIAL",
+            "OUTPUT_REJECTED"
+          ]
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "facts": {
+          "$ref": "#/$defs/facts"
+        }
+      }
+    },
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "code",
+        "loadState",
+        "activeState",
+        "subState",
+        "invocationId",
+        "mainPID",
+        "execMainCode",
+        "execMainStatus",
+        "result",
+        "savedIdentityMatches"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "missing",
+            "rejected",
+            "changed",
+            "unread",
+            "unknown"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "OK",
+            "NOT_READ",
+            "MISSING",
+            "JSON_REJECTED",
+            "SCHEMA_REJECTED",
+            "BINDING_REJECTED",
+            "METADATA_REJECTED",
+            "IDENTITY_CHANGED",
+            "CONTENT_CHANGED",
+            "SIZE_BOUND",
+            "TOTAL_BOUND",
+            "IO_REJECTED",
+            "LINUX_REQUIRED",
+            "ROOT_REJECTED",
+            "DEADLINE",
+            "REQUEST_REJECTED",
+            "REQUEST_EXPIRED",
+            "BOOT_REJECTED",
+            "UID_REJECTED",
+            "RECEIPT_REJECTED",
+            "LEASE_REJECTED",
+            "RUNTIME_REJECTED",
+            "TOOL_FAILED",
+            "TOOL_OUTPUT_BOUND",
+            "UNIT_REJECTED",
+            "UNIT_MISSING",
+            "SAVED_IDENTITY_UNAVAILABLE",
+            "UNIT_IDENTITY_CHANGED",
+            "CGROUP_REJECTED",
+            "CGROUP_MISSING",
+            "CGROUP_IDENTITY_CHANGED",
+            "INSPECTION_FAILED",
+            "PARTIAL",
+            "OUTPUT_REJECTED"
+          ]
+        },
+        "loadState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "loaded",
+            "not-found",
+            "error",
+            "masked",
+            "stub",
+            "merged",
+            null
+          ]
+        },
+        "activeState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "active",
+            "reloading",
+            "inactive",
+            "failed",
+            "activating",
+            "deactivating",
+            "maintenance",
+            "refreshing",
+            null
+          ]
+        },
+        "subState": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "dead",
+            "condition",
+            "start-pre",
+            "start",
+            "start-post",
+            "running",
+            "exited",
+            "reload",
+            "reload-signal",
+            "reload-notify",
+            "stop",
+            "stop-watchdog",
+            "stop-sigterm",
+            "stop-sigkill",
+            "stop-post",
+            "final-watchdog",
+            "final-sigterm",
+            "final-sigkill",
+            "failed",
+            "auto-restart",
+            "auto-restart-queued",
+            "cleaning",
+            null
+          ]
+        },
+        "invocationId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "mainPID": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "execMainCode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "execMainStatus": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "result": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "success",
+            "resources",
+            "protocol",
+            "timeout",
+            "exit-code",
+            "signal",
+            "core-dump",
+            "watchdog",
+            "start-limit-hit",
+            "oom-kill",
+            "exec-condition",
+            "skip-condition",
+            null
+          ]
+        },
+        "savedIdentityMatches": {
+          "type": "boolean"
+        }
+      }
+    },
+    "cgroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "code",
+        "identityMatches",
+        "populated",
+        "frozen",
+        "memoryMax",
+        "memorySwapMax",
+        "pidsMax",
+        "cpuQuota",
+        "cpuPeriod"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "missing",
+            "rejected",
+            "changed",
+            "unread",
+            "unknown"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "OK",
+            "NOT_READ",
+            "MISSING",
+            "JSON_REJECTED",
+            "SCHEMA_REJECTED",
+            "BINDING_REJECTED",
+            "METADATA_REJECTED",
+            "IDENTITY_CHANGED",
+            "CONTENT_CHANGED",
+            "SIZE_BOUND",
+            "TOTAL_BOUND",
+            "IO_REJECTED",
+            "LINUX_REQUIRED",
+            "ROOT_REJECTED",
+            "DEADLINE",
+            "REQUEST_REJECTED",
+            "REQUEST_EXPIRED",
+            "BOOT_REJECTED",
+            "UID_REJECTED",
+            "RECEIPT_REJECTED",
+            "LEASE_REJECTED",
+            "RUNTIME_REJECTED",
+            "TOOL_FAILED",
+            "TOOL_OUTPUT_BOUND",
+            "UNIT_REJECTED",
+            "UNIT_MISSING",
+            "SAVED_IDENTITY_UNAVAILABLE",
+            "UNIT_IDENTITY_CHANGED",
+            "CGROUP_REJECTED",
+            "CGROUP_MISSING",
+            "CGROUP_IDENTITY_CHANGED",
+            "INSPECTION_FAILED",
+            "PARTIAL",
+            "OUTPUT_REJECTED"
+          ]
+        },
+        "identityMatches": {
+          "type": "boolean"
+        },
+        "populated": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "frozen": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "memoryMax": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "memorySwapMax": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "pidsMax": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cpuQuota": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cpuPeriod": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  },
+  "description": "ok describes the current read-only inspection, never historical cleanup or provider readiness. Exact nonce/UID/boot and stdout byte bounds are also checked at runtime. Multiple file and kernel reads are not an atomic snapshot."
+}
