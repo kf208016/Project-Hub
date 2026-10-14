@@ -13,6 +13,33 @@ native('real Git SSH uses native ASKPASS, saves once, reconnects without UI and 
   fs.writeFileSync(path.join(prepared.root,'fixture-descriptor.json'),vault.canonical(d),{flag:'wx'});
   let stored=false;
   try {
+    // Corrupt/local existing registration state must be rejected before any
+    // enrollment event, secret submission or connection, including directory
+    // objects that File.Exists alone would incorrectly treat as absent.
+    for(const [leaf,kind,code] of [
+      ['registration.bin','file','REGISTRATION_ALREADY_EXISTS'],
+      ['registration.bin','directory','REGISTRATION_ALREADY_EXISTS'],
+      ['forgotten.bin','file','REGISTRATION_FORGOTTEN'],
+      ['forgotten.bin','directory','REGISTRATION_FORGOTTEN'],
+    ]){
+      const target=path.join(prepared.root,leaf);
+      assert.equal(path.dirname(target),prepared.root);
+      if(kind==='directory')fs.mkdirSync(target);
+      else fs.writeFileSync(target,'SYNTHETIC_EXISTING_REGISTRATION_STATE\n',{flag:'wx'});
+      try {
+        await assert.rejects(vault.operation('enroll-fixture',d,{fixture:true}),error=>{
+          assert.equal(error.code,code,leaf+' '+kind);
+          assert.equal(error.childCloseObserved,true);
+          assert.equal(error.events.some(event=>/^(?:SUBMITTED$|SSH_|PROMPT_|ENROLLMENT_)/.test(event)),false);
+          assert.deepEqual(error.events,[]);
+          return true;
+        });
+      } finally {
+        // Remove only the exact object just created in this fresh fixture root.
+        if(kind==='directory')fs.rmdirSync(target);
+        else fs.unlinkSync(target);
+      }
+    }
     const enrolled=await vault.operation('enroll-fixture',d,{fixture:true});stored=true;
     assert.equal(enrolled.state,'stored');assert.equal(enrolled.uid,1000);
     for(const required of ['SUBMITTED','ASKPASS_SUPPLIED','SSH_HOST_PIN_MATCHED','SSH_PASSWORD_AUTHENTICATED','IDENTITY_VERIFIED','STORED'])assert.ok(enrolled.events.includes(required),required);

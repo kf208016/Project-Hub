@@ -275,3 +275,5 @@ VM 部分採獨立 Hyper-V Linux worker 候選、無 vNIC＋受限 socket/relay�
 5. **V5 一次正式錄入**：前述 gates 過後，顯示一次明確目標的 CredUI；候選密碼只留 native buffer，連線固定 readonly probe 成功才保存。取消或錯誤即停止，不能重彈。新 controller 兩次 cached probe 均無 UI，再將已核准 stage operator 改接 broker。正式 Linux staging／provider readiness 另記錄，不能以 vault 成功代替。
 
 每批只在相稱證據存在時標記通過。native fixture、正式 SSH、套件安裝及模型流程各自報告；此補充尚未通過正式 SSH／vault／安裝驗收。
+
+V5 操作修正：前一次 CredUI 錄入逾時，不能由空事件推論使用者未輸入。新版本先顯示有工作列入口的原生「SSH 連線設定」，使用者按一次開始才開啟 owner 綁定的 CredUI；開始前 15 分鐘，開始後 300 秒，取消／錯誤不重試。錄入前拒絕已存在或破損的 receipt／forgotten 路徑。來源更新僅可在舊 exact credential 與 receipt 均確認不存在後準備新 binding，不能靜默遷移已保存密碼。正常連線仍不開 UI。

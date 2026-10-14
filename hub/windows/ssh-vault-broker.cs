@@ -59,6 +59,13 @@ class HubSshVaultBroker {
     PathCheck(p);FileStream f=new FileStream(p,FileMode.Open,FileAccess.Read,FileShare.Read);
     try{FI i;Require(GetFileInformationByHandle(f.SafeFileHandle.DangerousGetHandle(),out i)&&i.Links==1&&(i.Attributes&0x410)==0&&f.Length>0&&f.Length<=max,"FILE_IDENTITY_REJECTED");return f;}catch{f.Dispose();throw;}
   }
+  static void RequireAbsentPath(string p,string code) {
+    PathCheck(p);
+    try {File.GetAttributes(p);}
+    catch(FileNotFoundException){return;}
+    // Directory, access error, orphan tomb or existing receipt is never absence.
+    throw new InvalidOperationException(code);
+  }
   static byte[] Read(FileStream f) {f.Position=0;byte[] b=new byte[(int)f.Length];int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);Require(n>0,"FILE_TRUNCATED");at+=n;}return b;}
   static string Fingerprint(string root) {
     IntPtr h=CreateFileW(root,0x80,1,IntPtr.Zero,3,0x02200000,IntPtr.Zero);Require(h!=new IntPtr(-1)&&h!=IntPtr.Zero,"ROOT_OPEN_FAILED");
@@ -139,7 +146,7 @@ class HubSshVaultBroker {
         using(var exe=HoldFile(Self,16*1024*1024))using(var ssh=HoldFile((string)d["ssh"],32*1024*1024)) {
           Require(Hash(Read(exe))==(string)d["brokerSHA256"]&&Hash(Read(ssh))==(string)d["sshSHA256"],"CODE_IDENTITY_CHANGED");
           bool enroll=mode=="enroll"||mode=="enroll-fixture";
-          if(enroll){Require(!File.Exists(receipt)&&!HubSshVaultStore.Exists(target),"REGISTRATION_ALREADY_EXISTS");string kh=Path.Combine(root,"known_hosts");if(!File.Exists(kh))CreateFile(kh,Encoding.ASCII.GetBytes(KnownHosts(d)));}
+          if(enroll){RequireAbsentPath(receipt,"REGISTRATION_ALREADY_EXISTS");RequireAbsentPath(Path.Combine(root,"forgotten.bin"),"REGISTRATION_FORGOTTEN");Require(!HubSshVaultStore.Exists(target),"REGISTRATION_ALREADY_EXISTS");string kh=Path.Combine(root,"known_hosts");if(!File.Exists(kh))CreateFile(kh,Encoding.ASCII.GetBytes(KnownHosts(d)));}
           using(var kh=HoldFile(Path.Combine(root,"known_hosts"),1024)) {
           Require(Utf8.GetString(Read(kh))==KnownHosts(d),"HOST_PIN_FILE_CHANGED");
           if(enroll) {
@@ -149,7 +156,7 @@ class HubSshVaultBroker {
               if(mode=="enroll-fixture"){Require((string)d["host"]=="127.0.0.1"&&(string)d["user"]=="fixture","FIXTURE_TARGET_REJECTED");candidate=Utf8.GetBytes(" Hub fixture 密碼 🔐 42 ");}
               else
 #endif
-              candidate=HubSshVaultStore.Prompt((string)d["user"],target,(string)d["host"]+":"+d["port"],Event);
+              candidate=HubSshVaultEnrollment.Collect((string)d["user"],target,(string)d["host"]+":"+d["port"],Event);
               Event("SUBMITTED");int uid=Probe(d,candidate);pin.Verify();RootAcl(root);
               HubSshVaultStore.Create(target,(string)d["user"],candidate);stored=true;
               var record=new Dictionary<string,object>{{"binding",binding},{"target",target},{"state","active"},{"uid",uid}};
@@ -179,6 +186,7 @@ class HubSshVaultBroker {
       }
     }
   }
+  [STAThread]
   static int Main() {
     if(Environment.GetEnvironmentVariable("HUB_SSH_VAULT_PIPE")!=null)return HubSshVaultTransport.Askpass();
     bool stage=false;

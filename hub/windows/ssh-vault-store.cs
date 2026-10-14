@@ -113,6 +113,9 @@ public static class HubSshVaultStore {
     return Prompt(user,target,displayTarget,null);
   }
   public static byte[] Prompt(string user,string target,string displayTarget,Action<string> eventSink) {
+    return Prompt(user,target,displayTarget,eventSink,IntPtr.Zero);
+  }
+  public static byte[] Prompt(string user,string target,string displayTarget,Action<string> eventSink,IntPtr owner) {
     ValidateTarget(target);ValidateUser(user);ValidateDisplay(displayTarget);
     IntPtr empty=IntPtr.Zero,input=IntPtr.Zero,output=IntPtr.Zero,userBuffer=IntPtr.Zero,domainBuffer=IntPtr.Zero,passwordBuffer=IntPtr.Zero;
     uint inputSize=0,outputSize=0;int allocatedInput=0,userBytes=0,domainBytes=0,passwordBytes=0;
@@ -126,6 +129,7 @@ public static class HubSshVaultStore {
       if(!CredPackAuthenticationBufferW(PACK_GENERIC,user,empty,input,ref inputSize))throw NativeFailure("SSH_VAULT_PROMPT_PACK_FAILED",Marshal.GetLastWin32Error());
       Require(inputSize<=allocatedInput,"SSH_VAULT_PROMPT_PACK_SIZE_FAILED");
       CREDUI_INFO info=new CREDUI_INFO();info.Size=(uint)Marshal.SizeOf(typeof(CREDUI_INFO));
+      info.Parent=owner;
       info.Caption="Project Hub — 記住 SSH 登入";
       info.Message="Linux SSH："+displayTarget+"\n帳號："+user+"\n驗證成功後，密碼將保存於此電腦的 Windows 認證管理員。\n取消會中止；不會自動再次詢問。";
       uint package=0;bool save=false;

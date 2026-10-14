@@ -2,7 +2,7 @@
 // No credential bytes enter this module. Native CredUI/vault/ASKPASS own secrets.
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
 const managed=require('./managed-process'),scoped=require('./scoped-file');
-const SOURCE_NAMES=['ssh-vault-broker.cs','ssh-vault-store.cs','ssh-vault-transport.cs','pinned-root.cs'];
+const SOURCE_NAMES=['ssh-vault-broker.cs','ssh-vault-store.cs','ssh-vault-transport.cs','pinned-root.cs','ssh-vault-enrollment.cs'];
 const SHA=/^[a-f0-9]{64}$/,UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const KEYS=['version','registrationId','root','rootFingerprint','ownerSid','host','port','user','hostKey','hostFingerprint','ssh','sshSHA256','brokerSHA256','stageCommand','stageCommandSHA256'];
 const active=new Map();
@@ -34,7 +34,7 @@ function ensure({fixture=false}={}){
   const target=path.join(dir,'ssh-vault-'+sourceHash+'.exe');
   if(!fs.existsSync(target)){
     const temp=path.join(dir,'ssh-vault-'+crypto.randomUUID()+'.exe');
-    try{cp.execFileSync(path.join(process.env.SystemRoot||'C:\\Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:exe','/platform:x64','/optimize+','/reference:System.Web.Extensions.dll','/reference:System.Security.dll',...(fixture?['/define:HUB_SSH_VAULT_TEST']:[]),'/out:'+temp,...files],{env:environment(),windowsHide:true,timeout:30000,stdio:'pipe'});fs.renameSync(temp,target);fs.writeFileSync(target+'.build.json',JSON.stringify({sourceHash,binarySHA256:hash(fs.readFileSync(target))}),{flag:'wx'});}
+    try{cp.execFileSync(path.join(process.env.SystemRoot||'C:\\Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:exe','/platform:x64','/optimize+','/reference:System.Web.Extensions.dll','/reference:System.Security.dll','/reference:System.Windows.Forms.dll','/reference:System.Drawing.dll',...(fixture?['/define:HUB_SSH_VAULT_TEST']:[]),'/out:'+temp,...files],{env:environment(),windowsHide:true,timeout:30000,stdio:'pipe'});fs.renameSync(temp,target);fs.writeFileSync(target+'.build.json',JSON.stringify({sourceHash,binarySHA256:hash(fs.readFileSync(target))}),{flag:'wx'});}
     catch(e){fs.rmSync(temp,{force:true});const failure=error('BROKER_COMPILATION_FAILED');failure.diagnostics=String(e.stdout||'').slice(0,16000);throw failure;}
   }
   const actual=hash(fs.readFileSync(target));let build;try{build=JSON.parse(fs.readFileSync(target+'.build.json','utf8'));}catch{throw error('BROKER_BUILD_RECEIPT_MISSING');}
@@ -55,8 +55,8 @@ function invoke(request,options={}){
     let child;try{child=launch(request,options);}catch(e){reject(e);return;}
     // This is the only diagnostic surface exposed to JavaScript callers. Never
     // forward raw stderr or arbitrary uppercase strings as credential events.
-    const allowed=new Set(['PROMPT_REQUESTED','PROMPT_CANCELLED','PROMPT_RETURNED','PROMPT_UNPACKED','SUBMITTED','IDENTITY_VERIFIED','PREPARE_CREATED','PREPARE_ACL_VERIFIED','STORED','STAGE_SSH_EXIT_0','ASKPASS_SUPPLIED','ASKPASS_REJECTED','SSH_HOST_PIN_MATCHED','SSH_PASSWORD_AUTHENTICATED','SSH_PERMISSION_DENIED','SSH_INPUT_FAILED','SSH_OUTPUT_FAILED','SSH_DIAGNOSTIC_REJECTED','SSH_DEADLINE']);
-    let out='',pending='',stderrBytes=0,failure=null,settled=false,stopTimer;const events=[];
+    const allowed=new Set(['ENROLLMENT_READY','ENROLLMENT_REQUESTED','PROMPT_REQUESTED','PROMPT_CANCELLED','PROMPT_RETURNED','PROMPT_UNPACKED','SUBMITTED','IDENTITY_VERIFIED','PREPARE_CREATED','PREPARE_ACL_VERIFIED','STORED','STAGE_SSH_EXIT_0','ASKPASS_SUPPLIED','ASKPASS_REJECTED','SSH_HOST_PIN_MATCHED','SSH_PASSWORD_AUTHENTICATED','SSH_PERMISSION_DENIED','SSH_INPUT_FAILED','SSH_OUTPUT_FAILED','SSH_DIAGNOSTIC_REJECTED','SSH_DEADLINE']);
+    let out='',pending='',stderrBytes=0,failure=null,settled=false,stopTimer,timer,enrollmentReady=false,enrollmentStarted=false;const events=[];
     const finish=(code,childCloseObserved)=>{
       if(settled)return;settled=true;clearTimeout(timer);clearTimeout(stopTimer);
       let result;try{result=JSON.parse(out);}catch{}
@@ -74,11 +74,19 @@ function invoke(request,options={}){
       const match=value.match(/^HUB_VAULT_EVENT:([A-Z0-9_:]{1,64})\r?$/);if(!match)return;
       const event=match[1],pid=event.match(/^SSH_PID:([1-9][0-9]{0,9})$/);
       if(!allowed.has(event)&&!(pid&&Number(pid[1])<=0xffffffff))return;
+      if(event==='ENROLLMENT_READY'||event==='ENROLLMENT_REQUESTED'){
+        if(request.mode!=='enroll'||event==='ENROLLMENT_READY'&&(enrollmentReady||enrollmentStarted)||event==='ENROLLMENT_REQUESTED'&&(!enrollmentReady||enrollmentStarted)){fail('VAULT_ENROLLMENT_ORDER_REJECTED');return;}
+        if(event==='ENROLLMENT_READY')enrollmentReady=true;
+        else {enrollmentStarted=true;clearTimeout(timer);timer=setTimeout(()=>fail('VAULT_OPERATION_TIMEOUT'),300000);}
+      }
+      if(request.mode==='enroll'&&event==='PROMPT_REQUESTED'&&!enrollmentStarted){fail('VAULT_ENROLLMENT_ORDER_REJECTED');return;}
       if(events.length>=64){fail('VAULT_EVENT_LIMIT');return;}
       events.push(event);
       if(options.onEvent)try{const returned=options.onEvent(event);if(returned&&typeof returned.then==='function'){Promise.resolve(returned).catch(()=>{});fail('VAULT_EVENT_CALLBACK_FAILED');}}catch{fail('VAULT_EVENT_CALLBACK_FAILED');}
     };
-    const timer=setTimeout(()=>fail('VAULT_OPERATION_TIMEOUT'),request.mode==='enroll'?300000:60000);
+    // Waiting for the explicit Start button has its own non-secret idle period.
+    // Only the first valid Start event arms the bounded credential operation.
+    timer=setTimeout(()=>fail(request.mode==='enroll'?'VAULT_ENROLLMENT_IDLE_TIMEOUT':'VAULT_OPERATION_TIMEOUT'),request.mode==='enroll'?900000:60000);
     child.stdout.on('data',x=>{if(failure||settled)return;if(Buffer.byteLength(out)+Buffer.byteLength(x)>8192){fail('VAULT_OUTPUT_LIMIT');return;}out+=x;});
     child.stderr.on('data',x=>{
       if(failure||settled)return;stderrBytes+=Buffer.byteLength(x);

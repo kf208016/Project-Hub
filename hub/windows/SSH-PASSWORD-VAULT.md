@@ -2,11 +2,11 @@
 
 此元件使用 Windows 認證管理員，完整 Linux 帳號密碼保留原本的登入權限。同一 Windows 帳號內的程式及系統管理員仍在信任範圍內。只處理 exact `ProjectHub.WorkerSshPassword.v1/<registration-id>/<binding>`，不枚舉認證。
 
-`hub/lib/ssh-password-vault.js` 控制 `prepare`、`enroll`、`probe`、`status`、`forget`、`stage`。只有 `enroll` 會開原生 CredUI。先輸入、再連線固定 SSH 主機與驗證指紋；唯讀 nonce／UID probe 成功後才保存。其餘模式不開提示，缺少密碼、來源／SID／Root 改變或認證被拒絕均停止。取消後不自動重試。
+`hub/lib/ssh-password-vault.js` 控制 `prepare`、`enroll`、`probe`、`status`、`forget`、`stage`。`enroll` 先顯示原生「SSH 連線設定」視窗；只有使用者按「開始一次錄入」，才開啟以該視窗為 owner 的 CredUI。設定窗沒有密碼欄，出現時不會啟動 SSH。先輸入、再連線固定 SSH 主機與驗證指紋；唯讀 nonce／UID probe 成功後才保存。其餘模式不開提示，缺少密碼、來源／SID／Root 改變或認證被拒絕均停止。取消後不自動重試。
 
-`operation(mode, descriptor, {onEvent})` 的同步 callback 僅收到固定 allowlist 事件；不傳 raw stderr。`PROMPT_REQUESTED` 代表將呼叫 CredUI API，不證明視窗可見或在前景；`PROMPT_RETURNED`／`PROMPT_CANCELLED` 代表 API 返回；`PROMPT_UNPACKED`／`SUBMITTED` 代表解析與驗證完成。真正保存仍須 `STORED` 與成功結果。Callback 失敗停止本次操作，不重試；async callback 不受支援。
+`operation(mode, descriptor, {onEvent})` 的同步 callback 僅收到固定 allowlist 事件；不傳 raw stderr。`ENROLLMENT_READY` 代表設定窗的 Shown 事件，不證明使用者看見或視窗在前景；`ENROLLMENT_REQUESTED` 代表單次開始按鈕被觸發。`PROMPT_REQUESTED` 代表將呼叫 CredUI API，不證明視窗可見或在前景；`PROMPT_RETURNED`／`PROMPT_CANCELLED` 代表 API 返回；`PROMPT_UNPACKED`／`SUBMITTED` 代表解析與驗證完成。真正保存仍須 `STORED` 與成功結果。Callback 失敗停止本次操作，不重試；async callback 不受支援。
 
-controller 的 300 秒錄入期限回報 `VAULT_OPERATION_TIMEOUT`，不與使用者取消、程序錯誤、輸出超限或原生拒絕混淆。停止後最多等待 5 秒，未收到 close 時 `childCloseObserved=false`；收到 close 也不代表 OS 代管 CredUI 或整個 Job 已確認消失。不得依名稱終止共用 `CredentialUIBroker`。逾時後若缺少 receipt，仍應精確檢查此次 target，以排除寫入成功與 receipt 寫入之間中斷的情形。
+controller 在開始按鈕之前有 15 分鐘等待期限，回報 `VAULT_ENROLLMENT_IDLE_TIMEOUT`；第一次有效 `ENROLLMENT_REQUESTED` 才啟動 300 秒錄入／驗證／保存期限，回報 `VAULT_OPERATION_TIMEOUT`。重複或亂序的設定窗事件拒絕，不延長期限。設定窗取消回報 `SSH_VAULT_ENROLLMENT_CANCELLED`；CredUI 取消回報 `SSH_VAULT_PROMPT_CANCELLED`。停止後最多等待 5 秒，未收到 close 時 `childCloseObserved=false`；收到 close 也不代表 OS 代管 CredUI 或整個 Job 已確認消失。不得依名稱終止共用 `CredentialUIBroker`。逾時後若缺少 receipt，仍應精確檢查此次 target，以排除寫入成功與 receipt 寫入之間中斷的情形。
 
 descriptor 格式見 `ssh-password-vault.schema.json`，合成資料見 `ssh-password-vault-examples.json`。其中 SSH 路徑、Ed25519 host key、固定 stage command 與來源 hash 必須來自已驗證的 operator。沒有任意指令參數或公開 HTTP 路由。真實主機與登錄只留在 task 私有目錄，不放入產品範例。
 
@@ -19,7 +19,7 @@ descriptor 格式見 `ssh-password-vault.schema.json`，合成資料見 `ssh-pas
 測試分成三層：
 
 ```powershell
-node --test hub/test/ssh-password-vault.test.js hub/test/ssh-vault-transport.test.js
+node --test hub/test/ssh-password-vault.test.js hub/test/ssh-vault-transport.test.js hub/test/ssh-vault-enrollment.test.js hub/test/ssh-vault-invocation.test.js
 $env:HUB_RUN_VAULT_NATIVE_TEST = '1'
 node --test hub/test/ssh-password-vault-native.test.js
 $env:PYTHONPATH = 'src'

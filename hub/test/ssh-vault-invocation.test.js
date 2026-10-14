@@ -10,14 +10,14 @@ const {PassThrough}=require('node:stream');
 function fixture(){
   const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
   const source=Buffer.from('synthetic broker source'),binary=Buffer.from('synthetic broker binary');
-  const timers=new Map(),children=[];let now=0,nextTimer=0,fixtureFlag=false;
+  const timers=new Map(),children=[],sourceReads=[];let now=0,nextTimer=0,fixtureFlag=false;
   const dependencies={
     'node:fs':{
       mkdirSync(){},existsSync:()=>true,
       readFileSync(filename){
-        if(filename.endsWith('.cs'))return source;
+        if(filename.endsWith('.cs')){sourceReads.push(source);return source;}
         if(filename.endsWith('.exe'))return binary;
-        if(filename.endsWith('.build.json'))return JSON.stringify({sourceHash:digest(Buffer.concat([Buffer.from(fixtureFlag?'fixture-v2':'production-v2'),source,source,source,source])),binarySHA256:digest(binary)});
+        if(filename.endsWith('.build.json'))return JSON.stringify({sourceHash:digest(Buffer.concat([Buffer.from(fixtureFlag?'fixture-v2':'production-v2'),...sourceReads.splice(0)])),binarySHA256:digest(binary)});
         throw Error('Unexpected fixture file read');
       },
     },
@@ -46,6 +46,8 @@ function fixture(){
 }
 function finish(child,result={ok:true,state:'stored'},code=0){child.stdout.write(JSON.stringify(result));child.emit('close',code);}
 const eventsOf=result=>Array.from(result.events);
+const enrollmentStart=['ENROLLMENT_READY','ENROLLMENT_REQUESTED','PROMPT_REQUESTED'];
+function emitEvents(child,events){child.stderr.write(events.map(event=>'HUB_VAULT_EVENT:'+event+'\n').join(''));}
 
 test('vault streams prompt phases before completion and keeps native fixture options',async()=>{
   const f=fixture(),seen=[];const {promise,child}=f.start('enroll-fixture',{fixture:true,onEvent:event=>seen.push(event)});
@@ -58,10 +60,73 @@ test('vault streams prompt phases before completion and keeps native fixture opt
 
 test('vault timeout retains streaming events and cannot be replaced by delayed success',async()=>{
   const f=fixture(),seen=[];const {promise,child}=f.start('enroll',{onEvent:event=>seen.push(event)});
-  const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_OPERATION_TIMEOUT');assert.deepEqual(eventsOf(error),['PROMPT_REQUESTED']);assert.equal(error.childCloseObserved,true);return true;});
-  child.stderr.write('HUB_VAULT_EVENT:PROMPT_REQUESTED\n');f.advance(299999);assert.equal(child.killCalls,0);f.advance(1);
-  assert.equal(child.killCalls,1);assert.deepEqual(seen,['PROMPT_REQUESTED']);
+  const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_OPERATION_TIMEOUT');assert.deepEqual(eventsOf(error),enrollmentStart);assert.equal(error.childCloseObserved,true);return true;});
+  emitEvents(child,enrollmentStart);f.advance(299999);assert.equal(child.killCalls,0);f.advance(1);
+  assert.equal(child.killCalls,1);assert.deepEqual(seen,enrollmentStart);
   finish(child);await rejected;assert.equal(f.children.length,1);assert.equal(f.timers.size,0);
+});
+
+test('vault enrollment idle deadline stays bounded before Start, including before READY',async()=>{
+  for(const ready of [false,true]){
+    const f=fixture(),seen=[];const {promise,child}=f.start('enroll',{onEvent:event=>seen.push(event)});
+    const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_ENROLLMENT_IDLE_TIMEOUT');assert.deepEqual(eventsOf(error),ready?['ENROLLMENT_READY']:[]);assert.equal(error.childCloseObserved,true);return true;});
+    f.advance(600000);assert.equal(child.killCalls,0);
+    if(ready)emitEvents(child,['ENROLLMENT_READY']);
+    f.advance(299999);assert.equal(child.killCalls,0);assert.deepEqual(seen,ready?['ENROLLMENT_READY']:[]);
+    f.advance(1);assert.equal(child.killCalls,1);finish(child);await rejected;assert.equal(f.timers.size,0);
+  }
+});
+
+test('vault explicit Start replaces the idle deadline with exactly one credential deadline',async()=>{
+  const f=fixture();const {promise,child}=f.start('enroll');
+  const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_OPERATION_TIMEOUT');assert.deepEqual(eventsOf(error),enrollmentStart);return true;});
+  emitEvents(child,['ENROLLMENT_READY']);f.advance(899999);assert.equal(child.killCalls,0);
+  emitEvents(child,['ENROLLMENT_REQUESTED']);assert.equal(f.timers.size,1);
+  f.advance(200000);assert.equal(child.killCalls,0);emitEvents(child,['PROMPT_REQUESTED']);
+  f.advance(99999);assert.equal(child.killCalls,0);f.advance(1);assert.equal(child.killCalls,1);
+  finish(child);await rejected;assert.equal(f.timers.size,0);
+});
+
+test('vault rejects enrollment replay and out-of-order events without restarting the deadline',async()=>{
+  for(const [accepted,invalid] of [
+    [[], 'ENROLLMENT_REQUESTED'],
+    [[], 'PROMPT_REQUESTED'],
+    [['ENROLLMENT_READY'], 'PROMPT_REQUESTED'],
+    [['ENROLLMENT_READY'], 'ENROLLMENT_READY'],
+    [['ENROLLMENT_READY','ENROLLMENT_REQUESTED'], 'ENROLLMENT_REQUESTED'],
+    [enrollmentStart, 'ENROLLMENT_READY'],
+  ]){
+    const f=fixture(),seen=[];const {promise,child}=f.start('enroll',{onEvent:event=>seen.push(event)});
+    const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_ENROLLMENT_ORDER_REJECTED');assert.deepEqual(eventsOf(error),accepted);return true;});
+    if(accepted.length)emitEvents(child,accepted);f.advance(123456);
+    const deadline=[...f.timers.values()].map(timer=>timer.at);
+    emitEvents(child,[invalid]);assert.equal(child.killCalls,1);assert.deepEqual(seen,accepted);
+    assert.deepEqual([...f.timers.values()].map(timer=>timer.at),[...deadline,128456]);
+    emitEvents(child,['ENROLLMENT_READY','ENROLLMENT_REQUESTED','STORED']);finish(child);await rejected;
+    assert.equal(child.killCalls,1);assert.equal(f.children.length,1);assert.equal(f.timers.size,0);
+  }
+});
+
+test('vault rejects enrollment window events outside the enrollment mode',async()=>{
+  for(const mode of ['probe','enroll-fixture'])for(const event of ['ENROLLMENT_READY','ENROLLMENT_REQUESTED']){
+    const f=fixture();const {promise,child}=f.start(mode,{fixture:mode==='enroll-fixture'});
+    const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_ENROLLMENT_ORDER_REJECTED');assert.deepEqual(eventsOf(error),[]);return true;});
+    emitEvents(child,[event]);assert.equal(child.killCalls,1);finish(child);await rejected;
+  }
+});
+
+test('vault fixture mode retains the original operation timeout without window events',async()=>{
+  const f=fixture();const {promise,child}=f.start('enroll-fixture',{fixture:true});
+  const rejected=assert.rejects(promise,{code:'VAULT_OPERATION_TIMEOUT'});
+  emitEvents(child,['SUBMITTED']);f.advance(59999);assert.equal(child.killCalls,0);f.advance(1);assert.equal(child.killCalls,1);
+  finish(child);await rejected;assert.equal(f.timers.size,0);
+});
+
+test('vault enrollment cancellation before Start preserves the native result without a prompt',async()=>{
+  const f=fixture();const {promise,child}=f.start('enroll');
+  const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'SSH_VAULT_ENROLLMENT_CANCELLED');assert.deepEqual(eventsOf(error),['ENROLLMENT_READY']);return true;});
+  emitEvents(child,['ENROLLMENT_READY']);finish(child,{ok:false,code:'SSH_VAULT_ENROLLMENT_CANCELLED'},1);await rejected;
+  assert.equal(child.killCalls,0);assert.equal(f.timers.size,0);
 });
 
 test('vault timeout without a close event settles after bounded stop grace with unverified close',async()=>{
@@ -75,8 +140,8 @@ test('vault timeout without a close event settles after bounded stop grace with 
 test('vault preserves cancellation and hard native failures with accumulated phases',async()=>{
   for(const [event,code] of [['PROMPT_CANCELLED','SSH_VAULT_PROMPT_CANCELLED'],['PROMPT_RETURNED','SSH_VAULT_PROMPT_FAILED_5']]){
     const f=fixture();const {promise,child}=f.start();
-    const rejected=assert.rejects(promise,error=>{assert.equal(error.code,code);assert.deepEqual(eventsOf(error),['PROMPT_REQUESTED',event]);assert.equal(error.childCloseObserved,true);return true;});
-    child.stderr.write('HUB_VAULT_EVENT:PROMPT_REQUESTED\nHUB_VAULT_EVENT:'+event+'\n');finish(child,{ok:false,code},1);await rejected;
+    const rejected=assert.rejects(promise,error=>{assert.equal(error.code,code);assert.deepEqual(eventsOf(error),[...enrollmentStart,event]);assert.equal(error.childCloseObserved,true);return true;});
+    emitEvents(child,[...enrollmentStart,event]);finish(child,{ok:false,code},1);await rejected;
     assert.equal(child.killCalls,0);assert.equal(f.children.length,1);
   }
 });
@@ -110,15 +175,15 @@ test('vault bounds total diagnostic bytes, event count and stdout separately',as
 
 test('vault callback exceptions fail closed, retain the accepted event and suppress later callbacks',async()=>{
   const f=fixture(),seen=[];const {promise,child}=f.start('enroll',{onEvent:event=>{seen.push(event);throw Error('synthetic callback failure');}});
-  const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_EVENT_CALLBACK_FAILED');assert.deepEqual(eventsOf(error),['PROMPT_REQUESTED']);assert.doesNotMatch(error.message,/synthetic/);return true;});
-  child.stderr.write('HUB_VAULT_EVENT:PROMPT_REQUESTED\nHUB_VAULT_EVENT:STORED\n');finish(child);await rejected;
-  assert.equal(child.killCalls,1);assert.deepEqual(seen,['PROMPT_REQUESTED']);assert.equal(f.children.length,1);
+  const rejected=assert.rejects(promise,error=>{assert.equal(error.code,'VAULT_EVENT_CALLBACK_FAILED');assert.deepEqual(eventsOf(error),['ENROLLMENT_READY']);assert.doesNotMatch(error.message,/synthetic/);return true;});
+  emitEvents(child,['ENROLLMENT_READY','STORED']);finish(child);await rejected;
+  assert.equal(child.killCalls,1);assert.deepEqual(seen,['ENROLLMENT_READY']);assert.equal(f.children.length,1);
 });
 
 test('vault rejects async or nonfunction callbacks without unhandled rejections or retries',async()=>{
   const invalid=fixture();await assert.rejects(invalid.start('enroll',{onEvent:true}).promise,{code:'VAULT_EVENT_CALLBACK_REJECTED'});assert.equal(invalid.children.length,0);
   const f=fixture();const {promise,child}=f.start('enroll',{onEvent:()=>Promise.reject(Error('synthetic async callback failure'))});
-  const rejected=assert.rejects(promise,{code:'VAULT_EVENT_CALLBACK_FAILED'});child.stderr.write('HUB_VAULT_EVENT:PROMPT_REQUESTED\n');child.emit('close',1);await rejected;await Promise.resolve();assert.equal(child.killCalls,1);
+  const rejected=assert.rejects(promise,{code:'VAULT_EVENT_CALLBACK_FAILED'});emitEvents(child,['ENROLLMENT_READY']);child.emit('close',1);await rejected;await Promise.resolve();assert.equal(child.killCalls,1);
 });
 
 test('vault missing result and child errors stay distinct from timeout and cancellation',async()=>{
