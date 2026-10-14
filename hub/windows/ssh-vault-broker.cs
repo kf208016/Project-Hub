@@ -149,7 +149,7 @@ class HubSshVaultBroker {
               if(mode=="enroll-fixture"){Require((string)d["host"]=="127.0.0.1"&&(string)d["user"]=="fixture","FIXTURE_TARGET_REJECTED");candidate=Utf8.GetBytes(" Hub fixture 密碼 🔐 42 ");}
               else
 #endif
-              candidate=HubSshVaultStore.Prompt((string)d["user"],target,(string)d["host"]+":"+d["port"]);
+              candidate=HubSshVaultStore.Prompt((string)d["user"],target,(string)d["host"]+":"+d["port"],Event);
               Event("SUBMITTED");int uid=Probe(d,candidate);pin.Verify();RootAcl(root);
               HubSshVaultStore.Create(target,(string)d["user"],candidate);stored=true;
               var record=new Dictionary<string,object>{{"binding",binding},{"target",target},{"state","active"},{"uid",uid}};

@@ -51,17 +51,47 @@ function launch(request,{fixture=false}={}){
 }
 function invoke(request,options={}){
   return new Promise((resolve,reject)=>{
+    if(options.onEvent!==undefined&&typeof options.onEvent!=='function'){reject(error('VAULT_EVENT_CALLBACK_REJECTED'));return;}
     let child;try{child=launch(request,options);}catch(e){reject(e);return;}
-    let out='',err='',failed=false;const events=[];
-    const timer=setTimeout(()=>{failed=true;child.kill();},request.mode==='enroll'?300000:60000);
-    child.stdout.on('data',x=>{out+=x;if(Buffer.byteLength(out)>8192){failed=true;child.kill();}});
-    child.stderr.on('data',x=>{err+=x;if(Buffer.byteLength(err)>8192){failed=true;child.kill();}});
-    child.on('error',()=>{failed=true;});child.stdin.end();
-    child.once('close',code=>{clearTimeout(timer);for(const line of err.split(/\r?\n/)){const m=line.match(/^HUB_VAULT_EVENT:([A-Z0-9_:.-]{1,160})$/);if(m)events.push(m[1]);}
+    // This is the only diagnostic surface exposed to JavaScript callers. Never
+    // forward raw stderr or arbitrary uppercase strings as credential events.
+    const allowed=new Set(['PROMPT_REQUESTED','PROMPT_CANCELLED','PROMPT_RETURNED','PROMPT_UNPACKED','SUBMITTED','IDENTITY_VERIFIED','PREPARE_CREATED','PREPARE_ACL_VERIFIED','STORED','STAGE_SSH_EXIT_0','ASKPASS_SUPPLIED','ASKPASS_REJECTED','SSH_HOST_PIN_MATCHED','SSH_PASSWORD_AUTHENTICATED','SSH_PERMISSION_DENIED','SSH_INPUT_FAILED','SSH_OUTPUT_FAILED','SSH_DIAGNOSTIC_REJECTED','SSH_DEADLINE']);
+    let out='',pending='',stderrBytes=0,failure=null,settled=false,stopTimer;const events=[];
+    const finish=(code,childCloseObserved)=>{
+      if(settled)return;settled=true;clearTimeout(timer);clearTimeout(stopTimer);
       let result;try{result=JSON.parse(out);}catch{}
-      if(failed||code!==0||result?.ok!==true){const e=error(typeof result?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(result.code)?result.code:'VAULT_OPERATION_FAILED');e.events=events;reject(e);}
-      else resolve({...result,events});
+      if(failure||code!==0||result?.ok!==true){const e=error(failure||(typeof result?.code==='string'&&/^[A-Z0-9_]{1,80}$/.test(result.code)?result.code:'VAULT_OPERATION_FAILED'));e.events=events.slice();e.childCloseObserved=childCloseObserved;reject(e);}
+      else resolve({...result,events:events.slice()});
+    };
+    const fail=code=>{
+      if(failure||settled)return;failure=code;
+      // Preserve the original failure even if a late success result arrives.
+      // A missing close event must not leave enrollment pending indefinitely.
+      stopTimer=setTimeout(()=>finish(null,false),5000);
+      try{child.kill();}catch{}
+    };
+    const line=value=>{
+      const match=value.match(/^HUB_VAULT_EVENT:([A-Z0-9_:]{1,64})\r?$/);if(!match)return;
+      const event=match[1],pid=event.match(/^SSH_PID:([1-9][0-9]{0,9})$/);
+      if(!allowed.has(event)&&!(pid&&Number(pid[1])<=0xffffffff))return;
+      if(events.length>=64){fail('VAULT_EVENT_LIMIT');return;}
+      events.push(event);
+      if(options.onEvent)try{const returned=options.onEvent(event);if(returned&&typeof returned.then==='function'){Promise.resolve(returned).catch(()=>{});fail('VAULT_EVENT_CALLBACK_FAILED');}}catch{fail('VAULT_EVENT_CALLBACK_FAILED');}
+    };
+    const timer=setTimeout(()=>fail('VAULT_OPERATION_TIMEOUT'),request.mode==='enroll'?300000:60000);
+    child.stdout.on('data',x=>{if(failure||settled)return;if(Buffer.byteLength(out)+Buffer.byteLength(x)>8192){fail('VAULT_OUTPUT_LIMIT');return;}out+=x;});
+    child.stderr.on('data',x=>{
+      if(failure||settled)return;stderrBytes+=Buffer.byteLength(x);
+      if(stderrBytes>8192){fail('VAULT_DIAGNOSTIC_LIMIT');return;}
+      // ASCII allowlisted records only; decoding diagnostic Unicode is neither
+      // necessary nor useful. The unfinished line is separately bounded.
+      pending+=x.toString();let index;
+      while(!failure&&!settled&&(index=pending.indexOf('\n'))!==-1){const value=pending.slice(0,index);pending=pending.slice(index+1);if(Buffer.byteLength(value)>256){fail('VAULT_DIAGNOSTIC_LINE_LIMIT');break;}line(value);}
+      if(Buffer.byteLength(pending)>256)fail('VAULT_DIAGNOSTIC_LINE_LIMIT');
     });
+    child.on('error',()=>fail('VAULT_PROCESS_FAILED'));
+    child.once('close',code=>{if(!failure&&!settled&&pending)line(pending);finish(code,true);});
+    try{child.stdin.end();}catch{fail('VAULT_PROCESS_FAILED');}
   });
 }
 async function prepare({parentRoot,leaf}){

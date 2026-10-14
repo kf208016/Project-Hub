@@ -4,6 +4,10 @@
 
 `hub/lib/ssh-password-vault.js` 控制 `prepare`、`enroll`、`probe`、`status`、`forget`、`stage`。只有 `enroll` 會開原生 CredUI。先輸入、再連線固定 SSH 主機與驗證指紋；唯讀 nonce／UID probe 成功後才保存。其餘模式不開提示，缺少密碼、來源／SID／Root 改變或認證被拒絕均停止。取消後不自動重試。
 
+`operation(mode, descriptor, {onEvent})` 的同步 callback 僅收到固定 allowlist 事件；不傳 raw stderr。`PROMPT_REQUESTED` 代表將呼叫 CredUI API，不證明視窗可見或在前景；`PROMPT_RETURNED`／`PROMPT_CANCELLED` 代表 API 返回；`PROMPT_UNPACKED`／`SUBMITTED` 代表解析與驗證完成。真正保存仍須 `STORED` 與成功結果。Callback 失敗停止本次操作，不重試；async callback 不受支援。
+
+controller 的 300 秒錄入期限回報 `VAULT_OPERATION_TIMEOUT`，不與使用者取消、程序錯誤、輸出超限或原生拒絕混淆。停止後最多等待 5 秒，未收到 close 時 `childCloseObserved=false`；收到 close 也不代表 OS 代管 CredUI 或整個 Job 已確認消失。不得依名稱終止共用 `CredentialUIBroker`。逾時後若缺少 receipt，仍應精確檢查此次 target，以排除寫入成功與 receipt 寫入之間中斷的情形。
+
 descriptor 格式見 `ssh-password-vault.schema.json`，合成資料見 `ssh-password-vault-examples.json`。其中 SSH 路徑、Ed25519 host key、固定 stage command 與來源 hash 必須來自已驗證的 operator。沒有任意指令參數或公開 HTTP 路由。真實主機與登錄只留在 task 私有目錄，不放入產品範例。
 
 原生 helper 持有候選與保存的秘密 byte buffers；Node／PowerShell 收到固定狀態事件。C#／Node request 使用相同 canonical JSON；拒絕重複欄位、非規定型別及非標準序列化。根目錄以 NTFS identity pin、owner-only DACL、獨佔登錄鎖保護。DPAPI 登錄收據不含密碼，綁定 SID／Root／主機／程式身分。编譯缓存的 source 與 binary 收據用於偵測改動，不宣稱是發行者簽章或防禦同帳號的惡意程式。

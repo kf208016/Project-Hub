@@ -110,6 +110,9 @@ public static class HubSshVaultStore {
 
   public static byte[] Prompt(string user,string target) {return Prompt(user,target,user);}
   public static byte[] Prompt(string user,string target,string displayTarget) {
+    return Prompt(user,target,displayTarget,null);
+  }
+  public static byte[] Prompt(string user,string target,string displayTarget,Action<string> eventSink) {
     ValidateTarget(target);ValidateUser(user);ValidateDisplay(displayTarget);
     IntPtr empty=IntPtr.Zero,input=IntPtr.Zero,output=IntPtr.Zero,userBuffer=IntPtr.Zero,domainBuffer=IntPtr.Zero,passwordBuffer=IntPtr.Zero;
     uint inputSize=0,outputSize=0;int allocatedInput=0,userBytes=0,domainBytes=0,passwordBytes=0;
@@ -126,7 +129,9 @@ public static class HubSshVaultStore {
       info.Caption="Project Hub — 記住 SSH 登入";
       info.Message="Linux SSH："+displayTarget+"\n帳號："+user+"\n驗證成功後，密碼將保存於此電腦的 Windows 認證管理員。\n取消會中止；不會自動再次詢問。";
       uint package=0;bool save=false;
+      if(eventSink!=null)eventSink("PROMPT_REQUESTED");
       uint result=CredUIPromptForWindowsCredentialsW(ref info,0,ref package,input,inputSize,out output,out outputSize,ref save,GENERIC);
+      if(eventSink!=null)eventSink(result==CANCELLED?"PROMPT_CANCELLED":"PROMPT_RETURNED");
       if(result==CANCELLED)throw Failure("SSH_VAULT_PROMPT_CANCELLED");
       if(result!=0)throw NativeFailure("SSH_VAULT_PROMPT_FAILED",unchecked((int)result));
       Require(output!=IntPtr.Zero&&outputSize>0&&outputSize<=MAX_AUTH_BUFFER,"SSH_VAULT_PROMPT_BUFFER_INVALID");
@@ -147,7 +152,7 @@ public static class HubSshVaultStore {
       for(int i=length+1;i<passwordBytes/2;i++)Require(Marshal.ReadInt16(passwordBuffer,i*2)==0,"SSH_VAULT_SECRET_INVALID");
       passwordChars=new char[length];Marshal.Copy(passwordBuffer,passwordChars,0,length);
       try {secret=Utf8.GetBytes(passwordChars);}catch(EncoderFallbackException){throw Failure("SSH_VAULT_SECRET_INVALID");}
-      Validate(secret);returned=true;return secret;
+      Validate(secret);if(eventSink!=null)eventSink("PROMPT_UNPACKED");returned=true;return secret;
     } finally {
       if(!returned&&secret!=null)Array.Clear(secret,0,secret.Length);
       if(passwordChars!=null)Array.Clear(passwordChars,0,passwordChars.Length);
