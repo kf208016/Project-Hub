@@ -34,6 +34,12 @@ Windows Hub 保留原生 Codex、繁體中文及 ChatGPT／Claude Chat 手動交
 
 本次 preflight 是一次性診斷程式，保留在 task 的 `work`，不打包為 Hub worker。逾期診斷控制程序不得重用為正式控制通道。
 
+### 2026-10-14 後續證據（保留上表的原始量測狀態）
+
+- `linux-worker-resource-ssh-preflight-v3-2026-10-13.json` 後續確認了縮小測試配額的 kernel 值、double-fork／setsid 子程序退出及 unit／cgroup 移除；這是獨立 resource primitive，尚非完整 R2 執行路徑。
+- `ssh-vault-enroll-2026-10-14T14-51-10-218Z.json` 與 `ssh-vault-check-2026-10-14T14-51-29-363Z.json` 確認已核准 Windows 認證管理員保存及兩次免提示新連線。此授權與保管方式由 `2026-10-14-ssh-password-vault-design.md` 補充 §5 的初始每次詢問方式；不涉及 SSH key 或全域設定。
+- `linux-cli-private-stage-2026-10-14T14-51-52-819Z-7de0eb9e.json` 確認六個固定檔案與 receipt 完成 private stage、SSH exit 0；`providerReady=false`、`binariesExecuted=false`、`providerAuthRead=false`、`modelsInvoked=false`。原 R2／C1／C2 門檻仍未通過。
+
 ## 3. 固定 CLI 與依賴
 
 | 元件 | 候選與檢查 | 部署規則 |

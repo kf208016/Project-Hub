@@ -1,0 +1,272 @@
+{
+  "description": "Synthetic example only. These example identities are not a live boot, validated source or authorization. Replace with measured values in a future verified supervisor; this file is not executable.",
+  "request": {
+    "schemaVersion": 1,
+    "case": "isolation-v1",
+    "runNonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bootId": "12345678-1234-4234-8234-123456789abc",
+    "workerSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "runtimeSeconds": 60
+  },
+  "policy": {
+    "schemaVersion": 1,
+    "kind": "project-hub-r2-synthetic-policy",
+    "case": "isolation-v1",
+    "binding": {
+      "runNonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bootId": "12345678-1234-4234-8234-123456789abc",
+      "workerSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "scope": {
+      "policyOnly": true,
+      "runAuthorized": false,
+      "providerReady": false,
+      "runtimeVerified": false,
+      "supervisorImplemented": false,
+      "cleanupVerified": false
+    },
+    "limits": {
+      "activeRuns": 1,
+      "memoryBytes": 6442450944,
+      "swapBytes": 0,
+      "cpuQuotaPercent": 150,
+      "tasksMax": 256,
+      "runtimeSeconds": 60,
+      "tmpfs": {
+        "/work": 2147483648,
+        "/profile": 268435456,
+        "/tmp": 536870912
+      },
+      "admissionAvailableMemoryBytes": 10737418240,
+      "admissionAvailableDiskBytes": 21474836480
+    },
+    "runtimeRequirements": {
+      "mounts": [
+        {
+          "source": "/usr",
+          "destination": "/usr",
+          "readOnly": true,
+          "type": "directory",
+          "ownerUid": 0,
+          "rejectModeBits": 18
+        }
+      ],
+      "symlinks": [
+        {
+          "path": "/bin",
+          "target": "usr/bin"
+        },
+        {
+          "path": "/lib",
+          "target": "usr/lib"
+        },
+        {
+          "path": "/lib64",
+          "target": "usr/lib64"
+        }
+      ],
+      "tools": [
+        {
+          "path": "/usr/bin/bwrap",
+          "type": "regular",
+          "ownerUid": 0,
+          "rejectModeBits": 3090,
+          "requiresHeldDescriptorAndSHA256": true
+        },
+        {
+          "path": "/usr/bin/python3",
+          "type": "regular",
+          "ownerUid": 0,
+          "rejectModeBits": 3090,
+          "requiresHeldDescriptorAndSHA256": true
+        },
+        {
+          "path": "/usr/bin/systemd-run",
+          "type": "regular",
+          "ownerUid": 0,
+          "rejectModeBits": 3090,
+          "requiresHeldDescriptorAndSHA256": true
+        },
+        {
+          "path": "/usr/bin/systemctl",
+          "type": "regular",
+          "ownerUid": 0,
+          "rejectModeBits": 3090,
+          "requiresHeldDescriptorAndSHA256": true
+        }
+      ],
+      "requiredDirectories": [
+        "/usr/bin",
+        "/usr/lib",
+        "/usr/lib64"
+      ],
+      "toolResolution": {
+        "typeAppliesTo": "resolved-target",
+        "allowedResolvedRoot": "/usr",
+        "rejectAnySymlinkTargetOutsideRoot": true,
+        "requireHeldIdentitiesForAllComponentsLinksAndTarget": true,
+        "requireRootOwnerForAllComponentsLinksAndTarget": true,
+        "directoryAndTargetRejectModeBits": 18,
+        "symlinkModeBitsAreNotWriteProtection": true
+      },
+      "verificationPerformed": false
+    },
+    "bwrapArgv": [
+      "/usr/bin/bwrap",
+      "--die-with-parent",
+      "--new-session",
+      "--unshare-user",
+      "--unshare-pid",
+      "--unshare-net",
+      "--unshare-ipc",
+      "--unshare-uts",
+      "--unshare-cgroup",
+      "--cap-drop",
+      "ALL",
+      "--clearenv",
+      "--setenv",
+      "PATH",
+      "/usr/bin:/bin",
+      "--setenv",
+      "LANG",
+      "C.UTF-8",
+      "--setenv",
+      "HOME",
+      "/profile",
+      "--setenv",
+      "TMPDIR",
+      "/tmp",
+      "--ro-bind",
+      "/usr",
+      "/usr",
+      "--symlink",
+      "usr/bin",
+      "/bin",
+      "--symlink",
+      "usr/lib",
+      "/lib",
+      "--symlink",
+      "usr/lib64",
+      "/lib64",
+      "--proc",
+      "/proc",
+      "--dev",
+      "/dev",
+      "--dir",
+      "/run",
+      "--dir",
+      "/etc",
+      "--dir",
+      "/var",
+      "--perms",
+      "0700",
+      "--size",
+      "2147483648",
+      "--tmpfs",
+      "/work",
+      "--perms",
+      "0700",
+      "--size",
+      "268435456",
+      "--tmpfs",
+      "/profile",
+      "--perms",
+      "0700",
+      "--size",
+      "536870912",
+      "--tmpfs",
+      "/tmp",
+      "--remount-ro",
+      "/",
+      "--chdir",
+      "/work",
+      "--",
+      "/usr/bin/python3",
+      "-I",
+      "-B",
+      "-c",
+      "import json,os\nnames=(\"user\",\"mnt\",\"pid\",\"net\",\"ipc\",\"uts\",\"cgroup\")\nstatus={row.split(\":\",1)[0]:row.split(\":\",1)[1].strip() for row in open(\"/proc/self/status\",encoding=\"ascii\") if \":\" in row}\nmounts=[row.split() for row in open(\"/proc/self/mountinfo\",encoding=\"ascii\")]\ninterfaces=[row.split(\":\",1)[0].strip() for row in open(\"/proc/net/dev\",encoding=\"ascii\") if \":\" in row]\nfds=[]\nfor name in os.listdir(\"/proc/self/fd\"):\n try:\n  os.fstat(int(name));fds.append(int(name))\n except OSError:pass\nresult={\"schemaVersion\":1,\"kind\":\"project-hub-r2-isolation-measurement\",\"namespaces\":{name:os.stat(\"/proc/self/ns/\"+name).st_ino for name in names},\"uid\":os.geteuid(),\"capabilities\":{name:status.get(name) for name in (\"CapInh\",\"CapPrm\",\"CapEff\",\"CapBnd\",\"CapAmb\")},\"noNewPrivs\":status.get(\"NoNewPrivs\"),\"interfaces\":sorted(interfaces),\"openFDs\":sorted(fds),\"rootReadOnly\":any(row[4]==\"/\" and \"ro\" in row[5].split(\",\") for row in mounts),\"usrReadOnly\":any(row[4]==\"/usr\" and \"ro\" in row[5].split(\",\") for row in mounts),\"forbiddenPathsVisible\":{name:os.path.exists(name) for name in (\"/home\",\"/root\",\"/sys/fs/cgroup\",\"/run/user\",\"/run/dbus\",\"/var/run/docker.sock\")},\"tmpfsCapacityBytes\":{name:os.statvfs(name).f_blocks*os.statvfs(name).f_frsize for name in (\"/work\",\"/profile\",\"/tmp\")},\"providerExecuted\":False}\nprint(json.dumps(result,sort_keys=True,separators=(\",\",\":\")))\n"
+    ],
+    "systemd": {
+      "unit": "project-hub-r2-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service",
+      "scope": "user",
+      "serviceType": "exec",
+      "fixedArgv": [
+        "--user",
+        "--quiet",
+        "--service-type=exec",
+        "--expand-environment=no",
+        "--working-directory=/"
+      ],
+      "propertyArgv": [
+        "--property=MemoryMax=6442450944",
+        "--property=MemorySwapMax=0",
+        "--property=CPUQuota=150%",
+        "--property=TasksMax=256",
+        "--property=RuntimeMaxSec=60s",
+        "--property=KillMode=control-group",
+        "--property=TimeoutStopSec=2s",
+        "--property=SendSIGKILL=yes",
+        "--property=Restart=no",
+        "--property=NoNewPrivileges=yes",
+        "--property=UMask=0077",
+        "--property=Delegate=no",
+        "--property=RemainAfterExit=yes"
+      ],
+      "requiresInvocationIdAndCgroupIdentity": true,
+      "requiresPopulatedZeroBeforeCollection": true
+    },
+    "fileDescriptors": {
+      "stdin": "devnull",
+      "stdout": "bounded-measurement-pipe",
+      "stderr": "bounded-diagnostic-pipe",
+      "preservedExtraFDs": [],
+      "retainsTmpfsAfterExit": false
+    },
+    "executionRequirements": [
+      "fresh-monotonic-permit-and-single-run-lease",
+      "held-runtime-identity-and-digest-verification",
+      "strict-namespace-and-bwrap-option-support",
+      "kernel-resource-limit-verification-before-payload",
+      "independent-remote-deadline-and-disconnect-handling",
+      "owned-unit-and-cgroup-cleanup-verification"
+    ],
+    "syntheticSourceSHA256": "a16d5324491ccff410feb19cfe3ee9922e45a94dbeaf0a9b424c4eb29476cc16",
+    "policySHA256": "f298ac149764069b57d6e161f7f82b691dee8a8212edbec0cf14a5a1746ab309"
+  },
+  "rejectedRequests": [
+    {
+      "schemaVersion": 1,
+      "case": "isolation-v1",
+      "runNonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bootId": "12345678-1234-4234-8234-123456789abc",
+      "workerSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "runtimeSeconds": 60,
+      "command": "id"
+    },
+    {
+      "schemaVersion": 1,
+      "case": "claude",
+      "runNonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bootId": "12345678-1234-4234-8234-123456789abc",
+      "workerSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "runtimeSeconds": 60
+    },
+    {
+      "schemaVersion": 1,
+      "case": "isolation-v1",
+      "runNonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bootId": "12345678-1234-4234-8234-123456789abc",
+      "workerSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "runtimeSeconds": 1801
+    },
+    {
+      "schemaVersion": true,
+      "case": "isolation-v1",
+      "runNonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bootId": "12345678-1234-4234-8234-123456789abc",
+      "workerSHA256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "runtimeSeconds": 60
+    }
+  ]
+}
