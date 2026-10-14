@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub explicit SSH maintenance recovery grant",
+  "description": "Separate explicit short-lived authorization; never generated automatically by ordinary operations. Native code verifies the exact migration manifest and locked observed state before mutation. No secret or password hash is present.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "migrationId",
+    "manifestSHA256",
+    "observedStateSHA256",
+    "issuedAt",
+    "expiresAt",
+    "operation"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "migrationId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "manifestSHA256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "observedStateSHA256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "issuedAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "operation": {
+      "enum": [
+        "resume",
+        "rollback",
+        "recover-pointer"
+      ]
+    }
+  }
+}

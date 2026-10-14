@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-hub.invalid/schemas/ssh-maintenance-state-v1",
+  "title": "Nonsecret decoded maintenance state; DPAPI envelopes are not JSON",
+  "description": "Describes decoded records only. Native code additionally verifies exact bindings, identities, state order and digest chain. Digests are not attestation.",
+  "oneOf": [
+    {"$ref":"#/$defs/pending"}, {"$ref":"#/$defs/activation"},
+    {"$ref":"#/$defs/pointer"}, {"$ref":"#/$defs/intent"},
+    {"$ref":"#/$defs/journal"}, {"$ref":"#/$defs/pointerPrior"},
+    {"$ref":"#/$defs/rollbackIntent"}, {"$ref":"#/$defs/rollback"},
+    {"$ref":"#/$defs/recoveryIntent"}, {"$ref":"#/$defs/runPermit"}
+  ],
+  "$defs": {
+    "sha":{"type":"string","pattern":"^[a-f0-9]{64}$","minLength":64,"maxLength":64},
+    "uuid":{"type":"string","pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$","minLength":36,"maxLength":36},
+    "uid":{"type":"integer","minimum":1,"maximum":2147483647},
+    "target":{"type":"string","pattern":"^ProjectHub\\.WorkerSshPassword\\.v1/[a-f0-9-]{36}/[a-f0-9]{64}$","maxLength":140},
+    "pending":{
+      "type":"object","additionalProperties":false,
+      "required":["version","state","binding","target","uid","migrationId","manifestSHA256"],
+      "properties":{"version":{"const":2},"state":{"const":"pending-migration"},"binding":{"$ref":"#/$defs/sha"},"target":{"$ref":"#/$defs/target"},"uid":{"$ref":"#/$defs/uid"},"migrationId":{"$ref":"#/$defs/uuid"},"manifestSHA256":{"$ref":"#/$defs/sha"}}
+    },
+    "activation":{
+      "type":"object","additionalProperties":false,
+      "required":["version","state","binding","manifestSHA256","pointerSHA256"],
+      "properties":{"version":{"const":1},"state":{"const":"active"},"binding":{"$ref":"#/$defs/sha"},"manifestSHA256":{"$ref":"#/$defs/sha"},"pointerSHA256":{"$ref":"#/$defs/sha"}}
+    },
+    "pointer":{
+      "type":"object","additionalProperties":false,
+      "required":["version","migrationId","manifestSHA256","binding","descriptorRoot"],
+      "properties":{"version":{"const":1},"migrationId":{"$ref":"#/$defs/uuid"},"manifestSHA256":{"$ref":"#/$defs/sha"},"binding":{"$ref":"#/$defs/sha"},"descriptorRoot":{"type":"string","minLength":4,"maxLength":239,"pattern":"^[A-Za-z]:\\\\"}}
+    },
+    "intent":{
+      "type":"object","additionalProperties":false,
+      "required":["version","migrationId","manifestSHA256","manifest"],
+      "properties":{"version":{"const":1},"migrationId":{"$ref":"#/$defs/uuid"},"manifestSHA256":{"$ref":"#/$defs/sha"},"manifest":{"$ref":"ssh-vault-maintenance.schema.json"}}
+    },
+    "probeDetails":{
+      "type":"object","additionalProperties":false,
+      "required":["uid","bootId","ordinal","brokerPid","brokerCreated","brokerSHA256"],
+      "properties":{"uid":{"$ref":"#/$defs/uid"},"bootId":{"type":"string","minLength":36,"maxLength":36,"pattern":"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$","not":{"const":"00000000-0000-0000-0000-000000000000"}},"ordinal":{"enum":[1,2]},"brokerPid":{"$ref":"#/$defs/uid"},"brokerCreated":{"type":"string","pattern":"^[1-9][0-9]{0,18}$","maxLength":19},"brokerSHA256":{"$ref":"#/$defs/sha"}}
+    },
+    "journal":{
+      "type":"object","additionalProperties":false,
+      "required":["version","migrationId","manifestSHA256","sequence","event","previousSHA256","details"],
+      "properties":{"version":{"const":1},"migrationId":{"$ref":"#/$defs/uuid"},"manifestSHA256":{"$ref":"#/$defs/sha"},"sequence":{"type":"integer","minimum":1,"maximum":12},"event":{"enum":["intent-recorded","destination-stored","probe-1","probe-2","destination-validated","activation-intent","pointer-written","destination-active","source-delete-intent","source-deleted","source-tombstone","completed"]},"previousSHA256":{"$ref":"#/$defs/sha"},"details":{"type":"object"}},
+      "allOf":[
+        {"if":{"properties":{"event":{"enum":["probe-1","probe-2"]}}},"then":{"properties":{"details":{"$ref":"#/$defs/probeDetails"}}},"else":{"properties":{"details":{"maxProperties":0}}}},
+        {"if":{"properties":{"event":{"const":"probe-1"}}},"then":{"properties":{"sequence":{"const":3},"details":{"properties":{"ordinal":{"const":1}}}}}},
+        {"if":{"properties":{"event":{"const":"probe-2"}}},"then":{"properties":{"sequence":{"const":4},"details":{"properties":{"ordinal":{"const":2}}}}}}
+      ]
+    },
+    "pointerPrior":{
+      "type":"object","additionalProperties":false,
+      "required":["version","manifestSHA256","state","bytesBase64","sha256"],
+      "properties":{"version":{"const":1},"manifestSHA256":{"$ref":"#/$defs/sha"},"state":{"enum":["absent","present"]},"bytesBase64":{"type":"string","maxLength":5464,"contentEncoding":"base64"},"sha256":{"oneOf":[{"const":"absent"},{"$ref":"#/$defs/sha"}]}},
+      "allOf":[{"if":{"properties":{"state":{"const":"absent"}}},"then":{"properties":{"bytesBase64":{"const":""},"sha256":{"const":"absent"}}},"else":{"properties":{"bytesBase64":{"minLength":4},"sha256":{"$ref":"#/$defs/sha"}}}}]
+    },
+    "rollbackIntent":{
+      "type":"object","additionalProperties":false,
+      "required":["version","state","manifestSHA256","binding","target"],
+      "properties":{"version":{"const":1},"state":{"const":"rollback-intent"},"manifestSHA256":{"$ref":"#/$defs/sha"},"binding":{"$ref":"#/$defs/sha"},"target":{"$ref":"#/$defs/target"}}
+    },
+    "rollback":{
+      "type":"object","additionalProperties":false,
+      "required":["version","state","manifestSHA256","binding","target","sourceBinding"],
+      "properties":{"version":{"const":1},"state":{"const":"rolled-back"},"manifestSHA256":{"$ref":"#/$defs/sha"},"binding":{"$ref":"#/$defs/sha"},"target":{"$ref":"#/$defs/target"},"sourceBinding":{"$ref":"#/$defs/sha"}}
+    },
+    "runPermit":{
+      "type":"object","additionalProperties":false,
+      "required":["version","manifestSHA256","run"],
+      "properties":{"version":{"const":1},"manifestSHA256":{"$ref":"#/$defs/sha"},"run":{"$ref":"worker-r2-run.schema.json"}}
+    },
+    "recoveryIntent":{
+      "type":"object","additionalProperties":false,
+      "required":["version","manifestSHA256","operation","grant"],
+      "properties":{"version":{"const":1},"manifestSHA256":{"$ref":"#/$defs/sha"},"operation":{"const":"recover-pointer"},"grant":{"$ref":"ssh-maintenance-recovery.schema.json"}}
+    }
+  }
+}

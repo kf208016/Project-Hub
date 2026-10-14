@@ -106,3 +106,40 @@ handoff, retained tmpfs roots, collection after `populated=0`, profiles,
 secrets, allowed-destination egress, lifecycle failure injection and real
 Linux/SSH execution remain unimplemented and unverified by this component.
 This policy must not be substituted for those R2 gates or for provider tests.
+
+## Fixed synthetic supervisor
+
+`r2_contract.py`, `r2_runtime.py` and `r2_supervisor.py` implement the bounded
+`run-r2-synthetic-v1` operation. `../lib/worker-r2-bootstrap.js` has a no-argument
+builder: its catalog includes only the five fixed source modules and their
+digests. The new Windows maintenance broker embeds this catalog and supplies
+its complete input itself. Caller stdin cannot replace or append a program.
+This is a separate broker registration, not an extension of the frozen stage
+channel. The closed run request is described by
+`../windows/worker-r2-run.schema.json`; migration and recovery are documented
+in `../../docs/ssh-vault-maintenance.md`.
+
+The request has a fresh nonce, exact catalog/UID/boot identity, at most a
+120-second admission permit and a fixed 60-second service runtime. The
+supervisor holds verified root-owned runtime descriptors, invokes the tools
+through those descriptors, and verifies the exact service invocation,
+MainPID/start time/executable, cgroup limits and namespace configuration before
+releasing its execution gate. The gate and service metadata are published
+create-only with Linux `renameat2(RENAME_NOREPLACE)` after complete writes.
+Unsupported kernels, tool layouts or user-service configurations fail closed.
+
+An owner-only lease serializes attempts. Accepted and heartbeat frames precede
+the terminal result. A successful result requires kernel measurements and
+confirmed cleanup of the owned cgroup. If no start was attempted, cleanup is
+reported on that limited basis without inventing cgroup evidence. If a start
+was attempted but identity or complete-tree cleanup cannot be proved, the
+lease is retained and the result is not successful. Disconnect, remote alarm
+and service runtime limits are independent safeguards; a lost local connection
+alone never proves remote cleanup.
+
+This operation tests fixed Python isolation and small temporary file I/O.
+It does not run Claude/Grok, read provider authentication, call a model,
+implement retained artifact collection, or enable a provider. Its result
+always has `providerReady: false` and `fullR2Verified: false`. Portable tests
+and a Windows import test are distinct from a real Linux execution; consult
+the dated task verification report for that execution's actual outcome.
