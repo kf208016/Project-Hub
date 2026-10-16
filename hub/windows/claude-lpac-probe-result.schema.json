@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:project-hub:claude-lpac-probe-result:1",
+  "title": "Synthetic W0 controller result, never provider readiness",
+  "$comment": "The top-level envelope is closed. events and extra case evidence are explicitly bounded JSON metadata, not commands or authority. A real W0 manifest must also reconcile the separately measured fixed Claude static identity. No result establishes all Windows escape classes, provider readiness, hard disk quota or signed attestation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "stage", "code", "nativeCode", "bootstrapPassed", "cleanupVerified", "probePassed", "providerReady", "profileCreated"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "claude-lpac-bootstrap-gate"},
+    "stage": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "code": {"$ref": "#/$defs/code"},
+    "nativeCode": {"$ref": "#/$defs/nativeCode"},
+    "bootstrapPassed": {"type": "boolean"},
+    "cleanupVerified": {"type": "boolean"},
+    "probePassed": {"const": false},
+    "providerReady": {"const": false},
+    "profileCreated": {"type": ["boolean", "null"]},
+    "executionSwitch": {"const": "--execute-approved-w0-gate"},
+    "runNonceFormat": {"const": "32 lowercase hex"},
+    "fixtureName": {"const": "claude-lpac-fixture.exe"},
+    "runNonce": {"anyOf": [{"type": "null"}, {"type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[a-f0-9]{32}$"}]},
+    "root": {"$ref": "#/$defs/pathOrNull"},
+    "journalPath": {"$ref": "#/$defs/pathOrNull"},
+    "profileFolder": {"$ref": "#/$defs/pathOrNull"},
+    "profileName": {"type": ["string", "null"], "maxLength": 64},
+    "registryStorage": {"$ref": "#/$defs/pathOrNull"},
+    "creationAttempted": {"type": "boolean"},
+    "creationOutcomeKnown": {"type": "boolean"},
+    "modelCalled": {"const": false},
+    "authRead": {"const": false},
+    "networkProbed": {"type": "boolean"},
+    "wholeProcessIsolationVerified": {"const": false},
+    "diskQuotaEnforced": {"const": false},
+    "syntheticSuiteComplete": {"type": "boolean"},
+    "reservedCaseRoots": {"type": "integer", "minimum": 0, "maximum": 12},
+    "reservedPossibleSuccesses": {"type": "integer", "minimum": 0, "maximum": 32},
+    "reservedStartAttempts": {"type": "integer", "minimum": 0, "maximum": 48},
+    "observedRootStarts": {"type": "integer", "minimum": 0, "maximum": 12},
+    "observedChildStarts": {"type": "integer", "minimum": 0, "maximum": 32},
+    "fixtureExitCode": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+    "stdoutBytes": {"type": "integer", "minimum": 0, "maximum": 65536},
+    "stderrBytes": {"type": "integer", "minimum": 0, "maximum": 65536},
+    "measuredFolderBytes": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "diskMeasurementScope": {"const": "owned-temp-and-profile-folder-files; registry-hive-allocation-not-attributed; soft-budget-only"},
+    "cleanupCode": {"$ref": "#/$defs/code"},
+    "cleanupNativeCode": {"$ref": "#/$defs/nativeCode"},
+    "events": {"type": "array", "maxItems": 2048, "items": {"$ref": "#/$defs/evidenceObject"}},
+    "cases": {"type": "array", "maxItems": 13, "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "code": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Z][A-Z0-9_]*$"},
+    "nativeCode": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+    "pathOrNull": {"type": ["string", "null"], "maxLength": 32768},
+    "evidence": {
+      "oneOf": [
+        {"type": ["null", "boolean"]},
+        {"type": "number", "minimum": -9007199254740991, "maximum": 9007199254740991},
+        {"type": "string", "maxLength": 32768},
+        {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/evidence"}},
+        {"$ref": "#/$defs/evidenceObject"}
+      ]
+    },
+    "evidenceObject": {
+      "type": "object", "maxProperties": 128,
+      "propertyNames": {"type": "string", "maxLength": 128, "not": {"enum": ["__proto__", "constructor", "prototype"]}},
+      "additionalProperties": {"$ref": "#/$defs/evidence"}
+    },
+    "case": {
+      "type": "object", "required": ["name", "status"], "maxProperties": 128,
+      "properties": {
+        "name": {"enum": ["identity", "functional", "brokers", "control", "tree-stop", "tree-eof", "memory", "process", "cpu", "wall", "stdout", "stderr", "claude-static-identity"]},
+        "status": {"enum": ["pass", "fail", "not-measured"]},
+        "code": {"$ref": "#/$defs/code"}
+      },
+      "propertyNames": {"type": "string", "maxLength": 128, "not": {"enum": ["__proto__", "constructor", "prototype"]}},
+      "additionalProperties": {"$ref": "#/$defs/evidence"}
+    }
+  }
+}

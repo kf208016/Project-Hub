@@ -1,6 +1,6 @@
 # Claude Windows 原生後端：第一批離線隔離驗證
 
-日期：2026-10-17（Asia/Taipei）。狀態：**書面差異待審閱；尚未建立 AppContainer profile、變更 ACL 或執行本批探針。**
+日期：2026-10-17（Asia/Taipei）。狀態：**使用者已核准本書面差異，並指定沿目前聊天實作及驗證；實作中，尚未建立 AppContainer profile、變更 ACL 或執行本批探針。**
 
 ## 1. 目的、既有授權與本次差異
 
