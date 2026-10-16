@@ -61,6 +61,7 @@ test('expiry is explicit, boundary-inclusive, sticky and checked by both clocks'
 test('clock rollback and invalid options do not preserve authorizable requests',()=>{
   for(const changed of [[9999,20000],[10000,19999],[NaN,20000]]){const s=setup();request(s);s.set(...changed);fatal(s,()=>s.p.tick(),'CLAUDE_CLOCK_INVALID');}
   for(const options of [{sessionId:undefined},{runId:12},{ownerAuthority:null},{limits:{maxPending:LIMITS.maxPending+1}},{limits:{extra:1}}])assert.throws(()=>createProtocol({sessionId:'s',runId:'r',ownerAuthority:{},...options}));
+  for(const key of ['now','monotonic'])for(const value of [null,0,false,NaN,''])assert.throws(()=>createProtocol({sessionId:'s',runId:'r',ownerAuthority:{},[key]:value}),{code:'CLAUDE_OPTIONS_INVALID'});
 });
 
 test('UTF-8 JSONL accepts bytewise Traditional Chinese and CRLF at every split',()=>{
@@ -138,7 +139,8 @@ test('terminal result with unresolved permission, open stream or extra data neve
   const s=setup();request(s);fatal(s,()=>s.p.push(wire(toolRows[4])),'CLAUDE_RESULT_WITH_PENDING');
   const t=setup();for(const row of streamRows.slice(0,2))t.p.push(wire(row));fatal(t,()=>t.p.push(wire(toolRows[4])),'CLAUDE_RESULT_WITH_PENDING');
   const u=setup();init(u);fatal(u,()=>u.p.push(Buffer.concat([wire(toolRows[4]),Buffer.from('garbage')])),'CLAUDE_DATA_AFTER_RESULT');
-  const v=setup();init(v);v.p.push(wire(toolRows[4]));fatal(v,()=>v.p.push(wire(toolRows[4])),'CLAUDE_STATE_INVALID');
+  const v=setup();init(v);v.p.push(wire(toolRows[4]));fatal(v,()=>v.p.push(wire(toolRows[4])),'CLAUDE_DATA_AFTER_RESULT');
+  const w=setup();init(w);fatal(w,()=>w.p.push(Buffer.concat([wire(toolRows[4]),wire(toolRows[3])])),'CLAUDE_DATA_AFTER_RESULT');
 });
 
 test('EOF is distinct from result or process exit; incomplete frames/runs are errors',()=>{

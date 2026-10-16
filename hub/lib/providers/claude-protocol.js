@@ -62,7 +62,7 @@ function createProtocol(options){
   check(typeof sessionId==='string'&&typeof runId==='string'&&ID.test(sessionId)&&ID.test(runId)&&ownerAuthority!==null&&typeof ownerAuthority==='object','CLAUDE_OPTIONS_INVALID');
   const limits={...LIMITS};
   if(options.limits!==undefined){keys(options.limits,[],Object.keys(LIMITS));for(const [key,value]of Object.entries(options.limits)){check(Number.isSafeInteger(value)&&value>=1&&value<=LIMITS[key],'CLAUDE_OPTIONS_INVALID');limits[key]=value;}}
-  const now=options.now||Date.now,monotonic=options.monotonic||(()=>Number(process.hrtime.bigint()/1000000n));
+  const now=options.now===undefined?Date.now:options.now,monotonic=options.monotonic===undefined?(()=>Number(process.hrtime.bigint()/1000000n)):options.monotonic;
   check(typeof now==='function'&&typeof monotonic==='function','CLAUDE_OPTIONS_INVALID');
   let phase='awaiting-init',failure=null,buffer=Buffer.alloc(0),bytes=0,frames=0,outputBytes=0,lastClock=null,terminal=null,stream=null;
   let lastStopReason=null,abnormalStop=false,permissionDenied=false,permissionCanceled=false;
@@ -166,8 +166,8 @@ function createProtocol(options){
   }
   function publicPending(p){return {sessionId,runId,requestId:p.requestId,toolUseId:p.toolUseId,toolName:p.toolName,input:copy(p.input),requestSHA256:p.requestSHA256,expiresAt:p.expiresAt};}
   function push(chunk){return guarded(()=>{
-    check(Buffer.isBuffer(chunk)&&chunk.length>0,'CLAUDE_CHUNK_INVALID');check(!phase.startsWith('result-')&&phase!=='ended','CLAUDE_STATE_INVALID');tick();bytes+=chunk.length;check(bytes<=limits.maxRunBytes,'CLAUDE_RUN_SIZE');const events=[];let start=0;
-    for(let index=0;index<chunk.length;index++)if(chunk[index]===10){const part=chunk.subarray(start,index);check(buffer.length+part.length<=limits.maxFrameBytes+1,'CLAUDE_FRAME_SIZE');let line=Buffer.concat([buffer,part]);buffer=Buffer.alloc(0);if(line.at(-1)===13)line=line.subarray(0,-1);check(line.length>0&&line.length<=limits.maxFrameBytes,'CLAUDE_FRAME_SIZE');check(events.length<limits.maxEventsPerPush,'CLAUDE_EVENT_BURST');events.push(frame(decode(line,limits)));tick();start=index+1;}
+    check(Buffer.isBuffer(chunk)&&chunk.length>0,'CLAUDE_CHUNK_INVALID');check(!phase.startsWith('result-'),'CLAUDE_DATA_AFTER_RESULT');check(phase!=='ended','CLAUDE_STATE_INVALID');tick();bytes+=chunk.length;check(bytes<=limits.maxRunBytes,'CLAUDE_RUN_SIZE');const events=[];let start=0;
+    for(let index=0;index<chunk.length;index++)if(chunk[index]===10){check(!phase.startsWith('result-'),'CLAUDE_DATA_AFTER_RESULT');const part=chunk.subarray(start,index);check(buffer.length+part.length<=limits.maxFrameBytes+1,'CLAUDE_FRAME_SIZE');let line=Buffer.concat([buffer,part]);buffer=Buffer.alloc(0);if(line.at(-1)===13)line=line.subarray(0,-1);check(line.length>0&&line.length<=limits.maxFrameBytes,'CLAUDE_FRAME_SIZE');check(events.length<limits.maxEventsPerPush,'CLAUDE_EVENT_BURST');events.push(frame(decode(line,limits)));tick();start=index+1;}
     const rest=chunk.subarray(start);check(!phase.startsWith('result-')||rest.length===0,'CLAUDE_DATA_AFTER_RESULT');const remaining=buffer.length+rest.length;check(remaining<=limits.maxFrameBytes+1,'CLAUDE_FRAME_SIZE');if(rest.length)buffer=Buffer.concat([buffer,rest]);check(remaining<=limits.maxFrameBytes||buffer.at(-1)===13,'CLAUDE_FRAME_SIZE');return events;
   });}
   function decide(authority,decision){return guarded(()=>{

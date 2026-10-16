@@ -74,6 +74,8 @@ normalized result 保留 `stopReasons`、`lastStopReason`、`permissionDenied`�
 
 **result 只代表此 subset 的 turn 終態，不代表 process-tree exited、Stop、秘密清理、成果保存或 lease 已釋放。** SDK 可在 result 後仍有背景任務；本 subset 不支援這些任務，不可用來跳過上層生命週期驗證。
 
+`responseComplete` 只表示已觀測的回覆終態沒有拒絕／截斷等不完整標記；不證明每個描述性 `tool_use` 都出現 ask callback，也不證明工具已執行或已獲人工核准。allow rules 可能略過 callback，完整 adapter 仍須另驗工具政策及路由。result 後額外 frame／bytes 一律使本次解析 failed；同一 push 不會先發布成功再忽略尾端錯誤。顯式提供非 function 的時鐘參數會拒絕，不靜默改用預設時鐘。
+
 ## 邊界
 
 | 上限 | 預設；constructor 只可調低 |
