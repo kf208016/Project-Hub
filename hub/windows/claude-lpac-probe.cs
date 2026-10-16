@@ -107,7 +107,21 @@ partial class HubClaudeLpacProbe {
   void PinDirectory(string path){FI f=DirectoryInfo(path);Need(OwnerOf(path,true)==owner,"DIRECTORY_OWNER_CHANGED");pins.Add(new HubPinnedRoot(path,Fingerprint(path,f)));}
   static bool Absent(string path){uint attrs=GetFileAttributes(path);if(attrs!=0xffffffff)return false;int e=Marshal.GetLastWin32Error();Need(e==2||e==3,"PATH_ABSENCE_UNKNOWN",e);return true;}
   void MakeDirectory(string path){IntPtr sd=IntPtr.Zero;uint n;Win(ConvertStringSecurityDescriptorToSecurityDescriptor("O:"+owner+"D:P(A;OICI;FA;;;"+owner+")",1,out sd,out n),"ACL_BUILD_FAILED");try{SA a=new SA();a.Size=Marshal.SizeOf(typeof(SA));a.Descriptor=sd;Win(CreateDirectory(path,ref a),"DIRECTORY_CREATE_FAILED");Need(OwnerOf(path,true)==owner,"DIRECTORY_OWNER_CHANGED");}finally{LocalFree(sd);}}
-  void SetAcl(string path,string access,bool directory,bool low){string sddl="O:"+owner+"D:P(A;OICI;FA;;;"+owner+")"+(access==null?"":"(A;"+(directory?"OICI":"")+";"+access+";;;"+profileSid+")");FileSystemSecurity security=directory?(FileSystemSecurity)new DirectorySecurity():new FileSecurity();security.SetSecurityDescriptorSddlForm(sddl,AccessControlSections.Owner|AccessControlSections.Access);if(directory)Directory.SetAccessControl(path,(DirectorySecurity)security);else File.SetAccessControl(path,(FileSecurity)security);FileSystemSecurity observed=directory?(FileSystemSecurity)Directory.GetAccessControl(path,AccessControlSections.Owner|AccessControlSections.Access):File.GetAccessControl(path,AccessControlSections.Owner|AccessControlSections.Access);Need(observed.AreAccessRulesProtected&&observed.GetOwner(typeof(SecurityIdentifier)).Value==owner,"ACL_VERIFY_FAILED");Need(observed.GetSecurityDescriptorSddlForm(AccessControlSections.Access)==security.GetSecurityDescriptorSddlForm(AccessControlSections.Access),"ACL_VERIFY_FAILED");if(low){IntPtr sd=IntPtr.Zero;uint size;Win(ConvertStringSecurityDescriptorToSecurityDescriptor("S:(ML;OICI;NW;;;LW)",1,out sd,out size),"LABEL_BUILD_FAILED");try{Win(SetFileSecurity(path,0x10,sd),"LABEL_SET_FAILED");VerifyLowLabel(path);}finally{LocalFree(sd);}}}
+  static bool PrivateAclMatches(RawSecurityDescriptor expected,RawSecurityDescriptor observed){
+    if(expected==null||observed==null||expected.Owner==null||!expected.Owner.Equals(observed.Owner)||expected.DiscretionaryAcl==null||observed.DiscretionaryAcl==null)return false;
+    ControlFlags required=ControlFlags.DiscretionaryAclPresent|ControlFlags.DiscretionaryAclProtected;
+    if((expected.ControlFlags&required)!=required||(observed.ControlFlags&required)!=required)return false;
+    // Windows may add AI while applying a protected DACL. It is bookkeeping;
+    // every other control bit and the complete ordered ACL bytes must agree.
+    ControlFlags compared=~ControlFlags.DiscretionaryAclAutoInherited;
+    if((expected.ControlFlags&compared)!=(observed.ControlFlags&compared))return false;
+    RawAcl wanted=expected.DiscretionaryAcl,actual=observed.DiscretionaryAcl;
+    if(wanted.BinaryLength!=actual.BinaryLength)return false;
+    byte[] a=new byte[wanted.BinaryLength],b=new byte[actual.BinaryLength];wanted.GetBinaryForm(a,0);actual.GetBinaryForm(b,0);
+    for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;
+    return true;
+  }
+  void SetAcl(string path,string access,bool directory,bool low){string sddl="O:"+owner+"D:P(A;OICI;FA;;;"+owner+")"+(access==null?"":"(A;"+(directory?"OICI":"")+";"+access+";;;"+profileSid+")");FileSystemSecurity security=directory?(FileSystemSecurity)new DirectorySecurity():new FileSecurity();security.SetSecurityDescriptorSddlForm(sddl,AccessControlSections.Owner|AccessControlSections.Access);if(directory)Directory.SetAccessControl(path,(DirectorySecurity)security);else File.SetAccessControl(path,(FileSecurity)security);FileSystemSecurity observed=directory?(FileSystemSecurity)Directory.GetAccessControl(path,AccessControlSections.Owner|AccessControlSections.Access):File.GetAccessControl(path,AccessControlSections.Owner|AccessControlSections.Access);Need(PrivateAclMatches(new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(),0),new RawSecurityDescriptor(observed.GetSecurityDescriptorBinaryForm(),0)),"ACL_VERIFY_FAILED");if(low){IntPtr sd=IntPtr.Zero;uint size;Win(ConvertStringSecurityDescriptorToSecurityDescriptor("S:(ML;OICI;NW;;;LW)",1,out sd,out size),"LABEL_BUILD_FAILED");try{Win(SetFileSecurity(path,0x10,sd),"LABEL_SET_FAILED");VerifyLowLabel(path);}finally{LocalFree(sd);}}}
   void Record(string kind,params object[] fields){Need(ownerContext,"OWNER_CONTEXT_UNKNOWN");SortedDictionary<string,object> row=new SortedDictionary<string,object>(StringComparer.Ordinal);row["sequence"]=++sequence;row["kind"]=kind;row["stage"]=stage;row["runNonce"]=nonce;for(int i=0;i<fields.Length;i+=2)row[(string)fields[i]]=fields[i+1];byte[] bytes=Utf8.GetBytes(new JavaScriptSerializer().Serialize(row)+"\n");if(journal!=null){journal.Write(bytes,0,bytes.Length);journal.Flush(true);}events.Add(row);}
   static IntPtr TokenData(IntPtr token,int kind,out int length){GetTokenInformation(token,kind,IntPtr.Zero,0,out length);Need(length>0&&length<=65536,"TOKEN_SIZE_INVALID");IntPtr p=Marshal.AllocHGlobal(length);try{int got;Win(GetTokenInformation(token,kind,p,length,out got),"TOKEN_QUERY_FAILED");Need(got>0&&got<=length,"TOKEN_SIZE_INVALID");length=got;return p;}catch{Marshal.FreeHGlobal(p);throw;}}
   static int Scalar(IntPtr token,int kind){int n;IntPtr p=TokenData(token,kind,out n);try{Need(n==4,"TOKEN_SCALAR_INVALID");return Marshal.ReadInt32(p);}finally{Marshal.FreeHGlobal(p);}}
@@ -147,7 +161,52 @@ partial class HubClaudeLpacProbe {
   }
   static string SidFromBuffer(IntPtr buffer,int length){Need(length>=IntPtr.Size,"TOKEN_SID_INVALID");IntPtr sid=Marshal.ReadIntPtr(buffer);long start=buffer.ToInt64(),point=sid.ToInt64();Need(point>=start&&point-start<=length-8,"TOKEN_SID_INVALID");Need(IsValidSid(sid),"TOKEN_SID_INVALID");uint size=GetLengthSid(sid);Need(size>=8&&size<=length-(point-start),"TOKEN_SID_INVALID");return new SecurityIdentifier(sid).Value;}
   SortedDictionary<string,object> VerifyToken(IntPtr process,IntPtr job){IntPtr token;Win(OpenProcessToken(process,QueryToken|DuplicateToken,out token),"TOKEN_OPEN_FAILED");try{Need(TokenSid(token,1)==owner,"TOKEN_OWNER_MISMATCH");Need(Scalar(token,8)==1&&Scalar(token,29)==1&&Scalar(token,46)!=0,"TOKEN_LPAC_MISMATCH");int n;IntPtr p=TokenData(token,31,out n);string sid;try{sid=SidFromBuffer(p,n);}finally{Marshal.FreeHGlobal(p);}Need(sid==profileSid,"TOKEN_PROFILE_MISMATCH");p=TokenData(token,25,out n);try{Need(SidFromBuffer(p,n)=="S-1-16-4096","TOKEN_INTEGRITY_MISMATCH");}finally{Marshal.FreeHGlobal(p);}p=TokenData(token,30,out n);try{Need(n>=4&&Marshal.ReadInt32(p)==0,"TOKEN_CAPABILITIES_MISMATCH");}finally{Marshal.FreeHGlobal(p);}bool inJob;Win(IsProcessInJob(process,job,out inJob),"JOB_MEMBERSHIP_QUERY_FAILED");Need(inJob,"JOB_MEMBERSHIP_MISMATCH");SortedDictionary<string,object> r=new SortedDictionary<string,object>();r["appContainerSid"]=sid;r["ownerSidMatched"]=true;r["capabilityCount"]=0;r["lowIntegrity"]=true;r["lpac"]=true;r["primaryToken"]=true;r["hasRestrictions"]=Scalar(token,21)!=0;return r;}finally{CloseHandle(token);}}
-  string CaptureRegistry(IntPtr process){IntPtr token=IntPtr.Zero,imp=IntPtr.Zero,key=IntPtr.Zero;bool impersonating=false;try{Win(OpenProcessToken(process,QueryToken|DuplicateToken,out token),"REGISTRY_TOKEN_OPEN_FAILED");Win(DuplicateTokenEx(token,QueryToken|ImpersonateToken,IntPtr.Zero,2,2,out imp),"REGISTRY_TOKEN_DUPLICATE_FAILED");Win(ImpersonateLoggedOnUser(imp),"REGISTRY_IMPERSONATION_FAILED");impersonating=true;ownerContext=false;int hr=GetAppContainerRegistryLocation(0x20019,out key);Need(hr==0&&key!=IntPtr.Zero,"REGISTRY_STORAGE_UNAVAILABLE",hr);uint needed;int status=NtQueryKey(key,3,IntPtr.Zero,0,out needed);Need((status==unchecked((int)0xc0000023)||status==unchecked((int)0x80000005))&&needed>=6&&needed<=65536,"REGISTRY_IDENTITY_UNAVAILABLE",status);IntPtr b=Marshal.AllocHGlobal((int)needed);try{uint got;status=NtQueryKey(key,3,b,needed,out got);Need(status==0&&got<=needed&&got>=6,"REGISTRY_IDENTITY_UNAVAILABLE",status);int bytes=Marshal.ReadInt32(b);Need(bytes>0&&bytes%2==0&&bytes<=got-4,"REGISTRY_IDENTITY_INVALID");string value=Marshal.PtrToStringUni(IntPtr.Add(b,4),bytes/2);Need(value.StartsWith("\\REGISTRY\\USER\\",StringComparison.OrdinalIgnoreCase)&&value.IndexOf('\0')<0&&Array.Exists(value.Split('\\'),part=>String.Equals(part,profileSid,StringComparison.OrdinalIgnoreCase))&&Array.Exists(value.Split('\\'),part=>String.Equals(part,owner,StringComparison.OrdinalIgnoreCase)||String.Equals(part,owner+"_Classes",StringComparison.OrdinalIgnoreCase)),"REGISTRY_IDENTITY_MISMATCH");return value;}finally{Marshal.FreeHGlobal(b);}}finally{if(key!=IntPtr.Zero)RegCloseKey(key);if(impersonating){if(!RevertToSelf()){ownerContext=false;Environment.FailFast("W0_OWNER_CONTEXT_RESTORE_FAILED");}ownerContext=true;}if(imp!=IntPtr.Zero)CloseHandle(imp);if(token!=IntPtr.Zero)CloseHandle(token);}}
+  static bool CanonicalSidText(string value){
+    if(String.IsNullOrEmpty(value))return false;
+    try{return new SecurityIdentifier(value).Value==value;}catch(ArgumentException){return false;}
+  }
+  static bool RegistryTokenMatches(string expectedOwner,string expectedProfile,string observedOwner,int appContainer,string observedProfile){
+    return appContainer==1&&CanonicalSidText(expectedOwner)&&CanonicalSidText(expectedProfile)&&String.Equals(expectedOwner,observedOwner,StringComparison.Ordinal)&&String.Equals(expectedProfile,observedProfile,StringComparison.Ordinal);
+  }
+  static bool RegistryStoragePathMatches(string value,string expectedOwner){
+    // The API chooses this profile's storage key; its path need not contain the
+    // AppContainer SID. Accept only a bounded exact path in the verified owner
+    // hive, retaining the original API result for the post-delete observation.
+    if(!CanonicalSidText(expectedOwner)||String.IsNullOrEmpty(value)||value.Length>32766||value.IndexOf('\0')>=0||value.IndexOf('/')>=0)return false;
+    string prefix="\\REGISTRY\\USER\\"+expectedOwner;
+    if(!value.StartsWith(prefix+"\\",StringComparison.OrdinalIgnoreCase)&&!value.StartsWith(prefix+"_Classes\\",StringComparison.OrdinalIgnoreCase))return false;
+    for(int i=0;i<value.Length;i++){
+      if(Char.IsHighSurrogate(value[i])){if(++i>=value.Length||!Char.IsLowSurrogate(value[i]))return false;}
+      else if(Char.IsLowSurrogate(value[i]))return false;
+    }
+    string[] parts=value.Split('\\');
+    for(int i=1;i<parts.Length;i++)if(parts[i].Length==0||parts[i]=="."||parts[i]=="..")return false;
+    return true;
+  }
+  string CaptureRegistry(IntPtr process){
+    IntPtr token=IntPtr.Zero,imp=IntPtr.Zero,key=IntPtr.Zero;bool impersonating=false;
+    try{
+      Win(OpenProcessToken(process,QueryToken|DuplicateToken,out token),"REGISTRY_TOKEN_OPEN_FAILED");
+      string tokenOwner=TokenSid(token,1);int appContainer=Scalar(token,29);string tokenProfile=TokenSid(token,31);
+      Need(RegistryTokenMatches(owner,profileSid,tokenOwner,appContainer,tokenProfile),"REGISTRY_TOKEN_IDENTITY_MISMATCH");
+      Win(DuplicateTokenEx(token,QueryToken|ImpersonateToken,IntPtr.Zero,2,2,out imp),"REGISTRY_TOKEN_DUPLICATE_FAILED");
+      Win(ImpersonateLoggedOnUser(imp),"REGISTRY_IMPERSONATION_FAILED");impersonating=true;ownerContext=false;
+      int hr=GetAppContainerRegistryLocation(0x20019,out key);Need(hr==0&&key!=IntPtr.Zero,"REGISTRY_STORAGE_UNAVAILABLE",hr);
+      uint needed;int status=NtQueryKey(key,3,IntPtr.Zero,0,out needed);
+      Need((status==unchecked((int)0xc0000023)||status==unchecked((int)0x80000005))&&needed>=6&&needed<=65536,"REGISTRY_IDENTITY_UNAVAILABLE",status);
+      IntPtr b=Marshal.AllocHGlobal((int)needed);
+      try{
+        uint got;status=NtQueryKey(key,3,b,needed,out got);Need(status==0&&got<=needed&&got>=6,"REGISTRY_IDENTITY_UNAVAILABLE",status);
+        int bytes=Marshal.ReadInt32(b);Need(bytes>0&&bytes%2==0&&bytes<=got-4,"REGISTRY_IDENTITY_INVALID");
+        string value=Marshal.PtrToStringUni(IntPtr.Add(b,4),bytes/2);
+        Need(RegistryStoragePathMatches(value,owner),"REGISTRY_IDENTITY_MISMATCH");return value;
+      }finally{Marshal.FreeHGlobal(b);}
+    }finally{
+      if(key!=IntPtr.Zero)RegCloseKey(key);
+      if(impersonating){if(!RevertToSelf()){ownerContext=false;Environment.FailFast("W0_OWNER_CONTEXT_RESTORE_FAILED");}ownerContext=true;}
+      if(imp!=IntPtr.Zero)CloseHandle(imp);if(token!=IntPtr.Zero)CloseHandle(token);
+    }
+  }
   static bool RegistryAbsent(string path){IntPtr text=Marshal.StringToHGlobalUni(path),name=Marshal.AllocHGlobal(Marshal.SizeOf(typeof(US))),key=IntPtr.Zero;try{US u=new US();u.Buffer=text;u.Length=checked((ushort)(path.Length*2));u.Maximum=checked((ushort)(u.Length+2));Marshal.StructureToPtr(u,name,false);OA a=new OA();a.Length=(uint)Marshal.SizeOf(typeof(OA));a.Name=name;a.Attributes=0x40;int s=NtOpenKey(out key,0x20019,ref a);if(s==unchecked((int)0xc0000034)||s==unchecked((int)0xc000003a))return true;Need(s==0,"REGISTRY_ABSENCE_UNKNOWN",s);return false;}finally{if(key!=IntPtr.Zero)NtClose(key);Marshal.FreeHGlobal(name);Marshal.FreeHGlobal(text);}}
   bool EmptyJob(IntPtr job,int ms){IntPtr b=Marshal.AllocHGlobal(48);Stopwatch t=Stopwatch.StartNew();try{while(t.ElapsedMilliseconds<ms){Win(QueryInformationJobObject(job,1,b,48,IntPtr.Zero),"JOB_QUERY_FAILED");if(Marshal.ReadInt32(b,40)==0)return true;Thread.Sleep(20);}return false;}finally{Marshal.FreeHGlobal(b);}}
   static string Quote(string text){Need(text.IndexOf('"')<0&&text.IndexOf('\0')<0,"PATH_REJECTED");return "\""+text+"\"";}

@@ -19,3 +19,9 @@
 沿規格：6 分鐘整批、12 次 controller case 根、32 次總成功起始、48 次總嘗試；每 case 8 程序／512 MiB／5 秒 CPU／20 秒 wall／各 64 KiB stdout/stderr。可信 fixture 合成寫入總額不超過 4 MiB；新 temp＋profile 128 MiB 是 admission／軟預算，不是磁碟硬配額。不得自動重試、加 capability、改普通 AppContainer 或 full-user。
 
 若前置 gate 失敗，後續未執行不是安全拒絕，也不是不相容全 Windows 的證據。報告受測配置和具體錯誤，停止本候選；既有 Codex／人工 Chat 安裝不變。完整 Claude 後端、模型出口、provider profile、磁碟硬限制、live protocol 與安裝回復仍須原計畫 gates，不能由本批替代。
+
+## 4. 本批實際狀態
+
+P0 已編譯並驗證拒絕路徑；P1 單次 profile 建立後在 fixture 啟動前因 `ACL_VERIFY_FAILED` 停止，P2 的 12 個 native cases 均未量測。P3 的精確 profile folder 已消失，但 registry 身分未先捕捉，收尾仍 unknown；獨立靜態 Claude nlink=2 亦不符條件。P4 已保存原始失敗與 combined manifest，整體 `probePassed:false / providerReady:false`。
+
+事後修正 ACL 的 AI bookkeeping 字串誤判，以及 registry path 必須含 AppSID 的未支持假設，並以 23 項收據、46 項 ACL、46 項 registry 純記憶體斷言及 Node 50／Python 70 回歸驗證。沒有建立第二個 profile、改寫原始結果或將修後離線測試當新實機結果。

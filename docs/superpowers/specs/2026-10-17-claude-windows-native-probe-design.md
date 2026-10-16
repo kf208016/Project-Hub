@@ -1,6 +1,6 @@
 # Claude Windows 原生後端：第一批離線隔離驗證
 
-日期：2026-10-17（Asia/Taipei）。狀態：**使用者已核准本書面差異，並指定沿目前聊天實作及驗證；實作中，尚未建立 AppContainer profile、變更 ACL 或執行本批探針。**
+日期：2026-10-17（Asia/Taipei）。狀態：**使用者已核准並執行唯一一次 profile 批次；在 fixture 啟動前因 `ACL_VERIFY_FAILED` 停止，native cases 全部未量測。Delete API 返回成功且精確 profile folder 消失，但 registry storage 尚未捕捉，`cleanupVerified:false`；保留合成根與 journal，沒有自動重試。本批未通過，provider 維持 blocked。**
 
 ## 1. 目的、既有授權與本次差異
 

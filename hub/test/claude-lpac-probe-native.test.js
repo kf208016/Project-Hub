@@ -42,9 +42,11 @@ function matches(schema, rule, value) {
   const controller = path.join(root, 'claude-lpac-probe.exe');
   const fixture = path.join(root, 'claude-lpac-fixture.exe');
   const faults = path.join(root, 'claude-lpac-result-faults.exe');
+  const aclChecks = path.join(root, 'claude-lpac-acl-checks.exe');
+  const registryChecks = path.join(root, 'claude-lpac-registry-checks.exe');
   // Remove only the exact files created here. Unexpected files make cleanup fail.
   t.after(() => {
-    for (const file of [controller, fixture, faults]) if (fs.existsSync(file)) fs.unlinkSync(file);
+    for (const file of [controller, fixture, faults, aclChecks, registryChecks]) if (fs.existsSync(file)) fs.unlinkSync(file);
     fs.rmdirSync(root);
   });
   function compile(output, names, references = [], extra = []) {
@@ -63,6 +65,20 @@ function matches(schema, rule, value) {
   assert.equal(faultResult.status, 0, faultResult.stdout + faultResult.stderr);
   assert.equal(faultResult.stdout.trim(), 'receipt/result fault checks passed: 23');
   assert.equal(faultResult.stderr, '');
+  compile(aclChecks, ['claude-lpac-probe.cs', 'claude-lpac-cases.cs', 'pinned-root.cs', '../test/fixtures/claude-lpac/acl-equivalence.cs'], ['System.Web.Extensions.dll'], ['/main:ProbeAclSelfTest']);
+  const aclResult = spawnSync(aclChecks, [], {encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 65536});
+  assert.equal(aclResult.error, undefined);
+  assert.equal(aclResult.status, 0, aclResult.stdout + aclResult.stderr);
+  assert.equal(aclResult.stdout.trim(), 'ACL descriptor checks passed: 46');
+  assert.equal(aclResult.stderr, '');
+  t.diagnostic(aclResult.stdout.trim());
+  compile(registryChecks, ['claude-lpac-probe.cs', 'claude-lpac-cases.cs', 'pinned-root.cs', '../test/fixtures/claude-lpac/registry-identity.cs'], ['System.Web.Extensions.dll'], ['/main:ProbeRegistrySelfTest']);
+  const registryResult = spawnSync(registryChecks, [], {encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 65536});
+  assert.equal(registryResult.error, undefined);
+  assert.equal(registryResult.status, 0, registryResult.stdout + registryResult.stderr);
+  assert.equal(registryResult.stdout.trim(), 'registry identity checks passed: 46');
+  assert.equal(registryResult.stderr, '');
+  t.diagnostic(registryResult.stdout.trim());
   const initialFiles = fs.readdirSync(root).sort();
   function run(args, input) {
     const result = spawnSync(controller, args, {input, encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 65536});
