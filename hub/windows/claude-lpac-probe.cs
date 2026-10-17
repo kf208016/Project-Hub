@@ -123,7 +123,30 @@ partial class HubClaudeLpacProbe {
   }
   void SetAcl(string path,string access,bool directory,bool low){string sddl="O:"+owner+"D:P(A;OICI;FA;;;"+owner+")"+(access==null?"":"(A;"+(directory?"OICI":"")+";"+access+";;;"+profileSid+")");FileSystemSecurity security=directory?(FileSystemSecurity)new DirectorySecurity():new FileSecurity();security.SetSecurityDescriptorSddlForm(sddl,AccessControlSections.Owner|AccessControlSections.Access);if(directory)Directory.SetAccessControl(path,(DirectorySecurity)security);else File.SetAccessControl(path,(FileSecurity)security);FileSystemSecurity observed=directory?(FileSystemSecurity)Directory.GetAccessControl(path,AccessControlSections.Owner|AccessControlSections.Access):File.GetAccessControl(path,AccessControlSections.Owner|AccessControlSections.Access);Need(PrivateAclMatches(new RawSecurityDescriptor(security.GetSecurityDescriptorBinaryForm(),0),new RawSecurityDescriptor(observed.GetSecurityDescriptorBinaryForm(),0)),"ACL_VERIFY_FAILED");if(low){IntPtr sd=IntPtr.Zero;uint size;Win(ConvertStringSecurityDescriptorToSecurityDescriptor("S:(ML;OICI;NW;;;LW)",1,out sd,out size),"LABEL_BUILD_FAILED");try{Win(SetFileSecurity(path,0x10,sd),"LABEL_SET_FAILED");VerifyLowLabel(path);}finally{LocalFree(sd);}}}
   void Record(string kind,params object[] fields){Need(ownerContext,"OWNER_CONTEXT_UNKNOWN");SortedDictionary<string,object> row=new SortedDictionary<string,object>(StringComparer.Ordinal);row["sequence"]=++sequence;row["kind"]=kind;row["stage"]=stage;row["runNonce"]=nonce;for(int i=0;i<fields.Length;i+=2)row[(string)fields[i]]=fields[i+1];byte[] bytes=Utf8.GetBytes(new JavaScriptSerializer().Serialize(row)+"\n");if(journal!=null){journal.Write(bytes,0,bytes.Length);journal.Flush(true);}events.Add(row);}
-  static IntPtr TokenData(IntPtr token,int kind,out int length){GetTokenInformation(token,kind,IntPtr.Zero,0,out length);Need(length>0&&length<=65536,"TOKEN_SIZE_INVALID");IntPtr p=Marshal.AllocHGlobal(length);try{int got;Win(GetTokenInformation(token,kind,p,length,out got),"TOKEN_QUERY_FAILED");Need(got>0&&got<=length,"TOKEN_SIZE_INVALID");length=got;return p;}catch{Marshal.FreeHGlobal(p);throw;}}
+  static string TokenQueryCode(int kind,string reason){return "TOKEN_CLASS_"+kind.ToString(System.Globalization.CultureInfo.InvariantCulture)+"_"+reason;}
+  static int TokenSizingCapacity(int kind,bool success,int error,int required){
+    // Only ERROR_INSUFFICIENT_BUFFER establishes a valid sizing response.
+    // An unsupported class can leave ReturnLength unwritten: preserve the
+    // original error rather than misreporting it as a zero-sized structure.
+    Need(!success,TokenQueryCode(kind,"SIZE_QUERY_INVALID"));
+    Need(error==122,TokenQueryCode(kind,"QUERY_UNAVAILABLE"),error);
+    Need(required>0&&required<=65536,TokenQueryCode(kind,"SIZE_INVALID"),error);
+    return required;
+  }
+  static int TokenReturnedLength(int kind,bool success,int error,int capacity,int returned){
+    Need(success,TokenQueryCode(kind,"QUERY_FAILED"),error);
+    Need(capacity>0&&capacity<=65536&&returned>0&&returned<=capacity,TokenQueryCode(kind,"SIZE_INVALID"));
+    return returned;
+  }
+  static IntPtr TokenData(IntPtr token,int kind,out int length){
+    bool sized=GetTokenInformation(token,kind,IntPtr.Zero,0,out length);int error=Marshal.GetLastWin32Error();
+    length=TokenSizingCapacity(kind,sized,sized?0:error,length);
+    IntPtr p=Marshal.AllocHGlobal(length);
+    try{
+      int got;bool success=GetTokenInformation(token,kind,p,length,out got);error=Marshal.GetLastWin32Error();
+      length=TokenReturnedLength(kind,success,success?0:error,length,got);return p;
+    }catch{Marshal.FreeHGlobal(p);throw;}
+  }
   static int Scalar(IntPtr token,int kind){int n;IntPtr p=TokenData(token,kind,out n);try{Need(n==4,"TOKEN_SCALAR_INVALID");return Marshal.ReadInt32(p);}finally{Marshal.FreeHGlobal(p);}}
   static string TokenSid(IntPtr token,int kind){int n;IntPtr p=TokenData(token,kind,out n);try{return SidFromBuffer(p,n);}finally{Marshal.FreeHGlobal(p);}}
   static void VerifyLowLabel(string path){

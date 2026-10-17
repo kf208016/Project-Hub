@@ -1,5 +1,6 @@
 'use strict';
-// These tests compile the trusted probe and exercise only inert/rejected inputs.
+// These tests compile the trusted probe and exercise inert/rejected inputs,
+// pure validation guards and read-only queries on their own process tokens.
 // They never submit an admissible profile-creation request.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -36,7 +37,7 @@ function matches(schema, rule, value) {
   return true;
 }
 
-(process.platform === 'win32' ? test : test.skip)('LPAC probe inert and rejected requests do not create a profile or probe root', {timeout: 60000}, t => {
+(process.platform === 'win32' ? test : test.skip)('LPAC probe inert, rejected and current-token readonly checks do not create a profile or probe root', {timeout: 60000}, t => {
   assert.equal(fs.existsSync(compiler), true, 'the approved existing compiler is required');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-lpac-inert-'));
   const controller = path.join(root, 'claude-lpac-probe.exe');
@@ -44,9 +45,11 @@ function matches(schema, rule, value) {
   const faults = path.join(root, 'claude-lpac-result-faults.exe');
   const aclChecks = path.join(root, 'claude-lpac-acl-checks.exe');
   const registryChecks = path.join(root, 'claude-lpac-registry-checks.exe');
+  const tokenChecks = path.join(root, 'claude-lpac-token-checks.exe');
+  const tokenDiagnostic = path.join(root, 'claude-lpac-token-readonly.exe');
   // Remove only the exact files created here. Unexpected files make cleanup fail.
   t.after(() => {
-    for (const file of [controller, fixture, faults, aclChecks, registryChecks]) if (fs.existsSync(file)) fs.unlinkSync(file);
+    for (const file of [controller, fixture, faults, aclChecks, registryChecks, tokenChecks, tokenDiagnostic]) if (fs.existsSync(file)) fs.unlinkSync(file);
     fs.rmdirSync(root);
   });
   function compile(output, names, references = [], extra = []) {
@@ -79,6 +82,37 @@ function matches(schema, rule, value) {
   assert.equal(registryResult.stdout.trim(), 'registry identity checks passed: 46');
   assert.equal(registryResult.stderr, '');
   t.diagnostic(registryResult.stdout.trim());
+  compile(tokenChecks, ['claude-lpac-probe.cs', 'claude-lpac-cases.cs', 'pinned-root.cs', '../test/fixtures/claude-lpac/token-query-validation.cs'], ['System.Web.Extensions.dll'], ['/main:ProbeTokenQuerySelfTest']);
+  const tokenResult = spawnSync(tokenChecks, [], {encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 65536});
+  assert.equal(tokenResult.error, undefined);
+  assert.equal(tokenResult.status, 0, tokenResult.stdout + tokenResult.stderr);
+  assert.match(tokenResult.stdout.trim(), /^token query checks passed: (122|123)$/);
+  assert.equal(tokenResult.stderr, '');
+  t.diagnostic(tokenResult.stdout.trim());
+  compile(tokenDiagnostic, ['../test/fixtures/claude-lpac/token-api-readonly.cs'], ['System.Web.Extensions.dll']);
+  const tokenReadOnly = spawnSync(tokenDiagnostic, [], {encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 65536});
+  assert.equal(tokenReadOnly.error, undefined);
+  assert.equal(tokenReadOnly.status, 0, tokenReadOnly.stdout + tokenReadOnly.stderr);
+  assert.equal(tokenReadOnly.stderr, '');
+  const tokenApi = JSON.parse(tokenReadOnly.stdout);
+  assert.deepEqual(Object.keys(tokenApi).sort(), ['native', 'payloadSerialized', 'profileCreated', 'schemaVersion', 'target', 'tokenAccess', 'win32'].sort());
+  assert.equal(tokenApi.schemaVersion, 1);
+  assert.equal(tokenApi.target, 'current-process-only');
+  assert.equal(tokenApi.tokenAccess, 8);
+  assert.equal(tokenApi.profileCreated, false);
+  assert.equal(tokenApi.payloadSerialized, false);
+  assert.deepEqual([...new Set(tokenApi.win32.map(row => row.class))], [8, 29, 30, 31, 46]);
+  assert.deepEqual([...new Set(tokenApi.native.map(row => row.class))], [29, 46]);
+  for (const [api, rows] of [['win32', tokenApi.win32], ['native', tokenApi.native]]) {
+    for (const row of rows) {
+      assert.deepEqual(Object.keys(row).sort(), ['capacity', 'class', 'returnLength', 'returnLengthUntouched', 'success', api === 'native' ? 'ntstatus' : 'win32Code'].sort());
+      assert.equal(typeof row.success, 'boolean');
+      assert.equal(row.returnLengthUntouched, row.returnLength === null);
+      assert.ok([0, 4, 8, 16, 65536].includes(row.capacity));
+      if (api === 'native') assert.match(row.ntstatus, /^0x[0-9a-f]{8}$/);
+      else assert.equal(Number.isInteger(row.win32Code), true);
+    }
+  }
   const initialFiles = fs.readdirSync(root).sort();
   function run(args, input) {
     const result = spawnSync(controller, args, {input, encoding: 'utf8', timeout: 5000, windowsHide: true, maxBuffer: 65536});

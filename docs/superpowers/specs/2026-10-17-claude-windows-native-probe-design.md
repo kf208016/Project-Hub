@@ -37,6 +37,8 @@ W0 是候選可行性量測，不是宣稱 LPAC 已足以承載完整 Claude。�
 1. 本批最多建立一個 `ProjectHub.ClaudeProbe.<GUID>` profile（ASCII 名稱、總長度不超過 64）。**先** create-only／durable 保存 `creation-intended`，綁名稱、預期衍生 SID、目前 owner SID、nonce、owned temp 身分及預期不存在狀態，再呼叫建立 API。遇到已存在一律拒絕，不接管或刪除舊 profile；API 結果未知也不自動再建第二個。
 2. 透過 Windows API 建立 per-user AppContainer profile，再核對 SID 並記錄實際 profile 資料夾及該 SID 的精確 registry storage 身分。只接受目前使用者及此次 SID 的新 profile；建立成功收據 durable 後才繼續。它可能位於 workspace 之外的 Windows app 專用儲存區，禁止改用任意路徑或碰既有 provider profile。當機落在 API 與成功收據之間時標示 `unknown`，不能只憑同名或目錄存在推定所有權。
 3. 合成測試根位於經核對的本機 NTFS 私有 temp，分 `controller`、`runtime`、`task`、`tmp`、`outside-canary`。root 身分／FileID／owner 與實際絕對路徑先固定；所有目標拒絕 reparse、hardlink、ADS 及跨根引用。
+
+   此處 hardlink 拒絕保護新建、可寫與可清理的合成目標，維持 fixture `HeldFile` 的 nlink=1。指定既有 vendor 的靜態只讀核對可使用獨立持有式快照：同時持有 manifest／exe 的唯讀、share-read-only HANDLE 及 namespace pins，固定 handle 身分／大小／內容 SHA，前後 link count 必須一致。它不執行 vendor、不修改既有 aliases；只保證持有期間的固定路徑與 unnamed data bytes，不宣稱凍結全部 alias 名稱、metadata 或提供後續執行證明。
 4. ACL 只調整此次新建的 root／fixture／runtime：controller 與 outside-canary 不給 probe SID；runtime 給 read/execute；task／tmp 給必要 read/write。可寫子根加明確 Low Integrity mandatory label，僅限新建子根；不改 owner HOME、全域程式、既有專案或系統檔案 ACL。
 5. provider auth 仍為空。本批不讀取、複製、搬移或重新登入既有 `.claude`、其他 provider、SSH、Docker 或瀏覽器資料；僅用合成同類 marker 驗拒絕路徑。
 

@@ -51,3 +51,19 @@ node --test hub/test/claude-lpac-probe-native.test.js
 唯一 profile 批次以 `ab2d65a` 來源編譯，成功建立 profile 後在 fixture 啟動前因上述 SDDL bookkeeping 比較停止，`ACL_VERIFY_FAILED`。Delete API 返回成功，精確 profile folder 及其 package parent 事後查無；registry storage 未先捕捉，因此 `cleanupVerified:false / PROFILE_REGISTRY_CLEANUP_UNKNOWN`，保留新合成根與 journal。12 個 native cases 均未量測，沒有執行 fixture、模型或 auth 流程，沒有重試或建立第二個 profile。
 
 獨立 Claude 靜態快照的版本／bytes／SHA 與固定值一致、前後快照相同；執行檔有兩個 NTFS hard links，不符合此批 nlink=1 條件，靜態 gate 失敗。這個條件失敗本身不是已知漏洞的證明。本批整體 `probePassed:false / providerReady:false`；後續純記憶體回歸修正不改寫這次原始失敗結果，也不代表修後配置已實機重驗。
+
+## 使用者要求接續後的驗證
+
+獨立 `run-02` 以 `08cd0a7` 編譯並執行，越過 ACL 與 fixture 準備，已取得實際 registry storage 身分。在 resume fixture 前的完整 token gate 因 `TOKEN_SIZE_INVALID` 停止；本批 profile folder、精確 registry storage 與 owned temp 均驗證已移除，Job 空及 durable closed 收據成立，`cleanupVerified:true`。這不回填 `run-01` 的歷史 unknown，也不表示 LPAC 已通過。
+
+事後 `TokenData` 修正只將 API sizing 的結果分類精確化：first call 必須是 FALSE、`ERROR_INSUFFICIENT_BUFFER` 且長度 1..65536；其他錯誤保留 class／Win32 code，不使用未定義長度。原先 class 46 LPAC 非零 gate 仍保留。自有目前程序 token 在受限及 host 兩個 context 的唯讀對照皆見 class 46 回 Win32 87／Native `STATUS_INVALID_INFO_CLASS`，不能由此將所有 LPAC 判成不可行；`run-02` 原始記錄未保留 class，因此不追溯把當時主錯誤改名。
+
+指定 vendor 的靜態核對新增 [`CLAUDE-STATIC-IDENTITY.md`](CLAUDE-STATIC-IDENTITY.md) 所述持有式唯讀快照與 owned native 拒絕測試；exe links=2 但固定內容／身分／前後量測一致的快照已通過。此修正只適用 §5 的 static-only 核對，保留 synthetic root 的 hardlink 拒絕，沒有將靜態通過當成執行或隔離通過。
+
+### 接續批次的診斷與回歸
+
+`token-query-validation.cs` 對 sizing／returned-length 守衛做純記憶體拒絕測試；`token-api-readonly.cs` 只查目前程序的固定 token classes，僅輸出 API 狀態／錯誤／長度，沒有 token payload 或其他程序介面。最終本機 harness 包含 123 項 token checks，不能替代 suspended LPAC child 的核對。
+
+`access-check-readonly.cs` 是另外編譯的診斷 fixture，僅對目前程序 token 的 Identification duplicate 與記憶體 descriptor 做 `AccessCheck`，不修改主 gate。descriptor 與零 generic mapping 取自固定 Chromium `5c210565c3fa181730df37778d22af487a0d5e40` 的 `CheckLpacToken`；目前兩個 caller context 均為 mask 3，尚無 LPAC mask 2 陽性對照。因此它不是已驗證的 class 46 替代方案。
+
+接續批次的最終指定回歸為 Node **86/86**、Python **70/70**，exit 0，無 Node skip／cancel。涵蓋 Claude／Grok 純離線 codec、registry／拒絕／繁中 readiness UI、native inert／token 診斷、41 項 owned 靜態 sharing checks、9 項 pin 生命週期檢查及原有 3 項 native ancestor pins 測試。沒有新增 profile，也沒有將離線通過提升為 provider readiness。

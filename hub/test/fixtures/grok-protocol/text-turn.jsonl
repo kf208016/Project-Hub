@@ -1,0 +1,2 @@
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"這是合成回覆。"}}}}
+{"jsonrpc":"2.0","id":17,"result":{"stopReason":"end_turn"}}

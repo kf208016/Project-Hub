@@ -25,3 +25,15 @@
 P0 已編譯並驗證拒絕路徑；P1 單次 profile 建立後在 fixture 啟動前因 `ACL_VERIFY_FAILED` 停止，P2 的 12 個 native cases 均未量測。P3 的精確 profile folder 已消失，但 registry 身分未先捕捉，收尾仍 unknown；獨立靜態 Claude nlink=2 亦不符條件。P4 已保存原始失敗與 combined manifest，整體 `probePassed:false / providerReady:false`。
 
 事後修正 ACL 的 AI bookkeeping 字串誤判，以及 registry path 必須含 AppSID 的未支持假設，並以 23 項收據、46 項 ACL、46 項 registry 純記憶體斷言及 Node 50／Python 70 回歸驗證。沒有建立第二個 profile、改寫原始結果或將修後離線測試當新實機結果。
+
+## 5. 使用者要求接續後的獨立批次
+
+使用者在進度回報後指出「為什麼你沒有繼續執行」，接續既有已核准流程。`run-02` 為新的獨立有界批次，保留 `run-01` 原始失敗及 unknown；沿同一 W0 範圍，每批最多一個 profile、6 分鐘，不自動重試、增權或執行 vendor／auth／模型。此次來源 `08cd0a7`，不是將舊 nonce 重放。
+
+`run-02` 已越過 ACL／fixture 準備，並在 suspended fixture 下取得實際 registry storage 身分；完整 token gate 尚未通過，`TOKEN_SIZE_INVALID`，沒有 resume fixture。此次精確 profile folder／registry storage／owned temp 皆核對不存在、Job 空、收據 durable，`cleanupVerified:true`。此結果只證明新批次收尾，不回填舊批次的缺漏，也不是 LPAC 或 provider 通過。
+
+後續在相同授權內並行進行純離線工作：定位 token API sizing 查詢的 class／原生錯誤（只查 owned current-process token、不建立 profile）、指定 Claude 檔案的持有式唯讀身分核對，以及固定官方來源的 Grok turn codec。沒有因 worker gate 未過就將純離線工作停掉；真 CLI spawn／登入／模型仍須既有執行門檻。
+
+已實際再次呼叫 Claude CLI 審閱指定原碼快照；核對後修正 Grok 決議後識別欄位漂移、取消後新工具，以及共用 pin 的釋放後生命週期拒絕。其餘建議按固定來源與合約逐項記錄不採納理由。Claude 是靜態審閱，沒有替代本機測試或授權任何 gate 放寬；後續差異由本機回歸核對，未聲稱已獲 Claude 再次核可。
+
+本批最終指定 Node 回歸 86/86、Python discovery 70/70，無 Node skip／cancel。原生合成測試、來源／產物／log SHA、Claude 原回覆與採納紀錄保存於外層 workspace 的 dated outputs。W0 必測 cases 仍未量測；P2、完整 provider 接線及安裝驗收仍未完成。
