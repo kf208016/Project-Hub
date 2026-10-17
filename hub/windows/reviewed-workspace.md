@@ -22,6 +22,8 @@ Git 的 stat cache 也可能把 same-size／恢復 mtime 的工作 bytes 當成�
 4. `await consumeRun({project,task,permit})` 必須在controller自行更新task workdir前執行，保持已核准completionHash綁定。然後再更新task、啟動AI，並把run與管理程序對應。
 5. `WorkspaceRuntime` 保留 controller 私有 flow，把 chat child 的實際 `close`、PTY `finishedP` 和 MCP 命令退出綁定到 run；queue 同一流程沿用 lease。Hub擁有的完整程序樹已退出後 `await releaseRun(run)`；direct repo lock只有成功保存close記錄與lease清理後解除。`active()`必須納入quit/restart gate。重啟只讀到 `workspaceStarted` 或 direct metadata 不形成 run 授權。
 
+Terminal tracking 只接受 `Sessions.get(project,task,actor)` 的同一 session 物件、canonical CLI actor、相同工作目錄與真實 `finishedP` Promise，私下保存 session／actor 對應。Stop 使用這個對應停止本 flow 的全部活動終端機，不預設 Codex、不改用其他 actor，也不停止未追蹤的 session；目前 Sessions entry 被替換時拒絕並保留 lease。Promise 拒絕不算程序樹退出。這項生命週期修正不啟動 CLI、不變更 registry readiness，也不提供 provider 執行／隔離 admission；既有 public lifecycle Schema 不增加欄位。
+
 Browser 使用 `/api/task/workspace/discover` 選取實際檔名，再 `/preview` 取得內容、Git HEAD/index、既有工作複本與 NTFS root FileID 綁定。`/prepare` 需要 `confirm:true`、`ackReadLimits:true`、`ackNetworkLimits:true`，hooks 有獨立確認；成功回傳一次性 permit 給 start/chat/terminal route。`/close` 要等完整 owned 程序樹退出與清理完成才成功。UI 僅在 typed `WORKSPACE_REQUIRED` 回應時重試同 request/task 一次，不以一般錯誤字串發起核准。
 
 `/api/term/start` 與 `/api/term/handoff` 在判定重用既有終端機之前仍檢查 controller 交易互斥：Transfer／Integrate 全域 metadata freeze、同範圍 Maintenance、Rooted move／其他工作區交易忙碌時回 409。重用當前流程僅豁免其自身 direct lease，不豁免這些交易；拒絕前不寫 task 或 handoff packet，也不停止既有 owned terminal。唯讀狀態入口保留可用，交易解除後可重新開啟原終端機。
