@@ -20,7 +20,7 @@
 
 若前置 gate 失敗，後續未執行不是安全拒絕，也不是不相容全 Windows 的證據。報告受測配置和具體錯誤，停止該次嘗試，再繼續根因定位及已授權修正；不能將單次失敗當成整體工作的停點。完整 Claude 後端、模型出口、provider profile、磁碟硬限制、live protocol 與安裝回復仍須原計畫 gates，不能由本批替代。
 
-## 4. 本批實際狀態
+## 4. 原 run-01 的實際狀態（歷史）
 
 P0 已編譯並驗證拒絕路徑；P1 單次 profile 建立後在 fixture 啟動前因 `ACL_VERIFY_FAILED` 停止，P2 的 12 個 native cases 均未量測。P3 的精確 profile folder 已消失，但 registry 身分未先捕捉，收尾仍 unknown；獨立靜態 Claude nlink=2 亦不符條件。P4 已保存原始失敗與 combined manifest，整體 `probePassed:false / providerReady:false`。
 
@@ -41,3 +41,17 @@ P0 已編譯並驗證拒絕路徑；P1 單次 profile 建立後在 fixture 啟�
 ## 6. 限制來源更正
 
 使用者本輪問「我什麼時候說不自動重跑」。核對結果：該句來自 Codex 撰寫的規格，不是使用者原話。後續按規格 §9 的修正／清理／有界重測規則接續，不再把它當成每次都要等待使用者催促的理由。歷史實測收據及一次性 R2 grant 的消耗語意不改寫。
+
+## 7. Context Guard 接續批次
+
+依設計規格 §10 更正首指令前 LPAC 證據，保留所有 SID／IL／capability／Job gates；先以固定 descriptor 的 OS AccessCheck 判定實際 child，再以 class 46 作有明確 unavailable 分類的交叉檢查。owner 負對照、API／mask／buffer 拒絕路徑與獨立本地審查須先完成，才可執行新 attempt。Claude 指定原碼審閱的外傳另受本次自動核准攔截，待精確資產授權；不得以改指令或間接執行繞過，也不將此攔截擴張為停止原已核准本地 W0 的理由。每批仍最多一個 profile、6 分鐘；不重放舊 nonce，不調高權限，不執行 vendor／模型。
+
+並行完成 Grok 有界 turn controller（只組合 codec 及由上層提供的 owned stream），不新增 OS spawn 入口、不改 registry readiness。其合成 transport 測試必須與實際 vendor／backend 的驗收分開列示。此單元不證明初始化、認證、模型清單、整個 CLI 隔離或 Hub 接線完成。
+
+依規格 §10.1，在 run-05 實際 token 陽性、CLR bootstrap 失敗及完整清理後，接續固定 child CLR 環境候選。先通過共同 environment block 的完整鍵值／排序／double-NUL／caller 污染拒絕測試，維持 193 項 token guards、220 項 AccessCheck guards；再重驗 run-05 的精確資源不存在，prepare-only 產生新 run-06 source／build／request 綁定，才執行既有有界 W0 wrapper。此變更不加入 log capture、新 capability 或全域系統修改。run-06 的 fixture bootstrap、合成 cases 與 cleanup 分別記錄，任何未量測維持未量測。
+
+Claude transport controller 沿同一既有協定交付範圍接續：只接收上層已 admission 且專用的 stream endpoint，組合既有 closed codec、人工決定、期限、backpressure、stdout／stderr 結束與綁定 backend 的 owned cleanup 收據；不建立程序或任何新授權入口。不將 Grok 的 ACP wire 複製為 Claude 協定；出站 user message 須有固定官方 SDK 來源對照。owner cancel 撤回該 controller 的可操作核准並停止精確 owned run；不假造 vendor cancel ack。result 與 root exit／子樹清空／cleanup 分開，task success 保持未知。合成 tests、Schema、文件與正式 Hub/provider 接線分開驗收。
+
+run-06 仍在 CLR bootstrap 停止但精確收尾成立，依規格 §10.2 為下一 attempt 增加僅 Identity child 的有界 activation log。候選來源已凍結，host 窄測 2/2、collector 61／環境 102／token 193／AccessCheck 220 項守衛及獨立本地 review 已完成；先重驗 run-06 資源不存在，再 prepare-only run-07，執行仍沿同一 wrapper 與原 W0 預算。parent 讀診斷須驗 canonical Base64、decoded byte count 與 SHA，相符才可解讀；沒有 log 仍為診斷缺漏，不能補成已知根因。
+
+run-07 已執行並獨立 reconcile：實際 token 陽性、5538-byte CLR log 綁定一致、精確清理成立；CLR runtime 已載入但握手未成功，仍有 13 項 not-measured。細節及不可推論事項見規格 §10.3。下一個執行候選須有具體新根因／診斷目的與相稱測試，不能只更換 nonce。兩個 provider 的 pure turn controllers 分別通過合成測試，不變更 readiness，也尚未安裝新 CLI 功能。

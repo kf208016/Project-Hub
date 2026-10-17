@@ -1,6 +1,6 @@
 # Claude Windows 原生後端：第一批離線隔離驗證
 
-日期：2026-10-17（Asia/Taipei）。狀態：**原 run-01 在 fixture 啟動前因 `ACL_VERIFY_FAILED` 停止，registry cleanup unknown 保留；其後獨立 run-02 已越過 ACL 並確認自身完整清理，但在 token gate 停止，12 個 native cases 仍未量測。W0 未通過，provider 維持 blocked。重測規則及其來源更正見 §9，不將 Codex 提出的限制歸為使用者原話。**
+日期：2026-10-17（Asia/Taipei）。狀態：**run-05 至 run-07 已在實際 suspended child 驗過 LPAC token 與原 SID／Low IL／空 capabilities／Job；run-07 的有界診斷確認 CLR runtime 已載入，但 fixture 握手仍失敗、13 項 combined cases 未量測。各次精確收尾已驗，原 run-01 的 registry cleanup unknown 保留。W0 未通過，provider 維持 blocked。重測規則及其來源更正見 §9，不將 Codex 提出的限制歸為使用者原話。**
 
 ## 1. 目的、既有授權與本次差異
 
@@ -127,3 +127,43 @@ W0 通過後也不直接啟用或執行 Claude。下一個可執行 profile 仍�
 - 不增加 capability、不改普通 AppContainer／full-user、不跳過身分 gate、不自行啟動 vendor／登入／模型。重測不等於放寬通過條件。
 
 Linux R2 的一次性 grant 仍按其獨立合約消耗，不能重放已使用的 grant；此規則不推成所有 Windows 修正後重測都須重新取得使用者核准。以上執行保護須標明為工程規則，不歸因為使用者曾說「禁止自動重跑」。
+
+## 10. 接續修正：LPAC 的 OS 存取檢查
+
+使用者以 `$context-guard` 要求接續完整 Windows Claude／Grok 整合。這一批先修正 W0 的身分判定：本機唯讀診斷已觀察 `GetTokenInformation(46)` 回 Win32 87、native query 回 invalid-info-class。Microsoft enum 有名稱，不代表此受測系統的該查詢可用；不能由這個 API 失敗推論 suspended child 不是 LPAC。
+
+採固定 Chromium revision `5c210565c3fa181730df37778d22af487a0d5e40` 的 `CheckLpacToken`，在第一指令前對**實際 suspended child token** 執行 OS `AccessCheck`。固定記憶體 descriptor 授予 World mask 3、AllApplicationPackages mask 1、AllRestrictedApplicationPackages mask 2，使用 MAXIMUM_ALLOWED 與零 generic mapping。必須同時有 API 成功、access status 成功、granted mask **恰為 2**；目前 owner token 的獨立負對照必須恰為 3。失敗、未知、其他 mask 或無效 privilege-set 長度／內容一律拒絕。不得以 child 自報、純記憶體測試或 owner 對照代替真正 child 的陽性量測。
+
+既有 owner／primary／AppContainer SID／Low IL／空 capabilities／owned Job 查驗全部保留。class 46 作補充交叉檢查：查詢成功時必須恰為 1；只有明確不支援的 Win32 87 可記 unavailable，其他 API／長度／值錯誤仍停止。這不是 class 46 失敗即通過的 fallback；每次都必須取得獨立 OS AccessCheck 的精確 LPAC 陽性結果。
+
+這個更正不增加 capabilities、網路出口、profile 數量或執行身分；不改普通 AppContainer／full-user，不啟 vendor／auth／模型。按既有 §9 先完成拒絕回歸與獨立本地原碼審查，再執行同範圍的新獨立有界 attempt，保留來源／編譯／清理及每一 case 原始結果。另請 Claude CLI 審閱具體差異；本次指定原碼外傳遭自動核准審查拒絕，已請求該批外傳的明確同意，在取得同意前不外傳、不宣稱 Claude 已核可。這不新增「Claude 外傳完成」作為既有本地 W0 授權的條件，不因此停止不受影響的已授權工作。所有舊 attempt 的失敗或 unknown 原樣保留。後續 provider readiness 門檻仍依 §7，不能由 W0 或離線 transport 成功代替。
+
+依據：[Microsoft TOKEN_INFORMATION_CLASS](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ne-winnt-token_information_class)、[固定 Chromium CheckLpacToken](https://chromium.googlesource.com/chromium/src/+/5c210565c3fa181730df37778d22af487a0d5e40/sandbox/win/src/app_container_test.cc#109)。
+
+### 10.1 本機 ABI 與可信 fixture 的 CLR 修正
+
+run-04 在 class 21 的長度檢查停止。本機 owner primary 與 Identification duplicate 的唯讀量測均回傳一個 byte，因此只對此欄採嚴格 `BOOLEAN-1`（長度 1、值 0 或 1），其他 scalar 繼續要求四個 bytes。結果記錄 `measured-host-abi-v1`，不將本機結果宣稱為所有 Windows 的 ABI，也不以 hasRestrictions 代替 LPAC 存取檢查。
+
+run-05 已在實際 suspended child 取得 LPAC mask 2、owner 對照 mask 3、零 privileges，並驗過原 SID／Low IL／空 capabilities／owned Job。resume 後 fixture 尚未輸出握手便以 `0x80131702`（CLR shim install root 未定義）退出。這不證明具體 registry ACL 根因；fixture 身分及後續合成 cases 仍未量測。此次 Job、profile folder、精確 registry storage、owned temp 均已核對清理，原始結果保留。
+
+下一個同範圍 attempt 僅在可信 AMD64 fixture 的共同 child environment block 加固定 `COMPLUS_InstallRoot=<SpecialFolder.Windows>\Microsoft.NET\Framework64\` 與 `COMPLUS_Version=v4.0.30319`，後代繼承同一配置。不接受 request 或呼叫者環境指定這兩值，不修改全域環境、registry、ACL、capabilities，也不加 CLR log 讀寫流程。固定官方 WPF consumer 原碼及五次無 profile 對照提供相容性候選依據；它們尚未證明 LPAC 下 CLR 可啟動，必須由新 attempt 實測。離線環境區塊解碼、污染輸入拒絕及原 token／AccessCheck 拒絕測試先通過，再依 §9 核對前次清理並以新 nonce 執行。失敗保留精確狀態，不加權限以換取成功。
+
+依據：[固定 WPF consumer](https://github.com/dotnet/wpf/blob/65d15adece1df9a73e3d1abc11f8bbf99e9fc7a9/src/Microsoft.DotNet.Wpf/src/Shared/cpp/Utils.cxx#L71-L101)、[官方 CLR 錯誤定義](https://github.com/dotnet/coreclr/blob/release/1.0.0/src/inc/corerror.xml#L4072-L4076)。
+
+### 10.2 run-06 後的有界 CLR 啟動診斷
+
+run-06 使用上述固定配置後，實際 token 檢查再次成立，fixture 改以 `0xFFFFFFFF` 退出且 stdout／stderr 皆 0 bytes，握手仍未完成；Job、profile folder、精確 registry storage、owned temp 清理皆已驗。此退出碼變化不等於已確定根因，原始失敗及 13 項 not-measured 保留。
+
+後續診斷只在 Identity fixture 的 child environment 加 `COMPLUS_CLRLoadLogDir` 指向原有 owned tmp，不從 request／ambient env 取值；不為其他 case 開啟 logging。依官方 CLR activation log 命名規則，只收本 fixture 的固定 basename。先由 OS 驗證 Job 已空，再核對原 root／tmp identity，透過 no-link、不可改名／寫入的持有檔案 HANDLE 讀取，核對前後 FileID／大小，並以 SHA 綁定已讀 bytes；最多 2 檔、單檔 64 KiB、合計 128 KiB。超出或型別／身分不符為明示診斷失敗，不以任意路徑或遞迴檔案收集替代。
+
+診斷僅在 closed result 的封閉欄位保存 basename、FileID、byte count、SHA 與有界 rawBase64，沿原 host create-only result writer 寫入本機 evidence，不新增任意輸出位置、不對外傳送。缺 log 或收集錯誤不能當作成功、根因或安全拒絕；原 fixture 錯誤與原清理結果分別保存。不安全檔案仍須讓既有清理 fail closed，不因診斷錯誤跳過殘留核對。收集上限不是硬磁碟配額。本步不改能力、全域環境／registry／ACL／服務，仍為原可信、零模型 W0 範圍；實作／Schema／拒絕測試與獨立本地 review 後才執行新 nonce。
+
+依據：[Microsoft CLR activation debugging](https://learn.microsoft.com/en-us/dotnet/framework/deployment/how-to-debug-clr-activation-issues)。
+
+### 10.3 run-07 的實際診斷與剩餘缺口
+
+run-07 已實際執行，source probe SHA `6f574da0591d97e3973206c5c798856e858b432d36f8e13b111c4fa631fdfe5a`。fixture 仍退出 `0xFFFFFFFF`、stdout／stderr 均 0 bytes。取得一份 5538-byte UTF-16LE activation log，raw Base64 canonical、decoded size 與 SHA `cd9820aa888e5e670da286bd472dc7e67a7d4f32928fd3a4d10d38b65c5fb7ea` 已由 parent 重算一致。
+
+log 明記 runtime `v4.0.30319` 已載入，後有兩次 internal runtime-host `GetInterface` 呼叫與 DLL detach。log 沒有這兩次呼叫的 HRESULT，因此不能宣稱其失敗、COM registry 拒絕或確定底層根因；缺少 exe.config 也不能單獨當作根因，owner 同 fixture 的無 config 正對照已成功。後續須區分 DLL 載入、managed runtime 初始化與真正 fixture 握手，不再把它們統稱為「CLR 無法載入」。
+
+run-07 的 Job 空、profile folder／精確 registry storage／owned temp 消失皆核對成立。原始 result、journal、execution 與獨立 reconciled manifest 保存於外層 workspace `outputs/claude-lpac-w0-20261017/run-07/`；13 項 combined cases 仍 not-measured、`probePassed:false / providerReady:false`。未執行 vendor／auth／模型；不得盲重試、增加 capability 或用此診斷取代完整 provider 驗收。

@@ -3,6 +3,7 @@
 using System;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
 
 static class ProbeTokenQuerySelfTest {
   [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
@@ -33,8 +34,26 @@ static class ProbeTokenQuerySelfTest {
     foreach(int capacity in new int[]{0,-1,65537})Rejection("TokenReturnedLength",new object[]{46,true,0,capacity,1},"TOKEN_CLASS_46_SIZE_INVALID",0);
     foreach(int error in new int[]{5,6,87,122})Rejection("TokenReturnedLength",new object[]{46,false,error,4,4},"TOKEN_CLASS_46_QUERY_FAILED",error);
     Check((string)Call("TokenQueryCode",29,"QUERY_UNAVAILABLE")=="TOKEN_CLASS_29_QUERY_UNAVAILABLE","class attribution is not hard-coded to LPAC");
+    foreach(int kind in new int[]{8,9,21,29}){
+      Check((int)Call("TokenScalarLength",kind,4)==4,"DWORD scalar has exact size");
+      Rejection("TokenScalarLength",new object[]{kind,1},"TOKEN_CLASS_"+kind+"_SCALAR_SIZE_INVALID_1",0);
+    }
+    Check(!(bool)Call("RestrictionBooleanValue",21,1,0),"measured false BOOLEAN");
+    Check((bool)Call("RestrictionBooleanValue",21,1,1),"measured true BOOLEAN");
+    foreach(int kind in new int[]{8,9,29})Rejection("RestrictionBooleanValue",new object[]{kind,1,1},"TOKEN_RESTRICTION_CLASS_INVALID",0);
+    foreach(int size in new int[]{0,2,4,65536})Rejection("RestrictionBooleanValue",new object[]{21,size,1},"TOKEN_CLASS_21_BOOLEAN_SIZE_INVALID_"+size,0);
+    foreach(int value in new int[]{-1,2,255,256})Rejection("RestrictionBooleanValue",new object[]{21,1,value},"TOKEN_CLASS_21_BOOLEAN_VALUE_INVALID",0);
     IntPtr token;Check(OpenProcessToken(GetCurrentProcess(),8,out token),"open only own current-process token with TOKEN_QUERY");
     try{
+      var restriction=(IDictionary<string,object>)Call("QueryRestrictions",token);
+      Check((string)restriction["api"]=="GetTokenInformation"&&(int)restriction["informationClass"]==21&&(string)restriction["encoding"]=="BOOLEAN-1","fixed class21 API and encoding");
+      Check((int)restriction["returnedBytes"]==1,"measured byte count retained");
+      IntPtr direct=Marshal.AllocHGlobal(4);
+      try{
+        Marshal.WriteInt32(direct,0);int returned;
+        Check(GetTokenInformation(token,21,direct,4,out returned)&&returned==1,"independent fixed current-token query");
+        Check((bool)restriction["value"]==(Marshal.ReadByte(direct)==1),"production reader agrees with independent measured Boolean");
+      }finally{Marshal.FreeHGlobal(direct);}
       foreach(int kind in new int[]{8,29,30,31,46}){
         int needed;bool sized=GetTokenInformation(token,kind,IntPtr.Zero,0,out needed);int error=Marshal.GetLastWin32Error();
         object[] args=new object[]{token,kind,0};IntPtr data=IntPtr.Zero;

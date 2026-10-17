@@ -6,6 +6,7 @@
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "operation", "stage", "code", "nativeCode", "bootstrapPassed", "cleanupVerified", "probePassed", "providerReady", "profileCreated"],
+  "allOf": [{"anyOf": [{"properties": {"bootstrapPassed": {"const": false}}}, {"required": ["lpacTokenProof"]}]}],
   "properties": {
     "schemaVersion": {"const": 1},
     "operation": {"const": "claude-lpac-bootstrap-gate"},
@@ -17,6 +18,8 @@
     "probePassed": {"const": false},
     "providerReady": {"const": false},
     "profileCreated": {"type": ["boolean", "null"]},
+    "lpacTokenProof": {"$ref": "#/$defs/lpacTokenProof"},
+    "clrActivationLogs": {"$ref": "#/$defs/clrActivationLogs"},
     "executionSwitch": {"const": "--execute-approved-w0-gate"},
     "runNonceFormat": {"const": "32 lowercase hex"},
     "fixtureName": {"const": "claude-lpac-fixture.exe"},
@@ -50,6 +53,89 @@
     "cases": {"type": "array", "maxItems": 13, "items": {"$ref": "#/$defs/case"}}
   },
   "$defs": {
+    "clrActivationLog": {
+      "$comment": "Diagnostic bytes only, never commands or authority. Consumers must decode the bounded base64 and check its byte count and SHA; JSON Schema does not prove their equality.",
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceBasename", "sourceFileId", "bytes", "sha256", "rawBase64"],
+      "properties": {
+        "sourceBasename": {"type": "string", "pattern": "^claude-lpac-fixture\\.exe\\.CLRLoad[0-9]{2}\\.log$", "minLength": 37, "maxLength": 37},
+        "sourceFileId": {"type": "string", "pattern": "^[a-f0-9]{8}:[a-f0-9]{16}$", "minLength": 25, "maxLength": 25},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$", "minLength": 64, "maxLength": 64},
+        "rawBase64": {"type": "string", "maxLength": 87384, "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$", "not": {"pattern": "[\\r\\n]"}}
+      }
+    },
+    "clrActivationLogs": {
+      "$comment": "At most two 64KiB source files (128KiB total); limits concern collection, not a hard shim write quota. Absent/error is not an activation cause or pass. Present only after an identity launch reached collection; historical results remain readable.",
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "scope", "status", "code", "interpretation", "logs"],
+      "properties": {
+        "schemaVersion": {"const": 1}, "scope": {"const": "identity-child-owned-tmp"},
+        "status": {"enum": ["captured", "absent", "error"]}, "code": {"$ref": "#/$defs/code"},
+        "interpretation": {"const": "diagnostic-only-not-root-cause-or-pass"},
+        "logs": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/clrActivationLog"}}
+      },
+      "oneOf": [
+        {"properties": {"status": {"const": "captured"}, "code": {"const": "CLR_LOGS_CAPTURED"}, "logs": {"minItems": 1}}},
+        {"properties": {"status": {"const": "absent"}, "code": {"const": "CLR_LOGS_ABSENT"}, "logs": {"maxItems": 0}}},
+        {"properties": {"status": {"const": "error"}, "code": {"not": {"enum": ["CLR_LOGS_CAPTURED", "CLR_LOGS_ABSENT"]}}, "logs": {"maxItems": 0}}}
+      ]
+    },
+    "accessControl": {
+      "type": "object", "additionalProperties": false,
+      "required": ["functionSucceeded", "accessStatus", "grantedMask", "nativeCode", "privilegeSetCapacity", "privilegeSetReturnedBytes", "privilegeCount"],
+      "properties": {
+        "functionSucceeded": {"const": true}, "accessStatus": {"const": true},
+        "grantedMask": {"enum": [2, 3]}, "nativeCode": {"const": 0},
+        "privilegeSetCapacity": {"const": 4096},
+        "privilegeSetReturnedBytes": {"type": "integer", "minimum": 8, "maximum": 4096},
+        "privilegeCount": {"const": 0}
+      }
+    },
+    "ownerAccessControl": {"allOf": [{"$ref": "#/$defs/accessControl"}, {"properties": {"grantedMask": {"const": 3}}}]},
+    "lpacAccessControl": {"allOf": [{"$ref": "#/$defs/accessControl"}, {"properties": {"grantedMask": {"const": 2}}}]},
+    "class46Observation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["api", "informationClass", "capacity", "queryUnavailable", "nativeCode", "returnedBytes", "value"],
+      "properties": {
+        "api": {"const": "GetTokenInformation"}, "informationClass": {"const": 46}, "capacity": {"const": 4},
+        "queryUnavailable": {"type": "boolean"}, "nativeCode": {"enum": [0, 87]},
+        "returnedBytes": {"enum": [null, 4]}, "value": {"enum": [null, 1]}
+      },
+      "oneOf": [
+        {"properties": {"queryUnavailable": {"const": true}, "nativeCode": {"const": 87}, "returnedBytes": {"const": null}, "value": {"const": null}}},
+        {"properties": {"queryUnavailable": {"const": false}, "nativeCode": {"const": 0}, "returnedBytes": {"const": 4}, "value": {"const": 1}}}
+      ]
+    },
+    "hasRestrictionsQuery": {
+      "type": "object", "additionalProperties": false,
+      "required": ["api", "informationClass", "returnedBytes", "encoding", "validationScope", "value"],
+      "properties": {
+        "api": {"const": "GetTokenInformation"}, "informationClass": {"const": 21},
+        "returnedBytes": {"const": 1}, "encoding": {"const": "BOOLEAN-1"},
+        "validationScope": {"const": "measured-host-abi-v1"}, "value": {"type": "boolean"}
+      }
+    },
+    "lpacTokenProof": {
+      "type": "object", "additionalProperties": false,
+      "required": ["appContainerSid", "ownerSidMatched", "capabilityCount", "lowIntegrity", "primaryToken", "hasRestrictions", "hasRestrictionsQuery", "validationMethod", "referenceRevision", "ownerControl", "lpacAccess", "class46", "lpac"],
+      "oneOf": [
+        {"properties": {"hasRestrictions": {"const": false}, "hasRestrictionsQuery": {"properties": {"value": {"const": false}}}}},
+        {"properties": {"hasRestrictions": {"const": true}, "hasRestrictionsQuery": {"properties": {"value": {"const": true}}}}}
+      ],
+      "properties": {
+        "appContainerSid": {"type": "string", "minLength": 1, "maxLength": 184, "pattern": "^S-1-15-2(?:-[0-9]{1,10}){7}$"},
+        "ownerSidMatched": {"const": true}, "capabilityCount": {"const": 0},
+        "lowIntegrity": {"const": true}, "primaryToken": {"const": true},
+        "hasRestrictions": {"type": "boolean"}, "lpac": {"const": true},
+        "hasRestrictionsQuery": {"$ref": "#/$defs/hasRestrictionsQuery"},
+        "validationMethod": {"const": "chromium-access-check-v1"},
+        "referenceRevision": {"const": "5c210565c3fa181730df37778d22af487a0d5e40"},
+        "ownerControl": {"$ref": "#/$defs/ownerAccessControl"},
+        "lpacAccess": {"$ref": "#/$defs/lpacAccessControl"},
+        "class46": {"$ref": "#/$defs/class46Observation"}
+      }
+    },
     "code": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Z][A-Z0-9_]*$"},
     "nativeCode": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
     "pathOrNull": {"type": ["string", "null"], "maxLength": 32768},
