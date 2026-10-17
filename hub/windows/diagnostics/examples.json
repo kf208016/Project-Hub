@@ -1,0 +1,136 @@
+{
+  "request": {
+    "schemaVersion": 1,
+    "kind": "project-hub-clr-host-request-v1",
+    "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtimeVersion": "v4.0.30319"
+  },
+  "description": {
+    "schemaVersion": 1,
+    "kind": "project-hub-clr-host-description-v1",
+    "nativeExecution": false,
+    "runtimeVersion": "v4.0.30319",
+    "pythonVersion": "3.12.14",
+    "architecture": "Windows AMD64",
+    "maxRequestBytes": 1024,
+    "nativeFlag": "--run-native-diagnostic",
+    "nonceScope": "binding-only; one call per runner; no cross-process replay ledger",
+    "readinessVerified": false
+  },
+  "fakeSuccess": {
+    "schemaVersion": 1,
+    "kind": "project-hub-clr-host-result-v1",
+    "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtimeVersion": "v4.0.30319",
+    "evidenceKind": "fake-backend",
+    "status": "completed",
+    "stage": "stop",
+    "hresult": "0x00000000",
+    "classification": "succeeded",
+    "steps": [
+      {
+        "stage": "create_instance",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      },
+      {
+        "stage": "get_runtime",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      },
+      {
+        "stage": "get_interface",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      },
+      {
+        "stage": "start",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      },
+      {
+        "stage": "stop",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      }
+    ],
+    "releases": [
+      {
+        "interface": "host",
+        "status": "released"
+      },
+      {
+        "interface": "runtime",
+        "status": "released"
+      },
+      {
+        "interface": "meta",
+        "status": "released"
+      }
+    ],
+    "clrStarted": true,
+    "stopAttempted": true,
+    "interfacesReleased": true,
+    "providerExecuted": false,
+    "lpacVerified": false
+  },
+  "fakeStartFailure": {
+    "schemaVersion": 1,
+    "kind": "project-hub-clr-host-result-v1",
+    "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtimeVersion": "v4.0.30319",
+    "evidenceKind": "fake-backend",
+    "status": "failed",
+    "stage": "start",
+    "hresult": "0x80004005",
+    "classification": "unknown_failure",
+    "steps": [
+      {
+        "stage": "create_instance",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      },
+      {
+        "stage": "get_runtime",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      },
+      {
+        "stage": "get_interface",
+        "hresult": "0x00000000",
+        "classification": "succeeded"
+      },
+      {
+        "stage": "start",
+        "hresult": "0x80004005",
+        "classification": "unknown_failure"
+      }
+    ],
+    "releases": [
+      {
+        "interface": "host",
+        "status": "released"
+      },
+      {
+        "interface": "runtime",
+        "status": "released"
+      },
+      {
+        "interface": "meta",
+        "status": "released"
+      }
+    ],
+    "clrStarted": false,
+    "stopAttempted": false,
+    "interfacesReleased": true,
+    "providerExecuted": false,
+    "lpacVerified": false
+  },
+  "refusal": {
+    "schemaVersion": 1,
+    "kind": "project-hub-clr-host-refusal-v1",
+    "stage": "admission",
+    "code": "REQUEST_FIELDS_INVALID",
+    "nativeExecution": false
+  }
+}

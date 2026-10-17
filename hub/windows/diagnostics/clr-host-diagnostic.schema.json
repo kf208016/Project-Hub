@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:project-hub:clr-host-diagnostic:v1",
+  "title": "Offline-review CLR native-entry diagnostic candidate",
+  "$comment": "No execution grant or cross-process replay protection. Structural schema does not attest API execution, LPAC, cleanup, or provider readiness. stdin UTF-8 is separately capped at 1024 bytes before decoding.",
+  "oneOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/description" },
+    { "$ref": "#/$defs/refusal" }
+  ],
+  "$defs": {
+    "nonce": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[0-9a-f]{64}$", "not": { "const": "0000000000000000000000000000000000000000000000000000000000000000" } },
+    "hresult": { "oneOf": [{ "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^0x[0-9A-F]{8}$" }, { "type": "null" }] },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "nonce", "runtimeVersion"],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "kind": { "const": "project-hub-clr-host-request-v1" },
+        "nonce": { "$ref": "#/$defs/nonce" },
+        "runtimeVersion": { "const": "v4.0.30319" }
+      }
+    },
+    "step": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stage", "hresult", "classification"],
+      "properties": {
+        "stage": { "enum": ["create_instance", "get_runtime", "get_interface", "start", "stop"] },
+        "hresult": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^0x[0-9A-F]{8}$" },
+        "classification": { "enum": ["succeeded", "hresult_failure", "unknown_failure"] }
+      }
+    },
+    "release": {
+      "type": "object", "additionalProperties": false,
+      "required": ["interface", "status"],
+      "properties": {
+        "interface": { "enum": ["host", "runtime", "meta"] },
+        "status": { "enum": ["released", "release_failed"] }
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "nonce", "runtimeVersion", "evidenceKind", "status", "stage", "hresult", "classification", "steps", "releases", "clrStarted", "stopAttempted", "interfacesReleased", "providerExecuted", "lpacVerified"],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "kind": { "const": "project-hub-clr-host-result-v1" },
+        "nonce": { "$ref": "#/$defs/nonce" },
+        "runtimeVersion": { "const": "v4.0.30319" },
+        "evidenceKind": { "enum": ["fake-backend", "native-api"] },
+        "status": { "enum": ["completed", "failed"] },
+        "stage": { "enum": ["backend_load", "create_instance", "get_runtime", "get_interface", "start", "stop", "release"] },
+        "hresult": { "$ref": "#/$defs/hresult" },
+        "classification": { "enum": ["native_backend_unavailable", "native_module_path_rejected", "native_call_failed", "backend_contract_invalid", "interface_missing", "succeeded", "hresult_failure", "unknown_failure", "release_incomplete"] },
+        "steps": { "type": "array", "maxItems": 5, "items": { "$ref": "#/$defs/step" } },
+        "releases": { "type": "array", "maxItems": 3, "items": { "$ref": "#/$defs/release" } },
+        "clrStarted": { "type": "boolean" },
+        "stopAttempted": { "type": "boolean" },
+        "interfacesReleased": { "type": "boolean" },
+        "providerExecuted": { "const": false },
+        "lpacVerified": { "const": false }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } } },
+          "then": { "properties": {
+            "stage": { "const": "stop" }, "classification": { "const": "succeeded" },
+            "hresult": { "type": "string", "pattern": "^0x[0-7][0-9A-F]{7}$" },
+            "clrStarted": { "const": true }, "stopAttempted": { "const": true },
+            "interfacesReleased": { "const": true },
+            "steps": { "minItems": 5 },
+            "releases": { "minItems": 3, "items": { "properties": { "status": { "const": "released" } } } }
+          } }
+        },
+        {
+          "if": { "properties": { "clrStarted": { "const": false } } },
+          "then": { "properties": { "stopAttempted": { "const": false } } },
+          "else": { "properties": { "stopAttempted": { "const": true } } }
+        }
+      ]
+    },
+    "description": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "nativeExecution", "runtimeVersion", "pythonVersion", "architecture", "maxRequestBytes", "nativeFlag", "nonceScope", "readinessVerified"],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "kind": { "const": "project-hub-clr-host-description-v1" },
+        "nativeExecution": { "const": false }, "runtimeVersion": { "const": "v4.0.30319" },
+        "pythonVersion": { "const": "3.12.14" }, "architecture": { "const": "Windows AMD64" },
+        "maxRequestBytes": { "const": 1024 }, "nativeFlag": { "const": "--run-native-diagnostic" },
+        "nonceScope": { "const": "binding-only; one call per runner; no cross-process replay ledger" },
+        "readinessVerified": { "const": false }
+      }
+    },
+    "refusal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "kind", "stage", "code", "nativeExecution"],
+      "properties": {
+        "schemaVersion": { "type": "integer", "const": 1 },
+        "kind": { "const": "project-hub-clr-host-refusal-v1" }, "stage": { "const": "admission" },
+        "nativeExecution": { "const": false },
+        "code": { "enum": ["DUPLICATE_JSON_KEY", "JSON_INVALID", "REQUEST_FIELDS_INVALID", "REQUEST_VERSION_INVALID", "REQUEST_KIND_INVALID", "NONCE_INVALID", "RUNTIME_VERSION_INVALID", "REQUEST_SIZE_INVALID", "RUNTIME_IDENTITY_INVALID", "PLATFORM_UNSUPPORTED", "PYTHON_VERSION_UNSUPPORTED", "PYTHON_ISOLATION_REQUIRED", "AMBIENT_CLR_ENVIRONMENT_REJECTED", "BACKEND_CONTRACT_INVALID", "EXPLICIT_FLAG_REQUIRED", "RUNNER_ALREADY_USED", "INPUT_UNAVAILABLE", "ARGUMENTS_INVALID"] }
+      }
+    }
+  }
+}

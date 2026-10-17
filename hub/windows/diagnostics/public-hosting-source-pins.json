@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "project-hub-public-clr-hosting-source-pins-v1",
+  "repository": "https://github.com/microsoft/win32metadata",
+  "commit": "0f012441d654d3bb7de898fdc664b5fcad52bdcc",
+  "hashBasis": "Full fetched ASCII/LF source bytes; no normalization applied",
+  "files": [
+    {
+      "path": "generation/WinSDK/RecompiledIdlHeaders/um/metahost.h",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/0f012441d654d3bb7de898fdc664b5fcad52bdcc/generation/WinSDK/RecompiledIdlHeaders/um/metahost.h",
+      "bytes": 80113,
+      "sha256": "0a1b1a6f98eab20c3439b3b68437c7a215594dd8af753fc55017855f18003af9",
+      "declarations": {
+        "CLRCreateInstance": "178; typedef/signature 194-197",
+        "CLSID_CLRMetaHost": "181",
+        "IID_ICLRMetaHost": "180",
+        "IID_ICLRRuntimeInfo": "186",
+        "ICLRMetaHostVtbl": "279-307",
+        "ICLRRuntimeInfoVtbl": "1009-1088"
+      }
+    },
+    {
+      "path": "generation/WinSDK/RecompiledIdlHeaders/um/mscoree.h",
+      "url": "https://raw.githubusercontent.com/microsoft/win32metadata/0f012441d654d3bb7de898fdc664b5fcad52bdcc/generation/WinSDK/RecompiledIdlHeaders/um/mscoree.h",
+      "bytes": 292182,
+      "sha256": "6c4710c5cde0809360c0094f390c2c53e251c99486f3d35f26339af4590f284c",
+      "declarations": {
+        "CLSID_CLRRuntimeHost": "530",
+        "IID_ICLRRuntimeHost": "565; MIDL 7426",
+        "ICLRRuntimeHostVtbl": "7491-7517"
+      }
+    }
+  ],
+  "publicGUIDs": {
+    "CLSID_CLRMetaHost": "9280188d-0e8e-4867-b30c-7fa83884e8de",
+    "IID_ICLRMetaHost": "d332db9e-b9b3-4125-8207-a14884f53216",
+    "IID_ICLRRuntimeInfo": "bd39d1d2-ba2f-486a-89b0-b4b0cb466891",
+    "CLSID_CLRRuntimeHost": "90f1a06e-7712-4762-86b5-7a5eba6bdb02",
+    "IID_ICLRRuntimeHost": "90f1a06c-7712-4762-86b5-7a5eba6bdb02"
+  },
+  "vtableSlots": {"GetRuntime": 3, "GetInterface": 9, "Start": 3, "Stop": 4, "Release": 2},
+  "runtimeEvidence": false
+}
