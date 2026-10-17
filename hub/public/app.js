@@ -1082,7 +1082,7 @@ function syncChatPhoneLabels() {
 }
 function workMode() { try { return localStorage.getItem('hub-mode') === 'term' ? 'term' : 'chat'; } catch (e) { return 'chat'; } }
 function setMode(m) { try { localStorage.setItem('hub-mode', m); } catch (e) { /* 無視 */ } render(); }
-const EMPTY_CHAT = () => state.windowsBrowser ? UI`<div class="chat-empty"><span class="empty-kicker">PROJECT HUB</span><h3>從一個清楚的需求開始</h3><p>選擇 AI，寫下要完成的事。<br>Codex 可在此執行；網頁 AI 會先開啟手動交接。</p></div>` : UI`<p class="chat-empty">ここで AI と話します。<br>下で答える AI とモデルを選び、依頼を書いて送ってください（⌘ + Enter でも送れます）。<br>途中で AI を変えると、それまでの会話を自動で引き継ぎます。ファイルやスクショは、ここに落とすか ⌘V で貼れます。</p>`;
+const EMPTY_CHAT = () => state.windowsBrowser ? UI`<div class="chat-empty"><span class="empty-kicker">PROJECT HUB</span><h3>明確な依頼から始めましょう</h3><p>AI を選び、やりたいことを書いてください。<br>Codex はここで実行できます。Web AI は手動引き継ぎを開きます。</p></div>` : UI`<p class="chat-empty">ここで AI と話します。<br>下で答える AI とモデルを選び、依頼を書いて送ってください（⌘ + Enter でも送れます）。<br>途中で AI を変えると、それまでの会話を自動で引き継ぎます。ファイルやスクショは、ここに落とすか ⌘V で貼れます。</p>`;
 // 選ぶ欄に出すモデル（設定で隠したものは出さない。ただし今選んでいるものは残す）
 function orderedModels() { return ModelOrder.ordered(state.roles.models, state.modelOrder); }
 function shownModels(key, ...keep) {

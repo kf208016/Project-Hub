@@ -11,6 +11,28 @@ test('HTTP failure preserves the actual server diagnostic as an opaque value; on
 
 test('Fresh Windows installation offers the real project creation route in TC without requiring a shell setup',()=>{const a=app();a.context.renderEmpty();const html=a.element('#main').innerHTML;assert.match(html,/尚未建立專案/);assert.match(html,/data-go="newproject"/);assert.match(html,/新增專案/);assert.match(html,/確認工作範圍與連線目的地/);assert.doesNotMatch(html,/bash|setup\.sh/);vm.runInContext('state.windowsBrowser=false',a.context);a.context.renderEmpty();assert.match(a.element('#main').innerHTML,/bash setup\.sh/);});
 
-test('Chat empty guidance resolves the language at render time after asynchronous catalogs arrive',()=>{locale.setLocale('ja');const a=app();assert.match(vm.runInContext('EMPTY_CHAT()',a.context),/ここで AI と話します/);locale.setLocale('zh-TW');const text=vm.runInContext('EMPTY_CHAT()',a.context);assert.match(text,/在這裡與 AI 對話/);assert.match(text,/請在下方選擇回答的 AI 與模型/);assert.doesNotMatch(text,/ここで|ください|⌘/);const html=a.context.chatHtml(a.p,a.p.tasks[0]);assert.match(html,/在這裡與 AI 對話/);});
+test('Chat empty guidance resolves the language at render time after asynchronous catalogs arrive',()=>{
+ const before=locale.locale;
+ try{
+  locale.setLocale('ja');const a=app();
+  const japanese=vm.runInContext('EMPTY_CHAT()',a.context);
+  assert.match(japanese,/<span class="empty-kicker">PROJECT HUB<\/span><h3>明確な依頼から始めましょう<\/h3>/);
+  assert.match(japanese,/AI を選び、やりたいことを書いてください。/);
+  assert.match(japanese,/Codex はここで実行できます。Web AI は手動引き継ぎを開きます。/);
+  assert.doesNotMatch(japanese,/從一個|選擇 AI|網頁 AI/);
+  locale.setLocale('zh-TW');const text=vm.runInContext('EMPTY_CHAT()',a.context);
+  assert.match(text,/<span class="empty-kicker">PROJECT HUB<\/span><h3>從一個清楚的需求開始<\/h3>/);
+  assert.match(text,/選擇 AI，寫下要完成的事。/);
+  assert.match(text,/Codex 可在此執行；網頁 AI 會先開啟手動交接。/);
+  assert.doesNotMatch(text,/ここで|ください|⌘/);
+  assert.match(a.context.chatHtml(a.p,a.p.tasks[0]),/從一個清楚的需求開始/);
+  // The existing non-Windows guidance still resolves the selected language.
+  vm.runInContext('state.windowsBrowser=false',a.context);locale.setLocale('ja');
+  assert.match(vm.runInContext('EMPTY_CHAT()',a.context),/ここで AI と話します/);
+  locale.setLocale('zh-TW');const legacy=vm.runInContext('EMPTY_CHAT()',a.context);
+  assert.match(legacy,/在這裡與 AI 對話/);assert.match(legacy,/請在下方選擇回答的 AI 與模型/);
+  assert.doesNotMatch(legacy,/ここで|ください|⌘/);
+ }finally{locale.setLocale(before);}
+});
 
 test('Stop action remains an imperative and is not translated as the stopped task state',()=>{const a=app();const html=a.context.chatHtml(a.p,a.p.tasks[0]);assert.match(html,/id="chat-stop"[^>]*>停止<\/button>/);assert.doesNotMatch(html,/id="chat-stop"[^>]*>已停止/);assert.equal(locale.L('停止'),'已停止');});

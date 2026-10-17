@@ -561,5 +561,8 @@
   "Windows 原生 Codex の会話と ConPTY ターミナル。Claude／Agy／Grok CLI は未検証。ChatGPT／Claude Chat は手動引き継ぎです。": "Windows 原生 Codex 對話與 ConPTY 終端機；Claude／Agy／Grok CLI 尚未驗證，ChatGPT／Claude Chat 使用手動交接。",
   "Codex の会話は利用できます。node-pty 原生部品がないため、ターミナルは開けません。": "Codex 對話可用；缺少 node-pty 原生元件，無法開啟終端機。",
   "この作業は手動引き継ぎです。上の Web Chat ボタンでプレビューと確認を行い、Web サイトに自分で貼って送信してください。": "此作業使用手動交接。請按上方 Web Chat 按鈕預覽並確認，再自行貼到網站送出。",
-  "依頼": "需求"
+  "依頼": "需求",
+  "明確な依頼から始めましょう": "從一個清楚的需求開始",
+  "AI を選び、やりたいことを書いてください。": "選擇 AI，寫下要完成的事。",
+  "Codex はここで実行できます。Web AI は手動引き継ぎを開きます。": "Codex 可在此執行；網頁 AI 會先開啟手動交接。"
 }
