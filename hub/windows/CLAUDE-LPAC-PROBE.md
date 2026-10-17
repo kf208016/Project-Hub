@@ -13,7 +13,7 @@
 
 request 的六個欄位是 `schemaVersion:1`、`operation:'claude-lpac-bootstrap-gate'`、32 lowercase hex `runNonce`、已存在且 owner 相符的 NTFS `rootParent`、固定檔名 `claude-lpac-fixture.exe` 的 `fixturePath` 與其完整 `fixtureSHA256`。SHA 是本批本機編譯產物綁定，不是發行者簽章或外部 attestation。
 
-同一 nonce 的 root／journal 已存在就拒絕；失敗不能換 nonce 自動重跑。執行入口保留 bootstrap 名稱以固定 request contract，實際結果仍須逐 case 判讀，不能把 bootstrap 成功當 W0 全部通過。
+同一 nonce 的 root／journal 已存在就拒絕；不能以換 nonce 隱藏清理未知或繞過預算。根因已修正、前次相關資源清理已確認且仍在既有授權範圍內時，可依設計規格 §9 接續新的獨立有界 attempt，不需使用者逐次說「繼續」。原「不自動重跑」是 Codex 的方案措辭，不是使用者直接提出的禁止。執行入口保留 bootstrap 名稱以固定 request contract，實際結果仍須逐 case 判讀，不能把 bootstrap 成功當 W0 全部通過。
 
 ## 首指令前與後代
 
@@ -48,7 +48,7 @@ node --test hub/test/claude-lpac-probe-native.test.js
 
 ## 2026-10-17 實測紀錄
 
-唯一 profile 批次以 `ab2d65a` 來源編譯，成功建立 profile 後在 fixture 啟動前因上述 SDDL bookkeeping 比較停止，`ACL_VERIFY_FAILED`。Delete API 返回成功，精確 profile folder 及其 package parent 事後查無；registry storage 未先捕捉，因此 `cleanupVerified:false / PROFILE_REGISTRY_CLEANUP_UNKNOWN`，保留新合成根與 journal。12 個 native cases 均未量測，沒有執行 fixture、模型或 auth 流程，沒有重試或建立第二個 profile。
+`run-01` 的單一 profile 批次以 `ab2d65a` 來源編譯，成功建立 profile 後在 fixture 啟動前因上述 SDDL bookkeeping 比較停止，`ACL_VERIFY_FAILED`。Delete API 返回成功，精確 profile folder 及其 package parent 事後查無；registry storage 未先捕捉，因此 `cleanupVerified:false / PROFILE_REGISTRY_CLEANUP_UNKNOWN`，保留新合成根與 journal。12 個 native cases 均未量測，沒有執行 fixture、模型或 auth 流程，該 attempt 沒有重試或建立第二個 profile。
 
 獨立 Claude 靜態快照的版本／bytes／SHA 與固定值一致、前後快照相同；執行檔有兩個 NTFS hard links，不符合此批 nlink=1 條件，靜態 gate 失敗。這個條件失敗本身不是已知漏洞的證明。本批整體 `probePassed:false / providerReady:false`；後續純記憶體回歸修正不改寫這次原始失敗結果，也不代表修後配置已實機重驗。
 

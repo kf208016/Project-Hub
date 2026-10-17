@@ -1,6 +1,6 @@
 # Claude Windows 原生後端：第一批離線隔離驗證
 
-日期：2026-10-17（Asia/Taipei）。狀態：**使用者已核准並執行唯一一次 profile 批次；在 fixture 啟動前因 `ACL_VERIFY_FAILED` 停止，native cases 全部未量測。Delete API 返回成功且精確 profile folder 消失，但 registry storage 尚未捕捉，`cleanupVerified:false`；保留合成根與 journal，沒有自動重試。本批未通過，provider 維持 blocked。**
+日期：2026-10-17（Asia/Taipei）。狀態：**原 run-01 在 fixture 啟動前因 `ACL_VERIFY_FAILED` 停止，registry cleanup unknown 保留；其後獨立 run-02 已越過 ACL 並確認自身完整清理，但在 token gate 停止，12 個 native cases 仍未量測。W0 未通過，provider 維持 blocked。重測規則及其來源更正見 §9，不將 Codex 提出的限制歸為使用者原話。**
 
 ## 1. 目的、既有授權與本次差異
 
@@ -8,7 +8,7 @@
 
 沿用已核准的 `2026-10-09-multi-provider-cli-web-chat-design.md` §7、§8.2–8.3，以及 `2026-10-10-multi-provider-cli-web-chat-implementation.md` §12 的 adapter／協定／拒絕測試與原執行方式。這些工作不重新審核功能方向；10/13 的 Linux／SSH 補充也沒有取消原生 Windows 候選。
 
-新差異是將 Windows 候選落成 **LPAC＋owned Job** 的具體、無模型離線探針。`CreateAppContainerProfile` 會建立目前 Windows 使用者的 app 專用資料夾及 registry storage；這超出僅讀原碼與離線 JSON fixture，須先審閱本範圍。此補充只涵蓋第一批 W0，沒有授權完整原生 Claude 自動執行、登入、模型呼叫或較弱 C 模式。
+新差異是將 Windows 候選落成 **LPAC＋owned Job** 的具體、無模型離線探針。`CreateAppContainerProfile` 會建立目前 Windows 使用者的 app 專用資料夾及 registry storage；這超出僅讀原碼與離線 JSON fixture，須先審閱本範圍。此補充只涵蓋 W0 及 §9 的同範圍有界重測，沒有授權完整原生 Claude 自動執行、登入、模型呼叫或較弱 C 模式。
 
 ## 2. 現況與不能繼承的證據
 
@@ -60,7 +60,7 @@ W0 是候選可行性量測，不是宣稱 LPAC 已足以承載完整 Claude。�
 
 本批僅執行可信 fixture，不執行 Claude 或其他 vendor CLI。fixture 固定寫入合計不超過 4 MiB 合成檔；新 temp **及 profile** 的 admission 軟預算為 128 MiB，開始前留足收尾空間，執行中超預算即停止。量測與逾限停止不是強制磁碟配額，不能承諾最高實際寫入量，也不能用來通過不可信 CLI 的 worker 資源 gate。
 
-固定 case manifest 定義所有起始及重試：整批最多 6 分鐘、controller 啟動的 case 根程序最多 12 次，包含後代與無關對照的成功程序起始合計最多 32 次，所有成功／失敗起始嘗試合計最多 48 次；不自動重試。每 case 使用新的 owned Job，同時最多 8 程序；無關對照在另一個精確管理的 Job 中。建立前先預留該 case 的最壞嘗試數，不足就列未量測，不執行半個 case 後補成功。temp／profile 清理不明也不宣稱已回收磁碟。
+固定 case manifest 定義所有起始及重試：每批最多 6 分鐘、controller 啟動的 case 根程序最多 12 次，包含後代與無關對照的成功程序起始合計最多 32 次，所有成功／失敗起始嘗試合計最多 48 次；不在同一 attempt 內隱含重放，修正後的獨立有界重測依 §9。每 case 使用新的 owned Job，同時最多 8 程序；無關對照在另一個精確管理的 Job 中。建立前先預留該 case 的最壞嘗試數，不足就列未量測，不執行半個 case 後補成功。temp／profile 清理不明也不宣稱已回收磁碟。
 
 ## 5. 固定探針與成功／拒絕條件
 
@@ -98,7 +98,7 @@ W0 通過後也不直接啟用或執行 Claude。下一個可執行 profile 仍�
 
 接線沿既有 `/api/chat/send → nativeStartDir → ChatRunner`、browser-only approval、queue／transcript、WorkspaceRuntime、reviewed merge 與安裝回復；不新建通用管理平台。逐項啟用必須有功能及拒絕證據，不將人工網頁 Chat 或 standalone CLI 成功當成完整 adapter。
 
-若 W0 失敗，交付受測配置、失敗操作及尚未提供的能力，停止該候選；依證據決定修正 Windows 配置或採既有 Linux 選配，不自動增加權限或換 backend。
+若 W0 失敗，記錄受測配置、失敗操作及尚未提供的能力，停止該候選的本次執行，再依 §9 繼續根因定位與受控修正重測；依證據決定修正 Windows 配置或採既有 Linux 選配，不自動增加權限或換 backend。
 
 ## 8. 本次審閱事項與文件依據
 
@@ -113,3 +113,17 @@ W0 通過後也不直接啟用或執行 Claude。下一個可執行 profile 仍�
 - [DeleteAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-deleteappcontainerprofile)：API 成功碼不能單獨作為 storage 已清理證據。
 - [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)：程序／資源管理與後代例外，不能代替檔案／網路隔離。
 - [Claude CLI reference](https://code.claude.com/docs/en/cli-reference)、[Claude shell sandbox 範圍](https://code.claude.com/docs/en/sandboxing)：實際固定版本協定仍須離線與後續真實驗證。
+
+## 9. 重測限制來源與執行更正
+
+原先「不自動重試」由 **Codex 提出並寫入方案**，不是使用者直接說過的要求。使用者曾核准整體 W0 方案；不能因此把 Codex 的措辭說成使用者原話，也不能將它擴大成每次修正後都要等待使用者再說「繼續」。本節依使用者既有高自主執行指示及本輪對來源的糾正，修正該解讀；不新增或偽造任何歷史核准。
+
+在既有可信 fixture／零模型／不增權的 W0 範圍內，採以下工程重測規則：
+
+- 有已確認的根因修正或新證據時，先記錄修正來源、重測目的及有限預算；完成相稱的離線驗證後，可以接續新的獨立 attempt。無需讓使用者逐次催促。
+- 前一受測 attempt 的 Job、profile folder、registry storage 與 owned temp 必須已確認清理，才可接續該資源的重測。歷史獨立 unknown 原樣保留，不接管、不回填成功；接續前須核對新 attempt 與其無資源交集或衝突，不能只貼上「歷史」標籤便忽略。
+- 每個 attempt 使用自己的 nonce／journal／結果，每批仍最多一個 profile、6 分鐘及原程序／記憶體／CPU／輸出預算。同一 nonce 的既有 root／journal 仍拒絕；換 nonce 不得掩蓋清理未知或繞過資源上限。
+- 相同配置、相同錯誤且沒有新證據時，不做無限盲重跑；停止該嘗試並繼續根因定位或其他已授權工作。只有明確超出現有授權的系統變更或對外行為，才提出具體差異。
+- 不增加 capability、不改普通 AppContainer／full-user、不跳過身分 gate、不自行啟動 vendor／登入／模型。重測不等於放寬通過條件。
+
+Linux R2 的一次性 grant 仍按其獨立合約消耗，不能重放已使用的 grant；此規則不推成所有 Windows 修正後重測都須重新取得使用者核准。以上執行保護須標明為工程規則，不歸因為使用者曾說「禁止自動重跑」。
