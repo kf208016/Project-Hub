@@ -6,6 +6,7 @@ const {createHash}=require('node:crypto');
 const {createProtocol,LIMITS:PROTOCOL_LIMITS}=require('./grok-protocol');
 const {canonical}=require('./claude-protocol');
 const LIMITS=Object.freeze({maxWallMs:900000,maxIdleMs:60000,maxWriteMs:10000,maxStopMs:5000,permissionTtlMs:600000,maxPromptBytes:65536,maxStderrBytes:65536,maxQueuedBytes:1048576,maxQueuedFrames:32});
+const claimedStreams=new WeakSet();
 const ID=/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 const plain=x=>x!==null&&typeof x==='object'&&!Array.isArray(x)&&[Object.prototype,null].includes(Object.getPrototypeOf(x));
 const rejected=code=>Object.assign(Error(code),{code});
@@ -24,7 +25,8 @@ function createTurnController(options){
   check(typeof endpoint.backendId==='string'&&ID.test(endpoint.backendId)&&typeof endpoint.requestStop==='function');
   const {backendId,stdin,stdout,stderr,requestStop}=endpoint;
   check(stdin instanceof Writable&&stdout instanceof Readable&&stderr instanceof Readable&&stdout!==stderr&&stdin!==stdout&&stdin!==stderr);
-  check(!stdin.destroyed&&!stdin.writableEnded&&!stdout.destroyed&&!stderr.destroyed);
+  check([stdin,stdout,stderr].every(stream=>!claimedStreams.has(stream)),'GROK_TURN_ENDPOINT_NOT_EXCLUSIVE');
+  check(!stdin.destroyed&&!stdin.writableEnded&&!stdin.writableFinished&&stdin.writableLength===0&&!stdin.writableCorked&&!stdin.writableNeedDrain&&!stdout.destroyed&&!stderr.destroyed,'GROK_TURN_ENDPOINT_NOT_EXCLUSIVE');
   for(const stream of [stdout,stderr])check(!stream.readableEnded&&!stream.readableEncoding&&stream.readableFlowing!==true&&stream.listenerCount('data')===0&&stream.listenerCount('readable')===0,'GROK_TURN_ENDPOINT_NOT_EXCLUSIVE');
   const limits={...LIMITS};
   if(options.limits!==undefined){keys(options.limits,[],Object.keys(LIMITS));for(const [key,value]of Object.entries(options.limits)){check(integer(value)&&value>=1&&value<=LIMITS[key]);limits[key]=value;}}
@@ -134,6 +136,7 @@ function createTurnController(options){
   function onStderrEnd(){safe(()=>{stderrEnded=true;try{decoder.decode();}catch{throw rejected('GROK_TURN_STDERR_UTF8');}if(stderrBytes&&!errorCode)emit({type:'stderr-observed',bytes:stderrBytes});finish();});}
   function streamError(){if(phase!=='finished')fail('GROK_TURN_STREAM_ERROR');}
   // Pausing ownership transfer cannot undo bytes already consumed by another reader.
+  for(const stream of [stdin,stdout,stderr])claimedStreams.add(stream);
   stdout.pause();stderr.pause();
   stdout.on('data',onStdout);stderr.on('data',onStderr);
   stdout.on('end',onStdoutEnd);stderr.on('end',onStderrEnd);

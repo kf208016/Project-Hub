@@ -20,7 +20,9 @@ const finalState=await turn.completion;
 
 以上 identifiers、streams、callback 與兩個不同的 opaque authority object 由可信呼叫端提供。它們不是 JSON credentials、OS 身分證明、browser authentication 或使用者核准；持有另一個新建 object 不會通過 `===` 檢查，但這項檢查也不能隔離同一 Node 程序內的惡意程式碼。尚未有產品 backend 建立此端點。
 
-backend 必須獨占 endpoint，先完成 handshake 才交接；已由其他 reader 消耗的 bytes 無法復原。不要交付設定過文字 encoding 或仍有其他 data consumer 的 streams。stdin 為 Writable，stdout/stderr 為不同 Readable，接受 raw Buffer。完成後本控制器銷毀這三個專用 streams，不能用於另一回合。持續 ACP session／resume 需要未來 backend 的獨立設計，並非本模組已提供。
+backend 必須獨占 endpoint，先完成 handshake 才交接；已由其他 reader 消耗的 bytes 無法復原。不要交付設定過文字 encoding 或仍有其他 data consumer 的 streams。stdin 為空閒 Writable，不得含 buffered bytes、cork 或尚待 drain 的 backpressure；stdout/stderr 為不同 Readable，接受 raw Buffer。
+
+所有 constructor 驗證成功後、註冊 listener 前，本模組以 WeakSet claim 三個 streams；即使尚未 `start()`，另一個 Grok controller 也不能以不同 read streams 重用同一 stdin。驗證失敗不會預佔健康 streams。此檢查只涵蓋本模組 controller 的同程序 object ownership，不是 OS 身分、browser authentication、所有 provider 共用的鎖，亦無法阻擋持有同一 stream reference 的其他惡意程式碼。backend 仍須獨占實際端點。完成後本控制器銷毀這三個專用 streams，不能用於另一回合。持續 ACP session／resume 需要未來 backend 的獨立設計，並非本模組已提供。
 
 ## 方法、訊息與順序
 

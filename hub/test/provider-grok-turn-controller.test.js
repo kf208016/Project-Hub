@@ -149,6 +149,28 @@ test('endpoint ownership rejects text decoding, existing readers and flowing str
     assert.throws(()=>createTurnController(f.options),e=>e.code==='GROK_TURN_ENDPOINT_NOT_EXCLUSIVE');f.stdin.destroy();f.stdout.destroy();f.stderr.destroy();
   }
 });
+test('two controllers cannot claim the same Writable before either start, even with distinct read streams',async()=>{
+  const a=fixture({hold:true}),b=fixture({deferCreate:true,hold:true});
+  assert.equal(a.writes.length,0);assert.equal(a.stdin.writableLength,0);
+  assert.throws(()=>createTurnController({...b.options,sessionId:'other-session',runId:'other-run',promptRequestId:18,prompt:'other synthetic prompt',endpoint:{...b.options.endpoint,stdin:a.stdin}}),e=>e.code==='GROK_TURN_ENDPOINT_NOT_EXCLUSIVE');
+  assert.equal(a.writes.length,0);assert.equal(b.writes.length,0);assert.equal(b.stdout.listenerCount('data'),0);assert.equal(b.stderr.listenerCount('data'),0);assert.equal(b.stops.length,0);
+  b.stdin.destroy();b.stdout.destroy();b.stderr.destroy();
+  a.controller.start();assert.equal(a.writes.length,1);assert.equal(JSON.parse(a.writes[0]).params.sessionId,S);a.held.shift()();await flush();a.stdout.write(wire(result()));assert.equal((await close(a)).completionKind,'reply-complete');
+});
+test('preoccupied Writable buffers, corks and outstanding backpressure are rejected before adoption',()=>{
+  for(const kind of ['buffer','cork','drain']){
+    const f=fixture({deferCreate:true,hold:kind==='buffer'||kind==='drain',backpressure:kind==='drain'});
+    if(kind==='buffer'){f.stdin.write(Buffer.from('synthetic preexisting bytes'));assert.ok(f.stdin.writableLength>0);assert.equal(f.stdin.writableNeedDrain,false);}
+    if(kind==='cork'){f.stdin.cork();assert.equal(f.stdin.writableLength,0);assert.ok(f.stdin.writableCorked>0);}
+    if(kind==='drain'){assert.equal(f.stdin.write(Buffer.from('x')),false);assert.ok(f.stdin.writableLength>0);assert.equal(f.stdin.writableNeedDrain,true);}
+    const writes=f.writes.length;assert.throws(()=>createTurnController(f.options),e=>e.code==='GROK_TURN_ENDPOINT_NOT_EXCLUSIVE');assert.equal(f.writes.length,writes);assert.equal(f.stdout.listenerCount('data'),0);assert.equal(f.stderr.listenerCount('data'),0);assert.equal(f.stops.length,0);
+    if(f.held.length)f.held.shift()();if(f.stdin.writableCorked)f.stdin.uncork();f.stdin.destroy();f.stdout.destroy();f.stderr.destroy();
+  }
+});
+test('failed constructor validation does not reserve otherwise healthy streams',async()=>{
+  const f=fixture({deferCreate:true});assert.throws(()=>createTurnController({...f.options,prompt:'\x01'.repeat(65536)}),e=>e.code==='GROK_TURN_PROMPT_FRAME_SIZE');assert.equal(f.stdout.listenerCount('data'),0);
+  f.controller=createTurnController(f.options);f.controller.start();await flush();f.stdout.write(wire(result()));assert.equal((await close(f)).completionKind,'reply-complete');
+});
 test('clock rollback cannot keep an approval alive or write a prompt with invalid clock bounds',async()=>{
   const f=fixture();f.controller.start();await flush();f.stdout.write(wire(request()));f.clock.wall--;
   assert.throws(()=>f.controller.pending(),e=>e.code==='GROK_CLOCK_INVALID');assert.equal((await close(f)).completionKind,'failed');
