@@ -10,6 +10,7 @@ const { spawn } = require('./managed-process');
 const cli = require('./cli-platform');
 const { randomUUID } = require('node:crypto');
 const launch = require('./launch');
+const providers = require('./provider-registry');
 const instructions = require('./instructions');
 const taskWrites = require('./task-write-lock');
 const { snapshot, buildHandoffCard } = require('./handoff-card');
@@ -95,6 +96,8 @@ function parseAsk(text) {
 
 // 1回分の起動のしかたを決める。rows は今回の依頼を足す前の会話
 function buildTurn({ ai, model, effort, meta, rows, text, basePrompt, policy, perm, noEffort, images = [], limitSwitch, task }) {
+  ai = providers.cliActor(ai).id;
+  if (!['codex', 'claude', 'agy'].includes(ai)) throw Object.assign(new Error('此 CLI 的 adapter 尚未接入回合規劃；未啟動'), { code: 'PROVIDER_ADAPTER_UNVERIFIED', status: 409, notStarted: true });
   const sid = meta.sessions && meta.sessions[ai];
   // Codex はモデルを変えたら新しい会話にする（再開の時にモデルを変えられるか確かでないため）
   const resume = Boolean(sid) && (ai === 'claude' || (meta.models || {})[ai] === model);

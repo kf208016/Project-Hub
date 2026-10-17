@@ -2,6 +2,8 @@
 
 `lib/providers/grok-turn-controller.js` 在既有離線 ACP codec 上提供真實 Node streams 的單回合傳輸、backpressure、人工單次核准、逾時與收尾狀態。它**不 spawn binary、不登入、不做 initialize/session new/load/model selection、不讀 auth、不呼叫模型、不提供 OS 隔離或 HTTP 核准**。Registry 仍為 `PROVIDER_ADAPTER_UNVERIFIED`，沒有新增任何 server/UI 執行入口。
 
+舊 `chat.buildTurn` planner 先用 registry 驗證 canonical CLI actor；`claude-code` 使用 Claude 的規劃分支，未知／網頁 actor 明確拒絕。Grok 尚未接入此 planner，即使提供自訂 `perm` 或 `noEffort`，仍回 `409 PROVIDER_ADAPTER_UNVERIFIED`、`notStarted:true`，不產生 Codex argv。這個 guard 不變更既有 Codex／Claude／Agy defaults、registry readiness 或 public Schema，也不代表新 turn controller 已接入 Hub。
+
 ## 可信上層契約
 
 上層執行 backend 必須先完成版本／binary 身分、provider/task/run/model permit、設定／登入與 whole-process 隔離 admission，然後提供已驗證 session 的**專用、不可共用** endpoint。沒有這個 backend，本模組沒有啟動 CLI 的方法；不能以 full-user child 取代 admission。
