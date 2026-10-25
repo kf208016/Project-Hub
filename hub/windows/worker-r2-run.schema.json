@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub fixed R2 synthetic run request",
+  "description": "One fixed synthetic case. Native and Linux admission additionally bind UID, boot, catalog, nonce replay and expiry within 120 seconds; schema validity alone is not permission or runtime evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "op",
+    "sequence",
+    "nonce",
+    "catalogSHA256",
+    "bootId",
+    "uid",
+    "case",
+    "expiresAtUnixSeconds",
+    "runtimeSeconds"
+  ],
+  "properties": {
+    "protocol": {
+      "const": 1
+    },
+    "op": {
+      "const": "run-r2-synthetic-v1"
+    },
+    "sequence": {
+      "const": 1
+    },
+    "nonce": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$",
+      "not": {
+        "const": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    },
+    "catalogSHA256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "bootId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "uid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "case": {
+      "const": "isolation-v1"
+    },
+    "expiresAtUnixSeconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "runtimeSeconds": {
+      "const": 60
+    }
+  }
+}

@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Native temporary MCP registration exact preview approval",
+  "description": "A one-minute single-use preview binds a selected process-local task capability and native config root/FileID/SHA256. TOML stores only a DPAPI credential path, never the bearer. Same-user clients share task/grant-run scope and budget, not unique thread identity. Server authority still expires/revokes independently; client reload is separate from writing a fragment. HTTP/stdio JSON is bounded to 2097152 bytes; ordinary UTF-8 files remain 204800 bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "token",
+    "confirm"
+  ],
+  "properties": {
+    "token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "confirm": {
+      "const": true
+    }
+  },
+  "$defs": {
+    "previewInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capabilityId",
+        "runId",
+        "token"
+      ],
+      "properties": {
+        "capabilityId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{16,128}$"
+        },
+        "token": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "cleanupInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registrationId",
+        "confirm"
+      ],
+      "properties": {
+        "registrationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "confirm": { "const": true }
+      }
+    },
+    "recoveryInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registrationId",
+        "expectedHash",
+        "confirm"
+      ],
+      "properties": {
+        "registrationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "expectedHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "confirm": {
+          "const": true
+        }
+      }
+    },
+    "privatePrepared": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "recordId",
+        "root",
+        "rootFingerprint",
+        "path",
+        "fileFingerprint",
+        "beforeHash",
+        "afterHash",
+        "state"
+      ],
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "recordId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "root": {
+          "type": "string"
+        },
+        "rootFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "fileFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "beforeHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "afterHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "state": {
+          "const": "prepared"
+        }
+      }
+    },
+    "credential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "capabilityId",
+        "root",
+        "runId",
+        "port",
+        "token",
+        "issuedAt",
+        "expiresAt",
+        "rootFingerprint"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "capabilityId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "root": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{16,128}$"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535
+        },
+        "token": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "issuedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rootFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

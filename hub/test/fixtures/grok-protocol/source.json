@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "repository": "xai-org/grok-build",
+  "revision": "2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8",
+  "monorepoRevision": "559751fdcec02d413e4c57c8832ab275e4f44980",
+  "fixtureProvenance": "generated-from-source",
+  "liveProtocolVerified": false,
+  "grok1050SourceMappingVerified": false,
+  "publisherSignatureVerified": false,
+  "sourceFiles": [
+    {"path":"SOURCE_REV","sha256":"ef218bf538f31e240aff551a39d6d9a6564b03bb2a75c49f309bf46015ee3030"},
+    {"path":"Cargo.lock","sha256":"73f15eb527021f73f585dad1e6903208e35c4cdca1a15b73d9a4b8c8432da692","lines":"43-64"},
+    {"path":"crates/codegen/xai-acp-lib/src/message.rs","sha256":"0854b79f14d2d4633f3cbae75e68a51cacc99bdd487049c8ffc0e466814a4e0e","lines":"130-175,358-391"},
+    {"path":"crates/codegen/xai-grok-workspace/src/permission/prompter.rs","sha256":"6d1ce216c02121260f845159af06d1486219374201beb6ab103677e218cac94b","lines":"18-33,729-755,854-864"},
+    {"path":"crates/codegen/xai-grok-shell/src/agent/mvp_agent/acp_agent.rs","sha256":"b1bc946841aef05059062de760fbaa0f46edf68f40304905b621874e0d4a56e5","lines":"130-212,1057-1065,1114-1140,1740-1874"},
+    {"path":"crates/codegen/xai-grok-shell/src/session/acp_session_impl/spawn.rs","sha256":"2bdb7c35a33d060717ab2098053cf115c5130af4f6929f0b9ff0f92256dc71cf","lines":"829-835,3012-3026"}
+  ],
+  "acpSchema": {
+    "name": "agent-client-protocol-schema",
+    "version": "0.11.4",
+    "url": "https://static.crates.io/crates/agent-client-protocol-schema/agent-client-protocol-schema-0.11.4.crate",
+    "bytes": 82591,
+    "sha256": "ca68e7e55681ce56546c0cecc6bc8f20493d24b44c6d93ec46174f310730bba2",
+    "binding": "Checksum and version from the pinned Grok Cargo.lock; source inspected, never installed or executed.",
+    "contracts": [
+      {"path":"src/client.rs","lines":"37-49,79-112,541-755"},
+      {"path":"src/tool_call.rs","lines":"24-56,165-233,380-431"},
+      {"path":"src/agent.rs","lines":"2997-3027,3088-3107"},
+      {"path":"src/rpc.rs","lines":"32-47"}
+    ]
+  },
+  "limitations": [
+    "The public source is a monorepo export; no verified mapping to the staged Grok 1.0.50 binary was found.",
+    "This closed turn subset omits initialize, authenticate, session creation/load, model selection and transport.",
+    "The enable-always-approve option can carry allow_once kind; only exact allow-once and reject-once pairs are selectable.",
+    "A prompt end_turn can accompany a blocked or unavailable model. It is not task or tool success evidence.",
+    "Client filesystem/terminal capabilities and rejecting reverse RPC do not disable the agent's own local backends.",
+    "Initialize can trigger settings, authentication, background synchronization and cleanup; it is not a harmless offline probe."
+  ]
+}

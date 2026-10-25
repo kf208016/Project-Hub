@@ -1,4 +1,7 @@
 'use strict';
+// Native Windows validates the approved provider/authority contract; original
+// POSIX integration assertions remain intact in the other branch.
+if(process.platform==='win32'){require('./helpers/native-deferred-policy').register('agy');}else{
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -20,8 +23,7 @@ const post = (url, body = {}) => fetch(base + url, { method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-Hub': '1' }, body: JSON.stringify({ ...key, ...body }) });
 const rows = () => chat.read(taskDir, key.task);
 async function reply(n) {
-  for (let i = 0; i < 100 && rows().filter(x => x.role === 'assistant').length < n; i++)
-    await new Promise(resolve => setTimeout(resolve, 30));
+  await require('./helpers/wait-hub').waitFor(()=>rows().filter(x=>x.role==='assistant').length>=n,{deadlineMs:30000});
   assert.equal(rows().filter(x => x.role === 'assistant').length, n);
   return rows().filter(x => x.role === 'assistant').at(-1);
 }
@@ -126,3 +128,5 @@ test('Agy PTY can run beside both existing providers and hand off its own screen
     assert.ok(!sessions.list().some(x => x.ai === 'agy' && x.running));
   } finally { sessions.stopAll(); }
 });
+
+}

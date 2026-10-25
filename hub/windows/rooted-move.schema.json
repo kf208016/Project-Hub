@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Private native rooted move authority and versioned snapshot",
+  "description": "An atomic namespace rename of a bound object. This does not freeze an entire tree. Partial receipts take precedence over complete receipts, and recovery verifies current object identity and tree content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "algorithm", "sourceRoot", "sourceRootFingerprint", "sourcePath", "targetRoot", "targetRootFingerprint", "targetPath", "objectId", "treeHash", "journalRoot", "journalRootFingerprint", "recordId"],
+  "properties": {
+    "version": {"const": 1},
+    "algorithm": {"const": "native-tree-v1"},
+    "sourceRoot": {"type": "string", "minLength": 4},
+    "sourceRootFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "sourcePath": {"type": "string", "minLength": 1},
+    "targetRoot": {"type": "string", "minLength": 4},
+    "targetRootFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "targetPath": {"type": "string", "minLength": 1},
+    "objectId": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "treeHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "journalRoot": {"type": "string", "minLength": 4},
+    "journalRootFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "recordId": {"type": "string", "pattern": "^[a-f0-9]{32}$"}
+  }
+}

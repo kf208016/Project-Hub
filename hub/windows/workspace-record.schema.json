@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub reviewed workspace transaction",
+  "description": "Local first-save/direct recovery facts. Browser consent is process-local, expires in ten minutes and is consumed once; this record is not a signature or OS-owner attestation. Windows index hashes bind semantic stage and -v flags; runtime rejects hidden flags and verifies tracked normalized blob visibility independently of the Git stat cache.",
+  "type": "object",
+  "required": ["version","id","at","project","task","title","taskHash","base","workRoot","mode","kind","original","execution","secrets","trackedSecrets","state","complete","error","supplied"],
+  "properties": {
+    "version":{"const":1},"id":{"type":"string","format":"uuid"},"at":{"type":"string","format":"date-time"},
+    "project":{"$ref":"#/$defs/id"},"task":{"$ref":"#/$defs/id"},"title":{"type":"string"},"taskHash":{"type":"string"},"base":{"type":"string","minLength":1},"workRoot":{"type":"string","minLength":1},
+    "mode":{"enum":["isolated","direct"]},"kind":{"enum":["non-git","unborn","git"]},
+    "original":{"$ref":"#/$defs/sourceSnapshot"},"baseSnapshot":{"$ref":"#/$defs/sourceSnapshot"},"snapshot":{"$ref":"#/$defs/snapshot"},"workingOriginal":{"anyOf":[{"type":"null"},{"type":"object","required":["dir","rootFingerprint","snapshot"],"properties":{"dir":{"type":"string"},"rootFingerprint":{"$ref":"#/$defs/hash"},"snapshot":{"$ref":"#/$defs/snapshot"}},"additionalProperties":false}]},
+    "execution":{"type":"object","required":["hooks","configHash","blockers"],"properties":{"hooks":{"type":"array"},"configHash":{"$ref":"#/$defs/hash"},"blockers":{"type":"array","items":{"type":"string"}}},"additionalProperties":true},
+    "secrets":{"type":"object","required":["rootFingerprint","files"],"properties":{"rootFingerprint":{"$ref":"#/$defs/hash"},"files":{"type":"array","maxItems":128,"items":{"type":"object","required":["relative","bytes","sha256","fileFingerprint"],"properties":{"relative":{"$ref":"#/$defs/relative"},"bytes":{"type":"integer","minimum":0,"maximum":8388608},"sha256":{"$ref":"#/$defs/hash"},"fileFingerprint":{"$ref":"#/$defs/hash"}},"additionalProperties":false}}},"additionalProperties":false},
+    "trackedSecrets":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/relative"}},"supplied":{"type":"array","items":{"type":"string","format":"uuid"}},
+    "state":{"enum":["planned","initializing","initialized","saving","saved","preparing","ready","run-active","run-closed"]},"complete":{"type":"boolean"},"error":{"type":"string"},
+    "baselineCommit":{"$ref":"#/$defs/commit"},"previousBaselines":{"type":"array","maxItems":128,"items":{"$ref":"#/$defs/commit"}},"dir":{"type":"string","minLength":1},"workingRootFingerprint":{"$ref":"#/$defs/hash"}
+  },
+  "$defs": {
+    "id":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^[^\\\\/\\u0000]+$"},"relative":{"type":"string","minLength":1,"pattern":"^(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\u0000]+$"},
+    "hash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"commit":{"type":"string","pattern":"^[a-f0-9]{40,64}$"},
+    "sourceSnapshot":{"type":"object","required":["head","branch","index","allContent"],"properties":{"head":{"anyOf":[{"type":"null"},{"$ref":"#/$defs/commit"}]},"branch":{"type":["string","null"]},"index":{"type":"string","pattern":"^(?:[a-f0-9]{64})?$"},"allContent":{"$ref":"#/$defs/hash"},"baseContent":{"$ref":"#/$defs/hash"}},"additionalProperties":false},
+    "snapshot":{"type":"object","required":["head","branch","index","allContent"],"properties":{"head":{"anyOf":[{"type":"null"},{"$ref":"#/$defs/commit"}]},"branch":{"type":["string","null"]},"index":{"type":"string","pattern":"^(?:[a-f0-9]{64})?$"},"allContent":{"$ref":"#/$defs/hash"}},"additionalProperties":false}
+  },
+  "additionalProperties": false
+}

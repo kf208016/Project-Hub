@@ -2,10 +2,12 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const source=fs.readFileSync(path.join(__dirname,'../public/app.js'),'utf8');
 const code=source.slice(source.indexOf('// 場所を押した時は開き方を選ぶ。'),source.indexOf('// コマンドなどの細かい作業を会話に出すか'));
+// The legacy Japanese assertions still need the renderer's localization globals.
+const L=text=>text,UI=(strings,...values)=>strings.reduce((out,part,index)=>out+part+(index<values.length?String(values[index]??''):''),'');
 function fixture(inApp=false) {
  const elements=new Map(),events=new Map(),calls=[],notices=[];
  const el=id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',hidden:true});return elements.get(id);};
- const ctx=vm.createContext({navigator:{userAgent:inApp?'ProjectHubApp':''},location:{href:''},view:{project:'p',task:'t'},$:el,
+ const ctx=vm.createContext({L,UI,navigator:{userAgent:inApp?'ProjectHubApp':''},location:{href:''},view:{project:'p',task:'t'},$:el,
   document:{body:{insertAdjacentHTML(){}},addEventListener:(name,f)=>events.set(name,f)},
   esc:x=>String(x).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),
   toast:x=>notices.push(x),copyText:x=>notices.push(x),

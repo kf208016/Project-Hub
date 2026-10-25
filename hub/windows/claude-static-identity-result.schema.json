@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:project-hub:claude-static-identity-result:1",
+  "title": "Fixed Claude read-only static snapshot, never execution readiness",
+  "$comment": "A pass describes the simultaneous held-handle measurement interval. It does not freeze every alias name or all metadata, authenticate the publisher, or authorize vendor execution. Historical results are not retroactively changed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "passed", "code", "providerReady", "vendorExecuted", "authRead"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "fixed-claude-static-identity"},
+    "passed": {"type": "boolean"},
+    "code": {"type": "string", "maxLength": 64, "pattern": "^STATIC_[A-Z_]+(?![\\s\\S])"},
+    "providerReady": {"const": false},
+    "vendorExecuted": {"const": false},
+    "authRead": {"const": false},
+    "nativeError": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+    "scope": {"const": "held-read-only-static-snapshot"},
+    "heldTogether": {"const": true},
+    "namespacePinned": {"const": true},
+    "expected": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "executableBytes", "executableSHA256", "manifestSHA256"],
+      "properties": {
+        "version": {"const": "2.1.252"},
+        "executableBytes": {"const": 217406624},
+        "executableSHA256": {"const": "fe688ecde90d65fff0b2dd097597439774116077d80a3c1e131a7e47db307b1a"},
+        "manifestSHA256": {"const": "8ea9f25853a8ef115de2cfe4621e02184daeada5e46de7f23cf8b230682f1f2b"}
+      }
+    },
+    "manifest": {
+      "type": "object", "additionalProperties": false, "required": ["identity", "sha256"],
+      "properties": {"identity": {"$ref": "#/$defs/identity"}, "sha256": {"const": "8ea9f25853a8ef115de2cfe4621e02184daeada5e46de7f23cf8b230682f1f2b"}}
+    },
+    "executable": {
+      "type": "object", "additionalProperties": false, "required": ["identity", "sha256"],
+      "properties": {"identity": {"allOf": [{"$ref": "#/$defs/identity"}, {"properties": {"bytes": {"const": "217406624"}}}]}, "sha256": {"const": "fe688ecde90d65fff0b2dd097597439774116077d80a3c1e131a7e47db307b1a"}}
+    }
+  },
+  "oneOf": [
+    {"properties": {"passed": {"const": true}, "code": {"const": "STATIC_IDENTITY_MATCHED"}}, "required": ["scope", "heldTogether", "namespacePinned", "expected", "manifest", "executable"], "not": {"required": ["nativeError"]}},
+    {"properties": {"passed": {"const": false}, "code": {"not": {"const": "STATIC_IDENTITY_MATCHED"}}}, "required": ["nativeError"], "not": {"anyOf": [{"required": ["scope"]}, {"required": ["heldTogether"]}, {"required": ["namespacePinned"]}, {"required": ["expected"]}, {"required": ["manifest"]}, {"required": ["executable"]}]}}
+  ],
+  "$defs": {
+    "decimal": {"type": "string", "maxLength": 20, "pattern": "^(0|[1-9][0-9]*)(?![\\s\\S])"},
+    "positiveDecimal": {"type": "string", "maxLength": 20, "pattern": "^[1-9][0-9]*(?![\\s\\S])"},
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["volume", "fileId", "bytes", "links", "attributes", "createdFileTime", "modifiedFileTime"],
+      "properties": {
+        "volume": {"$ref": "#/$defs/decimal"}, "fileId": {"$ref": "#/$defs/positiveDecimal"},
+        "bytes": {"$ref": "#/$defs/positiveDecimal"}, "links": {"$ref": "#/$defs/positiveDecimal"},
+        "attributes": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "createdFileTime": {"$ref": "#/$defs/decimal"}, "modifiedFileTime": {"$ref": "#/$defs/decimal"}
+      }
+    }
+  }
+}

@@ -4,12 +4,45 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const registry = require('../lib/provider-registry');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+test('Windows chat separates execution from manual handoff and preserves provider identity on phones',()=>{
+ const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:'win32'});s.webChatAvailable=true;
+ s.roles.models={codex:['GPT-6.1-Sol']};vm.runInContext('state='+JSON.stringify(s),a.context);
+ a.context.matchMedia=()=>({matches:true});
+ const html=a.context.chatHtml(s.projects[0],s.projects[0].tasks[0]);
+ for(const label of ['本機執行','網頁手動交接','尚未就緒'])assert.ok(html.includes('optgroup label="'+label+'"'));
+ for(const name of ['Claude Code','Agy CLI','Grok CLI'])assert.ok(html.includes(name+' · '));
+ assert.match(html,/value="grok\|unavailable"[^>]*disabled/);
+ assert.equal(a.context.chatActionLabel('codex'),'交由 Codex 執行');
+ assert.equal(a.context.chatActionLabel('chatgpt'),'準備手動交接');
+ assert.equal(a.context.chatActionLabel('claude-chat'),'準備手動交接');
+});
+test('API preserves bound web partial status as an error and keeps ordinary 409 failures rejected',async()=>{
+ const a=app(),request={actor:'chatgpt',project:'p',task:'t',receiptId:'r'};
+ a.context.window.HubWebChat=require('../public/web-chat');
+ const value={...request,ok:false,state:'chat_saved',durableStage:'chat_saved',partial:true,recoveryRequired:true,actualTargets:{chat:'saved',task:'before'},token:'PRIVATE_TOKEN'};
+ a.context.fetch=async()=>({ok:false,status:409,json:async()=>value});
+ await assert.rejects(a.context.api('/api/web-chat/result',request),error=>error.status===409&&error.webChatStatus?.actualTargets.task==='before'&&!JSON.stringify(error).includes('PRIVATE_TOKEN'));
+ await assert.rejects(a.context.api('/api/start',{project:'p'}),error=>!error.webChatStatus);
+ a.context.fetch=async()=>({ok:false,status:409,json:async()=>({...value,task:'other'})});
+ await assert.rejects(a.context.api('/api/web-chat/result',request),error=>error.webChatStatus===null&&error.webChatRecoveryRequired===true);
+});
+test('controller failed chat cleanup keeps an independent retry control visible after chat is idle',async()=>{const {WorkspaceRuntime}=require('../lib/workspace-runtime'),binding={run:'SYNTHETIC_PRIVATE_RUN',dir:process.cwd()},review={permits:new Map([['SYNTHETIC_PERMIT',{record:{secrets:{files:[]}}}]]),consumeRun:async()=>binding,binding:()=>binding,releaseRun:async()=>{throw Error('SYNTHETIC_SECRET_ERROR_NOT_PUBLIC');}},runtime=new WorkspaceRuntime({review,chats:{busy:()=>null,queue:()=>[],stop(){}},sessions:{stop(){}},store:{},stopExtra:async()=>({stopped:true,treeExited:true})});const flow=await runtime.begin({project:'p',task:'t',permit:'SYNTHETIC_PERMIT',kind:'chat'});flow.starting=false;await assert.rejects(runtime.finish(flow.id),/SYNTHETIC_SECRET/);const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;s.projects[0].tasks[0].workspaceLifecycle=runtime.summary('p','t');vm.runInContext('state='+JSON.stringify(s)+';view={kind:"work",project:"p",task:"t"}',a.context);a.context.render();a.stream().onmessage({data:JSON.stringify({type:'rows',rows:[],busy:null,queue:[],approvals:[]})});assert.equal(a.element('#chat-busyrow').hidden,true);assert.match(a.element('#main').innerHTML,/data-act="workspaceclose"/);assert.match(a.element('#main').innerHTML,/重試停止／清理工作區/);assert.doesNotMatch(a.element('#main').innerHTML,/SYNTHETIC_PRIVATE|SYNTHETIC_PERMIT|SYNTHETIC_SECRET/);s.projects[0].tasks[0].workspaceLifecycle=null;vm.runInContext('state='+JSON.stringify(s),a.context);a.context.render();assert.doesNotMatch(a.element('#main').innerHTML,/data-act="workspaceclose"/);});
+
+test('workspace close requires confirmation, prevents double click and reloads only after proved completion',async()=>{const a=app(),button={disabled:false,textContent:'重試停止／清理工作區'},calls=[],messages=[];let loads=0,confirms=0,resolve;a.context.toast=text=>messages.push(text);a.context.load=async()=>{loads++;};a.context.confirm=()=>false;a.context.api=async(...args)=>calls.push(args);await a.context.closeNativeWorkspace('p','t',button);assert.equal(calls.length,0);a.context.confirm=text=>{confirms++;assert.match(text,/owned 程序.*撤銷 MCP/);return true;};a.context.api=(...args)=>{calls.push(args);return new Promise(r=>resolve=r);};const pending=a.context.closeNativeWorkspace('p','t',button);await a.context.closeNativeWorkspace('p','t',button);assert.equal(calls.length,1);assert.equal(confirms,1);assert.equal(button.disabled,true);assert.equal(JSON.parse(JSON.stringify(calls[0][1])).confirm,true);resolve({ok:true,partial:true,workspaceLifecycle:null});await assert.rejects(pending,/未顯示成功/);assert.equal(loads,0);assert.equal(messages.length,0);assert.equal(button.disabled,false);a.context.api=async()=>({ok:true,workspaceLifecycle:null});await a.context.closeNativeWorkspace('p','t',button);assert.equal(loads,1);assert.equal(messages.length,1);assert.match(messages[0],/授權已撤銷，清理已完成/);});
+
+test('workspace cleanup status refreshes while composer has focus without replacing the draft or main view',async()=>{const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;vm.runInContext('state='+JSON.stringify(s)+';view={kind:"work",project:"p",task:"t"}',a.context);a.context.render();const before=a.element('#main').innerHTML,draft=a.element('#chat-in');draft.value='SYNTHETIC_UNSENT_DRAFT';draft.tagName='TEXTAREA';a.document.activeElement=draft;const changed=JSON.parse(JSON.stringify(s));changed.projects[0].tasks[0].workspaceLifecycle={kind:'chat',state:'cleanup-failed',ownedChildren:0,retryClose:true,errorCode:'WORKSPACE_CLEANUP_REQUIRED'};a.context.fetchState=async()=>changed;await a.context.pollState();assert.equal(a.element('#main').innerHTML,before);assert.equal(draft.value,'SYNTHETIC_UNSENT_DRAFT');assert.match(a.element('#workspace-lifecycle').innerHTML,/data-act="workspaceclose"/);changed.projects[0].tasks[0].workspaceLifecycle=null;await a.context.load({preserveMain:true});assert.equal(a.element('#workspace-lifecycle').innerHTML,'');assert.equal(a.element('#main').innerHTML,before);assert.equal(draft.value,'SYNTHETIC_UNSENT_DRAFT');});
+test('unknown Git summary disables creation and escapes the read error',()=>{const a=app();vm.runInContext('state.github={ready:true}',a.context);const html=a.context.githubCreateButton({id:'p',github:null,githubHasOrigin:null,gitReadState:'unknown',gitReadError:'metadata <unknown>'});assert.match(html,/disabled/);assert.match(html,/metadata &lt;unknown&gt;/);assert.doesNotMatch(html,/data-github-create/);});
+
+test('workspace 409 auto-approves exact empty-secret and hook-skip choices without a dialog, then stops after one retry',async()=>{const a=app(),calls=[],messages=[];let starts=0;const reply=(status,value)=>({ok:status<400,status,headers:{get:()=>''},json:async()=>value});a.context.toast=text=>messages.push(text);a.context.fetch=async(route,opt)=>{const body=JSON.parse(opt.body);calls.push({route,body});if(route==='/api/start'){starts++;return reply(409,{error:starts===1?'approval needed':'approval still required',code:'WORKSPACE_REQUIRED',workspaceRequired:true,project:'p',task:'created-task'});}if(route==='/api/task/workspace/discover')return reply(200,{base:'C:\\synthetic',mode:'isolated',candidates:[{relative:'.env'}]});if(route==='/api/task/workspace/preview')return reply(200,{token:'workspace-token',execution:{hooks:[{path:'.git/hooks/pre-commit'}]}});if(route==='/api/task/workspace/prepare')return reply(200,{ok:true,permit:'one-time-permit'});throw Error('unexpected route '+route);};await assert.rejects(a.context.api('/api/start',{project:'p',request:'same-request',text:'retained',images:[]}),/approval still required/);assert.equal(a.elements.has('#fsheet'),false);assert.deepEqual(calls.map(call=>call.route),['/api/start','/api/task/workspace/discover','/api/task/workspace/preview','/api/task/workspace/prepare','/api/start']);assert.deepEqual(calls[1].body,{project:'p',task:'created-task'});assert.deepEqual(calls[2].body,{project:'p',task:'created-task',secrets:[]});assert.deepEqual(calls[3].body,{project:'p',task:'created-task',token:'workspace-token',confirm:true,skipHooks:true,ackReadLimits:true,ackNetworkLimits:true});assert.deepEqual(calls[4].body,{project:'p',request:'same-request',text:'retained',images:[],task:'created-task',workspacePermit:'one-time-permit'});assert.deepEqual(messages,['已自動核准本次 Codex 工作流程。']);assert.equal(starts,2);});
+test('native provider 409 auto-approves every acknowledgement without a dialog, then stops after one retry',async()=>{const a=app(),calls=[],messages=[];let starts=0;const reply=(status,value)=>({ok:status<400,status,headers:{get:()=>''},json:async()=>value}),s=snapshot();vm.runInContext('state='+JSON.stringify(s),a.context);a.context.toast=text=>messages.push(text);a.context.fetch=async(route,opt)=>{const body=JSON.parse(opt.body);calls.push({route,body});if(route==='/api/chat/send'){starts++;return reply(409,{error:starts===1?'native approval needed':'native approval still required',code:'NATIVE_PROVIDER_APPROVAL_REQUIRED',project:'p',task:'t',actor:'claude',model:'Sonnet',effort:'高'});}if(route==='/api/native-provider/preview')return reply(200,{token:'native-token',review:{destination:'Anthropic'}});if(route==='/api/native-provider/approve')return reply(200,{ok:true});throw Error('unexpected route '+route);};await assert.rejects(a.context.api('/api/chat/send',{project:'p',task:'t',ai:'claude',model:'Sonnet',effort:'高',text:'retained'}),/native approval still required/);assert.equal(a.elements.has('#fsheet'),false);assert.deepEqual(calls.map(call=>call.route),['/api/chat/send','/api/native-provider/preview','/api/native-provider/approve','/api/chat/send']);assert.deepEqual(calls[1].body,{project:'p',task:'t',actor:'claude',model:'Sonnet',effort:'高'});assert.deepEqual(calls[2].body,{token:'native-token',confirm:true,ackAuthenticationRead:true,ackCommandAccess:true,ackDestination:true,ackSessionWrite:true});assert.deepEqual(calls[3].body,{project:'p',task:'t',ai:'claude',model:'Sonnet',effort:'高',text:'retained'});assert.deepEqual(messages,['已自動核准 Claude Code 原生 CLI 執行。']);assert.equal(starts,2);});
+test('destination 409 auto-approves the exact switch acknowledgements without a dialog, then stops after one retry',async()=>{const a=app(),calls=[],messages=[];let starts=0;const reply=(status,value)=>({ok:status<400,status,headers:{get:()=>''},json:async()=>value});a.context.toast=text=>messages.push(text);a.context.fetch=async(route,opt)=>{const body=JSON.parse(opt.body);calls.push({route,body});if(route==='/api/continue'){starts++;return reply(409,{error:starts===1?'destination approval needed':'destination approval still required',code:'WORKSPACE_DESTINATION_REQUIRED',project:'p',task:'t',actor:'codex'});}if(route==='/api/workspace-destination/preview')return reply(200,{token:'destination-token',destination:'OpenAI'});if(route==='/api/workspace-destination/approve')return reply(200,{ok:true});throw Error('unexpected route '+route);};await assert.rejects(a.context.api('/api/continue',{project:'p',task:'t',ai:'codex',text:'retained'}),/destination approval still required/);assert.equal(a.elements.has('#fsheet'),false);assert.deepEqual(calls.map(call=>call.route),['/api/continue','/api/workspace-destination/preview','/api/workspace-destination/approve','/api/continue']);assert.deepEqual(calls[1].body,{project:'p',task:'t',actor:'codex'});assert.deepEqual(calls[2].body,{token:'destination-token',confirm:true,ackDestination:true,ackReadLimits:true});assert.deepEqual(calls[3].body,{project:'p',task:'t',ai:'codex',text:'retained'});assert.deepEqual(messages,['已自動核准切換至 OpenAI。']);assert.equal(starts,2);});
 
 function app() {
   const elements = new Map();
-  const events = new Map();
+  const events = new Map(), windowEvents=new Map();
   const timers = new Map();
   const timeouts = new Map();
   const details = [];
@@ -36,7 +69,7 @@ function app() {
     addEventListener(name, cb) { events.set(name, cb); },
   };
   const context = vm.createContext({
-    document, window: {}, navigator: { userAgent: '' },
+    document, window: {addEventListener(name,callback){windowEvents.set(name,callback);}}, navigator: { userAgent: '' },
     localStorage: { getItem: () => null, setItem() {} },
     fetch: () => new Promise(() => {}), // 起動時の load() は試験用の状態を上書きしない
     EventSource, URLSearchParams,
@@ -49,7 +82,7 @@ function app() {
     confirm: () => true,
   });
   vm.runInContext(source, context);
-  return { context, document, elements, element, events, timers, timeouts, details, stream: () => stream };
+  return { context, document, elements, element, events, windowEvents, timers, timeouts, details, stream: () => stream };
 }
 
 const project = (state = '実行中') => ({
@@ -59,6 +92,7 @@ const project = (state = '実行中') => ({
   folders: [], related: [], issues: [], chats: [],
 });
 const snapshot = (taskState = '実行中', sessions = []) => ({
+  providers:registry.list({platform:'darwin'}),webChatAvailable:false,
   root: '/tmp', projects: [project(taskState)], roles: { models: { codex: [], 'claude-code': [] }, roles: [], permissions: {} },
   sessions, chatting: [], terminal: true, efforts: [], cliFlags: {}, version: '1', latest: '1',
 });
@@ -675,6 +709,18 @@ test('送信失敗なら本文と画像を保持し、画像だけでも送信�
   assert.equal(a.element('#chat-in').value, '次の依頼');
   assert.deepEqual(Array.from(a.context.chatImages('p','t'),x=>x.id), ['later']);
 });
+test('Windows unsaved initial pick uses the CLI default without changing non-Windows fallback',()=>{
+ const a=app(),s=snapshot();s.windowsBrowser=true;s.roles.models.codex=['CLI預設'];vm.runInContext('state='+JSON.stringify(s),a.context);
+ assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(initialPick())',a.context)),{ai:'codex',model:'CLI預設',effort:'高'});
+ s.windowsBrowser=false;vm.runInContext('state='+JSON.stringify(s),a.context);assert.deepEqual(JSON.parse(vm.runInContext('JSON.stringify(initialPick())',a.context)),{ai:'codex',model:'GPT-6.1-Sol',effort:'高'});
+});
+
+test('Codex approval cards escape untrusted preview text and reflect consumed requests',()=>{
+ const a=conversationApp();
+ a.stream().onmessage({data:JSON.stringify({type:'approvals',approvals:[{token:'synthetic-token',kind:'item/commandExecution/requestApproval',reason:'<script>alert(1)</script>',detail:'echo <img src=x onerror=alert(1)>',expiresAt:Date.now()+1000}]})});
+ const box=a.element('#chat-approvals');assert.equal(box.hidden,false);assert.doesNotMatch(box.innerHTML,/<script>|<img src=x/);assert.match(box.innerHTML,/&lt;script&gt;/);assert.match(box.innerHTML,/僅允許這次/);assert.match(box.innerHTML,/data-approval-decision="decline"/);
+ a.stream().onmessage({data:JSON.stringify({type:'approvals',approvals:[]})});assert.equal(box.hidden,true);assert.equal(box.innerHTML,'');
+});
 
 test('画像追加中の送信を待ち、完了後に画像付きで送れる', async () => {
   const a = conversationApp(); let finish, calls = 0;
@@ -746,6 +792,87 @@ test('cancel completion never calls API and approval sends the shown content has
  a.context.confirm=()=>false;await a.context.act({dataset:{act:'taskcomplete',p:'p',t:'t'}});assert.equal(calls.length,0);
  a.context.confirm=()=>true;await a.context.act({dataset:{act:'taskcomplete',p:'p',t:'t'}});
  assert.equal(calls[0].route,'/api/task/completion');assert.equal(calls[0].body.expectedHash,'shown');assert.equal(calls[0].body.confirm,true);
+});
+
+test('Windows merge requests a preview and cancellation never applies it', async () => {
+  const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;
+  vm.runInContext('state = '+JSON.stringify(s),a.context);
+  const calls=[];a.context.api=async(route,body)=>{calls.push({route,body});return {token:'single-use',source:{head:'source'},target:{head:'target'},files:2,action:'保存並合併'};};a.context.load=async()=>{};
+  a.context.confirm=()=>false;
+  await a.context.act({dataset:{act:'merge',p:'p',t:'t'}});
+  assert.deepEqual(calls.map(x=>x.route),['/api/task/merge/preview']);
+});
+
+test('Windows merge sends only the confirmed preview token and shows the current source and target', async () => {
+  const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;
+  vm.runInContext('state = '+JSON.stringify(s),a.context);
+  const calls=[],shown=[];a.context.api=async(route,body)=>{calls.push({route,body});return route.endsWith('/preview')?{token:'single-use',source:{head:'source-hash'},target:{head:'target-hash'},files:2,added:3,removed:1,dirty:true,action:'保存並合併'}:{ok:true};};a.context.load=async()=>{};
+  a.context.confirm=text=>{shown.push(text);return true;};
+  await a.context.act({dataset:{act:'merge',p:'p',t:'t'}});
+  assert.deepEqual(calls.map(x=>x.route),['/api/task/merge/preview','/api/task/merge']);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[1].body)),{project:'p',task:'t',token:'single-use',confirm:true});
+  assert.match(shown[0],/source-hash/);assert.match(shown[0],/target-hash/);assert.match(shown[0],/未提交變更/);
+});
+
+test('Windows merge requires a separate explicit decision to skip the displayed hook hashes', async () => {
+  const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;
+  vm.runInContext('state = '+JSON.stringify(s),a.context);
+  const calls=[],shown=[];const preview={token:'hook-bound',source:{head:'source'},target:{head:'target'},gitExecution:{requiresSkipHooksConfirmation:true,hooks:[{path:'C:\\repo\\hooks\\pre-commit',sha256:'hook-hash'}]}};
+  a.context.api=async(route,body)=>{calls.push({route,body});return route.endsWith('/preview')?preview:{ok:true};};a.context.load=async()=>{};
+  a.context.confirm=text=>{shown.push(text);return shown.length===1;};
+  await a.context.act({dataset:{act:'merge',p:'p',t:'t'}});
+  assert.equal(calls.length,1);assert.match(shown[1],/hook-hash/);assert.match(shown[1],/僅此次略過/);
+  a.context.confirm=()=>true;
+  await a.context.act({dataset:{act:'merge',p:'p',t:'t'}});
+  assert.equal(calls.at(-1).route,'/api/task/merge');assert.equal(calls.at(-1).body.skipHooks,true);assert.equal(calls.at(-1).body.token,'hook-bound');
+});
+
+test('Windows merge refuses a preview with execution blockers or predicted conflict', async () => {
+  for(const preview of [{gitExecution:{blockers:['需人工可信簽章']}},{conflict:true}]){
+    const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;
+    vm.runInContext('state = '+JSON.stringify(s),a.context);
+    const calls=[];a.context.api=async(route,body)=>{calls.push({route,body});return preview;};a.context.load=async()=>{};
+    a.context.confirm=()=>{throw Error('blocked previews must not prompt to apply');};
+    await a.context.act({dataset:{act:'merge',p:'p',t:'t'}});
+    assert.deepEqual(calls.map(x=>x.route),['/api/task/merge/preview']);
+  }
+});
+
+test('Windows MCP UI creates only the confirmed task scope and clears the credential when revoked', async () => {
+  const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;s.hubDir='C:\\Hub Folder';s.nodeExe='C:\\Program Files\\nodejs\\node.exe';s.projects[0].tasks[0].completionHash='shown-task-hash';
+  vm.runInContext('state = '+JSON.stringify(s),a.context);a.context.URL=URL;a.context.location={href:'http://127.0.0.1:4545/'};
+  a.element('#mcp-scope-project').value='p';a.element('#mcp-scope-task').value='t';a.element('#mcp-scope-access').value='read';
+  const calls=[];a.context.api=async(route,body)=>{calls.push({route,body});return route==='/api/mcp/capability'?{token:'G'.repeat(43),capability:{id:'grant-id',runId:'fixture-run-identifier',expiresAt:Date.now()+600000}}:{work:false};};
+  a.context.confirm=()=>false;await a.context.loadChatgpt();assert.match(a.element('#chatgpt-box').innerHTML,/同機使用與原版 Project Hub 一樣不需登入/);assert.match(a.element('#chatgpt-box').innerHTML,/任何本機程式都能操作 Hub/);assert.doesNotMatch(a.element('#chatgpt-box').innerHTML,/瀏覽器登入與 MCP/);await a.element('#mcp-scope-issue').onclick();assert.equal(calls.filter(x=>x.route==='/api/mcp/capability').length,0);
+  a.context.confirm=()=>true;await a.element('#mcp-scope-issue').onclick();
+  const issued=calls.find(x=>x.route==='/api/mcp/capability');assert.equal(issued.body.project,'p');assert.equal(issued.body.task,'t');assert.equal(issued.body.expectedHash,'shown-task-hash');assert.equal(issued.body.confirm,true);
+  assert.deepEqual(JSON.parse(JSON.stringify(issued.body.tools)),['hub_list_tasks','hub_get_task','hub_get_chat']);
+  const config=JSON.parse(a.element('#mcp-scope-config').value);assert.equal(config.command,s.nodeExe);assert.equal(config.env.HUB_MCP_TOKEN,'G'.repeat(43));assert.equal(config.env.HUB_MCP_RUN_ID,'fixture-run-identifier');assert.equal(config.env.HUB_LOCAL_TOKEN,undefined);assert.deepEqual(config.args,['C:\\Hub Folder/mcp.js']);
+  await a.element('#mcp-scope-revoke').onclick();assert.equal(calls.at(-1).route,'/api/mcp/capability/revoke');assert.equal(a.element('#mcp-scope-config').value,'');assert.equal(a.element('#mcp-scope-output').hidden,true);
+});
+
+test('Windows MCP UI revokes a late grant when its original settings view has been replaced', async () => {
+  const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;s.hubDir='C:\\Hub';s.nodeExe='C:\\Program Files\\nodejs\\node.exe';s.projects[0].tasks[0].completionHash='shown';
+  vm.runInContext('state = '+JSON.stringify(s),a.context);a.context.URL=URL;a.context.location={href:'http://127.0.0.1:4545/'};
+  a.element('#mcp-scope-project').value='p';a.element('#mcp-scope-task').value='t';a.element('#mcp-scope-access').value='report';
+  let release;const calls=[];a.context.api=async(route,body)=>{calls.push({route,body});if(route==='/api/mcp/capability')return new Promise(r=>release=r);return {};};a.context.confirm=()=>true;
+  await a.context.loadChatgpt();const pending=a.element('#mcp-scope-issue').onclick();
+  a.elements.set('#chatgpt-box',{innerHTML:''});release({token:'unused',capability:{id:'late-grant'}});await pending;
+  assert.equal(calls.at(-1).route,'/api/mcp/capability/revoke');assert.equal(calls.at(-1).body.id,'late-grant');assert.equal(a.element('#mcp-scope-output').hidden,true);assert.equal(a.element('#mcp-scope-config').value,'');
+});
+
+test('Windows MCP file scope shows the exact worktree and never silently enables create or execution', async () => {
+  for (const [access,work,workdir,expected] of [['files-read',false,'C:\\AI Work\\Work\\p\\t',true],['files-create',true,'C:\\AI Work\\Work\\p\\t',true],['files-create',false,'C:\\AI Work\\Work\\p\\t',false],['files-read',true,'',false],['unknown',true,'C:\\AI Work\\Work\\p\\t',false]]) {
+    const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:"win32"});s.webChatAvailable=true;s.hubDir='C:\\Hub';s.nodeExe='C:\\Program Files\\nodejs\\node.exe';s.projects[0].tasks[0].completionHash='shown';s.projects[0].tasks[0].workdir=workdir;
+    vm.runInContext('state = '+JSON.stringify(s),a.context);a.context.URL=URL;a.context.location={href:'http://127.0.0.1:4545/'};
+    a.element('#mcp-scope-project').value='p';a.element('#mcp-scope-task').value='t';a.element('#mcp-scope-access').value=access;
+    const calls=[],prompts=[];a.context.api=async(route,body)=>{calls.push({route,body});return route==='/api/mcp/capability'?{token:'G'.repeat(43),capability:{id:'grant',runId:'fixture-run-identifier',expiresAt:Date.now()+600000}}:{work};};a.context.confirm=text=>{prompts.push(text);return true;};
+    await a.context.loadChatgpt();await a.element('#mcp-scope-issue').onclick();
+    const issued=calls.find(x=>x.route==='/api/mcp/capability');assert.equal(Boolean(issued),expected);
+    assert.equal(calls.some(x=>x.route==='/api/chatgpt'&&x.body),false,'scope selection cannot change the global work setting');
+    if(expected){assert.ok(prompts[0].includes(workdir));assert.ok(issued.body.tools.includes('hub_read_file'));assert.equal(issued.body.tools.includes('hub_write_file'),access==='files-create');assert.ok(!issued.body.tools.includes('hub_run_command'));assert.equal(issued.body.expectedHash,'shown');if(access==='files-create')assert.match(prompts[0],/完整原檔 SHA-256 覆寫/);}
+    else assert.equal(prompts.length,0);
+  }
 });
 
 
@@ -933,18 +1060,26 @@ test('上下の回答は同じ送信枠を使い、受付までの連打を1回�
 });
 
 // 実サーバーが起動失敗時に配信する SSE と 409 を画面処理へ通す。
-test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後の再送は1回だけ受け付ける',async()=>{
+test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後の再送は1回だけ受け付ける',{timeout:420000},async()=>{
  const os=require('node:os');
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'hub-answer-r1-')),root=path.join(tmp,'root'),dir=path.join(root,'Product','p'),bin=path.join(tmp,'bin');
  fs.mkdirSync(path.join(root,'_hub'),{recursive:true});fs.copyFileSync(path.join(__dirname,'../../docs/project-hub/templates/_hub/roles.yaml'),path.join(root,'_hub/roles.yaml'));fs.mkdirSync(path.join(dir,'.ai/tasks'),{recursive:true});fs.mkdirSync(bin);
  fs.writeFileSync(path.join(dir,'PROJECT.md'),'---\nname: p\nstatus: 進行中\nphases: []\nfolders: {}\nrelated: []\n---\n');
  const question='選んでください',taskFile=path.join(dir,'.ai/tasks/t.md');fs.writeFileSync(taskFile,`---\nid: t\ntitle: R1\nowner: codex\nmodel: GPT-6.1-Sol\nworkspaceMode: direct\nstate: 返事待ち\nquestion: ${question}\n---\n`);
  require('../lib/chat').append(dir,'t',{role:'assistant',ai:'codex',text:'回答を選んでください',asks:[{question,options:['A','B'],multi:false}]});
- const command=path.join(bin,'codex');fs.writeFileSync(command,'#!/nonexistent/r1-fixture-interpreter\n',{mode:0o755});
- const env={PATH:bin+':/usr/bin:/bin',HUB_ROOT:root,HUB_PORT:'0',HUB_DRY_RUN:'1',HUB_AI_HOME:path.join(tmp,'home'),HUB_TRASH:path.join(tmp,'trash')},previous={};for(const k of Object.keys(env)){previous[k]=process.env[k];process.env[k]=env[k];}
+ const command=path.join(bin,process.platform==='win32'?'codex.exe':'codex');fs.writeFileSync(command,'#!/nonexistent/r1-fixture-interpreter\n',{mode:0o755});
+ const secret='R'.repeat(43);
+ const fixtureRuntime=process.platform==='win32'?require('./helpers/owned-native-fixture').environment(bin):process.env.PATH;
+ const env={PATH:process.platform==='win32'?fixtureRuntime:bin+path.delimiter+fixtureRuntime,HUB_ROOT:root,HUB_PORT:'0',HUB_LOCAL_TOKEN:secret,HUB_DRY_RUN:'1',HUB_AI_HOME:path.join(tmp,'home'),HUB_TRASH:path.join(tmp,'trash')},previous={};for(const k of Object.keys(env)){previous[k]=process.env[k];process.env[k]=env[k];}
  const serverModule=require.resolve('../server');let server,reader,abort;const events=[];
+ const pw=require('../lib/procwatch'),originalCreate=pw.create;if(process.platform==='win32')pw.create=options=>originalCreate({...options,exec:async()=>JSON.stringify([{pid:process.pid,ppid:0,since:new Date().toISOString(),name:'node.exe',command:'synthetic test controller'}])});
  try{
-  delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));process.env.HUB_PORT=String(port);delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(port,'127.0.0.1',r));const base=`http://127.0.0.1:${port}`;
+  delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;await new Promise(r=>server.close(r));process.env.HUB_PORT=String(port);process.env.HUB_LOCAL_TOKEN=secret;delete require.cache[serverModule];({server}=require('../server'));await new Promise(r=>server.listen(port,'127.0.0.1',r));const base=`http://127.0.0.1:${port}`;
+  const login=await fetch(base+'/api/local/login',{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify({token:secret})});assert.equal(login.status,200);
+  const localFetch=(url,options={})=>fetch(url,options);
+  // Preparation has its own 150s bound; the 60s SSE launch window starts afterward.
+  let fixturePermit=null;
+  const prepareFixture=async()=>{if(process.platform!=='win32')return;const post=(route,body)=>localFetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify(body)});let timer;try{fixturePermit=await Promise.race([(async()=>{const scope={project:'p',task:'t'},previewResponse=await post('/api/task/workspace/preview',{...scope,secrets:[]});assert.equal(previewResponse.status,200,await previewResponse.clone().text());const preview=await previewResponse.json(),ready=await post('/api/task/workspace/prepare',{...scope,token:preview.token,confirm:true,skipHooks:true,ackReadLimits:true,ackNetworkLimits:true});assert.equal(ready.status,200,await ready.clone().text());const prepared=await ready.json();assert.equal(prepared.ok,true,prepared.error);return prepared.permit;})(),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Owned native workspace preparation exceeded its separate 150s bound; HTTP '+JSON.stringify(lastResponse)+'; events='+events.map(e=>e.type).join(','))),150000);})]);}finally{clearTimeout(timer);}};
   const a=app(),s=snapshot('返事待ち');s.projects[0].tasks[0].question=question;vm.runInContext('state='+JSON.stringify(s)+';view={kind:"work",project:"p",task:"t"}',a.context);
   const asks=[{question,options:['A','B'],multi:false}],askKey=JSON.stringify(['p','t',asks]);const set=new Set(['ask']),status={textContent:''},option={disabled:false,value:'A'},free={disabled:false,value:'残す補足'},button={disabled:false,textContent:''};
   const ask={dataset:{askKey},classList:{contains:x=>set.has(x),add:(...xs)=>xs.forEach(x=>set.add(x)),toggle:(x,on)=>on?set.add(x):set.delete(x)},querySelector:s=>s==='.ask-status'?status:button,querySelectorAll:()=>[option,free,button]};
@@ -955,20 +1090,21 @@ test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後�
   a.document.querySelectorAll=sel=>sel==='.ask'?[ask]:[];a.element('#chat-ai').value='codex|GPT-6.1-Sol';a.element('#chat-effort').value='極高';a.element('#chat-in').value='別の下書き';
   a.context.chatImages('p','t').push(attached('r1-retained'));a.context.load=async()=>{};a.context.refreshTree=async()=>{};a.context.toast=()=>{};let lower;a.context.bindAskAnswers=(_box,send)=>{lower=send;};a.context.openChat(s.projects[0],s.projects[0].tasks[0]);
   const installPartial=()=>a.elements.set('#msg-partial',{querySelector:s=>a.element('partial'+s),insertAdjacentHTML:box.insertAdjacentHTML,remove(){a.elements.delete('#msg-partial');}});
-  let calls=0,holdResponse;a.context.api=async(route,body)=>{calls++;const res=await fetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify(body)});const result=await res.json();if(holdResponse)await holdResponse;if(!res.ok)throw Error(result.error);return result;};
-  abort=new AbortController();const response=await fetch(base+'/api/chat/stream?project=p&task=t',{signal:abort.signal});reader=response.body.getReader();
+  let calls=0,holdResponse,lastResponse;a.context.api=async(route,body)=>{calls++;const permit=fixturePermit;fixturePermit=null;const res=await localFetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify({...body,...(permit?{workspacePermit:permit}:{})})}),result=await res.json();lastResponse={status:res.status,error:result.error};assert.notEqual(result.code,'WORKSPACE_REQUIRED','Launch must use an already-reviewed permit; preparation is outside the SSE deadline');if(holdResponse)await holdResponse;if(!res.ok)throw Error(result.error);return result;};
+  abort=new AbortController();const response=await localFetch(base+'/api/chat/stream?project=p&task=t',{signal:abort.signal});assert.equal(response.status,200);reader=response.body.getReader();
   let buffer='',idleResolve;const pump=(async()=>{while(true){const part=await reader.read();if(part.done)break;buffer+=Buffer.from(part.value).toString();let end;while((end=buffer.indexOf('\n\n'))!==-1){const chunk=buffer.slice(0,end);buffer=buffer.slice(end+2);const data=chunk.split('\n').find(l=>l.startsWith('data:'));if(!data)continue;const ev=JSON.parse(data.slice(5));events.push(ev);if(ev.type==='rows')continue;if(ev.type==='busy')installPartial();a.stream().onmessage({data:JSON.stringify(ev)});if(ev.type==='idle')idleResolve?.();}}})();pump.catch(()=>{});
   const reenter=async()=>{
    // 実openChatの再入場：空DOMでcontrolsを更新してから、実serverの履歴rowsを受け取る。
    vm.runInContext('view.kind="project"',a.context);rows.length=0;historyVisible=false;
    vm.runInContext('view.kind="work"',a.context);a.context.openChat(s.projects[0],s.projects[0].tasks[0]);
    const attempts=vm.runInContext('askAttempts',a.context);assert.equal(attempts.size,1,'初期rows待ちでは再送対象を消さない');
-   const historyAbort=new AbortController(),historyResponse=await fetch(base+'/api/chat/stream?project=p&task=t',{signal:historyAbort.signal}),historyReader=historyResponse.body.getReader();
+   const historyAbort=new AbortController(),historyResponse=await localFetch(base+'/api/chat/stream?project=p&task=t',{signal:historyAbort.signal}),historyReader=historyResponse.body.getReader();
    try{let data='';while(!data.includes('\n\n')){const part=await historyReader.read();assert.equal(part.done,false);data+=Buffer.from(part.value).toString();}const line=data.split('\n').find(l=>l.startsWith('data:'));const history=JSON.parse(line.slice(5));assert.equal(history.type,'rows');a.stream().onmessage({data:JSON.stringify(history)});}finally{historyAbort.abort();await historyReader.cancel().catch(()=>{});}
   };
   for(const path of ['lower','upper']){
+   await prepareFixture();
    installPartial();let release;holdResponse=new Promise(r=>release=r);const idle=new Promise(r=>idleResolve=r);const failed=path==='lower'?lower('A\n自由入力：残す補足'):vm.runInContext('sendWorkAnswer.send("上部回答")',a.context);
-   await idle;await reenter();assert.equal(button.disabled,true,'再入場しても送信中のlockを保つ');release();assert.equal(await failed,false);holdResponse=null;assert.equal(set.has('done'),false);assert.equal(option.disabled,false);assert.equal(free.disabled,false);assert.equal(button.disabled,false);assert.equal(free.value,'残す補足');assert.equal(a.element('#chat-in').value,'別の下書き');assert.equal(a.element('#chat-effort').value,'極高');assert.equal(a.context.chatImages('p','t')[0].id,'r1-retained');
+   let idleTimer;try{await Promise.race([idle,new Promise((_,reject)=>{idleTimer=setTimeout(()=>reject(Error("SSE idle missing; HTTP "+JSON.stringify(lastResponse)+"; events="+events.map(e=>e.type).join(","))),60000);})]);}finally{clearTimeout(idleTimer);}await reenter();assert.equal(button.disabled,true,'再入場しても送信中のlockを保つ');release();assert.equal(await failed,false);holdResponse=null;assert.equal(set.has('done'),false);assert.equal(option.disabled,false);assert.equal(free.disabled,false);assert.equal(button.disabled,false);assert.equal(free.value,'残す補足');assert.equal(a.element('#chat-in').value,'別の下書き');assert.equal(a.element('#chat-effort').value,'極高');assert.equal(a.context.chatImages('p','t')[0].id,'r1-retained');
    // 409より後の遅いerror行と、同じ会話の再描画でも復活対象を保つ。
    a.stream().onmessage({data:JSON.stringify({type:'row',row:{role:'assistant',ai:'codex',error:'遅い起動失敗'}})});a.context.refreshAsks(box);assert.equal(button.disabled,false);
    await reenter();
@@ -976,11 +1112,14 @@ test('実spawn失敗のSSE後も上下から再操作でき、fake CLI修復後�
   }
   assert.ok(events.some(e=>e.type==='row'&&e.row.role==='user'));assert.ok(events.some(e=>e.type==='busy'));assert.ok(events.some(e=>e.type==='row'&&e.row.error));assert.ok(events.some(e=>e.type==='idle'));assert.match(fs.readFileSync(taskFile,'utf8'),/state: 返事待ち/);
   // fixtureの起動原因を直してから再送。上下の同時操作は1受付。
-  fs.writeFileSync(command,`#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>{console.log(JSON.stringify({type:'turn.completed'}));},2000));\n`,{mode:0o755});installPartial();const before=calls,pending=lower('A\n自由入力：残す補足');assert.equal(await vm.runInContext('sendWorkAnswer.send("二重回答")',a.context),false);assert.equal(await pending,true);assert.equal(calls,before+1);assert.match(fs.readFileSync(taskFile,'utf8'),/question: *\n/);
+  if(process.platform==='win32'){fs.unlinkSync(command);require('./helpers/codex-server').install(bin,{delay:2000});}
+  else fs.writeFileSync(command,`#!${process.execPath}\nprocess.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>{console.log(JSON.stringify({type:'turn.completed'}));},2000));\n`,{mode:0o755});
+  await prepareFixture();
+  installPartial();const before=calls,pending=lower('A\n自由入力：残す補足');assert.equal(await vm.runInContext('sendWorkAnswer.send("二重回答")',a.context),false);assert.equal(await pending,true);assert.equal(calls,before+1);assert.match(fs.readFileSync(taskFile,'utf8'),/question: *\n/);
   // 成功済みは遅い失敗通知で戻らない。
   a.context.refreshAsks(box);assert.equal(button.disabled,true);
-  await fetch(base+'/api/chat/stop',{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify({project:'p',task:'t'})});
- }finally{abort?.abort();await reader?.cancel().catch(()=>{});if(server)await new Promise(r=>server.close(r));for(const k of Object.keys(env)){if(previous[k]===undefined)delete process.env[k];else process.env[k]=previous[k];}}
+  await localFetch(base+'/api/chat/stop',{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify({project:'p',task:'t'})});
+ }finally{pw.create=originalCreate;abort?.abort();await reader?.cancel().catch(()=>{});if(server)await new Promise(r=>server.close(r));for(const k of Object.keys(env)){if(previous[k]===undefined)delete process.env[k];else process.env[k]=previous[k];}fs.rmSync(tmp,{recursive:true,force:true,maxRetries:20,retryDelay:50});}
 });
 
 test('GitHub creation appears only without any origin, and unavailable gh has a disabled button and reason', () => {
@@ -1054,7 +1193,9 @@ test('初期AI設定カードの即保存・失敗戻し・入力優先・利用
   const html = a.element('#main').innerHTML;
   assert.ok(html.indexOf('選ぶ欄に出すモデル') < html.indexOf('新しく始めるときのAI'));
   const card = a.context.initialPickHtml();
-  assert.doesNotMatch(card, /Agy|ChatGPT|discord/);
+  assert.match(card, /value="grok"[^>]*disabled/);
+  assert.match(card, /value="claude-chat"[^>]*disabled/);
+  assert.doesNotMatch(card, /discord/);
   const fresh = a.context.quickDraft(data.projects[0]); assert.equal(fresh.ai, 'codex');
   a.context.quickDraft({ id: 'typing' }).text = 'まだ保存していない指示';
   const explicit = a.context.quickDraft({ id: 'explicit' }); explicit.effort = '極高';
@@ -1337,3 +1478,29 @@ test('通知refreshTree先行と304/null後も表示名を同期し、blur後も
   assert.equal(input.value, '通知中も下書き'); assert.equal(select.value, option.value);
   a.context.matchMedia = () => ({ matches: false }); await a.context.pollState(); assert.equal(option.textContent, 'Codex・GPT-6.1-Sol');
 });
+
+
+test('API exposes validated codes once without altering specialized 409 recovery',async()=>{
+  const a=app();
+  for(const [code,message,expected]of [['WORKSPACE_RECORD_WRITE_FAILED','暫時無法寫入','暫時無法寫入（代碼：WORKSPACE_RECORD_WRITE_FAILED）'],['CHAT_META_CORRUPT','資料毀損（代碼：CHAT_META_CORRUPT）','資料毀損（代碼：CHAT_META_CORRUPT）'],['INVALID\nPRIVATE','安全訊息','安全訊息']]){
+    a.context.fetch=async()=>({ok:false,status:503,json:async()=>({error:message,code})});
+    await assert.rejects(a.context.api('/api/test',{}),e=>e.message===expected&&e.code===(code.includes('\n')?undefined:code));
+  }
+});
+test('Windows process notice displays failure code and removes it after a good scan',()=>{
+  const a=app(),s=snapshot();s.windowsBrowser=true;s.backgroundStatus={state:'unknown',code:'PROCWATCH_TIMEOUT'};
+  vm.runInContext('state='+JSON.stringify(s),a.context);a.context.render();assert.match(a.element('#windows-notice').textContent,/（代碼：PROCWATCH_TIMEOUT）/);
+  s.backgroundStatus={state:'ok',code:'PROCWATCH_TIMEOUT',unassigned:0};vm.runInContext('state='+JSON.stringify(s),a.context);a.context.render();assert.doesNotMatch(a.element('#windows-notice').textContent,/PROCWATCH_TIMEOUT/);
+});
+test('fresh-session chat success shows its code and preserves normal composer success',async()=>{
+  const a=conversationApp(),messages=[];a.context.toast=text=>messages.push(text);a.element('#chat-in').value='接續工作';a.context.api=async()=>({ok:true,freshSession:{code:'SESSION_SCOPE_CHANGED'}});
+  a.element('#composer').handlers.submit({preventDefault(){}});await new Promise(setImmediate);
+  assert.ok(messages.includes('舊對話無法接續（代碼：SESSION_SCOPE_CHANGED），已改開新對話，並附上先前的文字紀錄。'));assert.equal(a.element('#chat-in').value,'');
+});
+
+test('reviewed Codex settings expose version previews, active/previous slots and startup errors',()=>{
+ const a=app(),s=snapshot();s.windowsBrowser=true;vm.runInContext('state='+JSON.stringify(s)+';aiTools={codex:{installed:true,nativeUpdate:{versions:["0.154.0","0.164.0"],active:{slot:"active-id",version:"0.164.0"},previous:{slot:"old-id",version:"0.154.0"},error:"ACTIVE_STATE_REJECTED"}}};drawAiTools()',a.context);
+ const html=a.element('#ai-tools').innerHTML;for(const value of ['data-ai-version="0.154.0"','data-ai-version="0.164.0"','active-id','old-id','ACTIVE_STATE_REJECTED'])assert.ok(html.includes(value),value);
+});
+
+test('A1 idle lifecycle hides cleanup and polling preserves the draft',async()=>{const a=app(),s=snapshot();s.windowsBrowser=true;s.providers=registry.list({platform:'win32'});s.projects[0].tasks[0].workspaceLifecycle={kind:'chat',state:'idle',ownedChildren:0,retryClose:false,errorCode:''};vm.runInContext('state='+JSON.stringify(s)+';view={kind:"work",project:"p",task:"t"}',a.context);a.context.render();assert.doesNotMatch(a.element('#main').innerHTML,/data-act="workspaceclose"/);const before=a.element('#main').innerHTML,draft=a.element('#chat-in');draft.value='尚未送出的保溫草稿';draft.tagName='TEXTAREA';a.document.activeElement=draft;a.context.fetchState=async()=>JSON.parse(JSON.stringify(s));await a.context.pollState();assert.equal(draft.value,'尚未送出的保溫草稿');assert.equal(a.element('#main').innerHTML,before);assert.doesNotMatch(a.element('#workspace-lifecycle').innerHTML,/data-act="workspaceclose"/);});

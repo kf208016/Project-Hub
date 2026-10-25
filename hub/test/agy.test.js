@@ -9,6 +9,7 @@ const chat = require('../lib/chat');
 const roles = require('../lib/roles');
 const { AiTools, agyModels } = require('../lib/ai-tools');
 const model = launch.AGY_MODEL;
+const { install } = require('./helpers/portable-cli');
 const fixture = () => fs.mkdtempSync(path.join(os.tmpdir(), 'hub-agy-'));
 
 test('Agy pins the approved model in interactive, print and resume commands', () => {
@@ -65,7 +66,9 @@ test('Agy catalogue exposes only the approved model and disables it on explicit 
   try {
     let output = 'Fetching...\nother\tOther\n' + model.id + '\tGemini 3.1 Pro (High)\nclaude-opus-4-6-thinking\tOld';
     assert.deepEqual(agyModels(output), [model]);
-    const tools = new AiTools({ root, home: root, find: ai => ai === 'agy' ? '/fixture/agy' : '', run: async () => output });
+    // This synthetic catalog parser covers the existing macOS adapter. Native
+    // Windows discovery is blocked until its isolated provider is verified.
+    const tools = new AiTools({ root, home: root, platform:'darwin', find: ai => ai === 'agy' ? '/fixture/agy' : '', run: async () => output });
     assert.deepEqual(tools.catalog().agy.models, []);
     await tools.refresh('agy');
     roles.setModelCatalog(tools.catalog());
@@ -77,17 +80,18 @@ test('Agy catalogue exposes only the approved model and disables it on explicit 
     const result = await tools.refresh('agy');
     assert.equal(result.unavailable, true);
     assert.deepEqual(tools.catalog().agy.models, []);
-    const restarted = new AiTools({ root, home: root, dry: true });
+    const restarted = new AiTools({ root, home: root, platform:'darwin', dry: true });
     assert.deepEqual(restarted.catalog().agy.models, []);
     assert.equal(restarted.staleModel('agy', model.label), true);
   } finally { roles.setModelCatalog({}); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('Agy runner joins deltas, handles a final line without newline and resumes its own ID', async () => {
+test(process.platform==='win32'?"Windows app canStart refuses deferred Agy before logging and preserves its old resume ID":"Agy runner joins deltas, handles a final line without newline and resumes its own ID", async () => {
   const root = fixture();
   try {
-    const executable = path.join(root, 'agy-fixture');
-    fs.writeFileSync(executable, `#!${process.execPath}
+    if(process.platform==='win32'){fs.mkdirSync(path.join(root,'.ai/chat'),{recursive:true});fs.writeFileSync(path.join(root,'.ai/chat/t.json'),JSON.stringify({sessions:{agy:'SYNTHETIC_OLD_SESSION'},models:{agy:model.label}}));const metaFile=path.join(root,'.ai/chat/t.json'),before=fs.readFileSync(metaFile);let checked=0;const runner=new chat.ChatRunner({canStart:(ai,selected)=>{checked++;assert.equal(ai,'agy');assert.equal(selected,model.label);return 'Windows 版目前只支援 Codex CLI';}});let ran=false;runner.run=()=>{ran=true;throw Error('Must not start');};assert.throws(()=>runner.send({project:'p',task:'t',pdir:root,dir:root,ai:'agy',model:model.label,text:'SYNTHETIC',onEnd:()=>{throw Error('Must not display a response');}}),error=>error.code==='WINDOWS_PROVIDER_ISOLATION_UNVERIFIED');assert.equal(checked,0,'registry refuses before downstream provider checks');assert.equal(ran,false);assert.deepEqual(fs.readFileSync(metaFile),before);assert.equal(chat.read(root,'t').length,0);assert.equal(runner.busy('p','t'),null);return;}
+
+    const cli = install(root, `
 const events = [
   {event:'init',conversation_id:'agy-session',init:{model:'${model.id}'}},
   {event:'step_update',step_update:{step_type:'agent_response',text_delta:'hello'}},
@@ -96,10 +100,10 @@ const events = [
 ];
 if(process.env.GEMINI_API_KEY)process.exit(3);
 process.stdout.write(events.map(x=>JSON.stringify(x)).join('\\n'));
-`, { mode: 0o755 });
+`);
     const runner = new chat.ChatRunner();
     const opts = { project: 'p', task: 't', pdir: root, dir: root, ai: 'agy', model: model.label,
-      text: 'check', perm: './agy-fixture', env: { GEMINI_API_KEY: 'fixture-secret' } };
+      text: 'check', perm: cli.command, env: { ...cli.env, GEMINI_API_KEY: 'fixture-secret' } };
     const run = () => new Promise(resolve => runner.send({ ...opts, onEnd: resolve }));
     const first = await run();
     assert.equal(first.text, 'hello world');
@@ -111,18 +115,19 @@ process.stdout.write(events.map(x=>JSON.stringify(x)).join('\\n'));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('Agy runner stops a mismatched model without displaying or persisting its output', async () => {
+test(process.platform==='win32'?"Windows app canStart rejects deferred Agy before untrusted model output or metadata writes":"Agy runner stops a mismatched model without displaying or persisting its output", async () => {
   const root = fixture();
   try {
-    const executable = path.join(root, 'agy-wrong');
-    fs.writeFileSync(executable, `#!${process.execPath}
+    if(process.platform==='win32'){const runner=new chat.ChatRunner({canStart:()=> 'Windows 版目前只支援 Codex CLI'});assert.throws(()=>runner.send({project:'p',task:'t',pdir:root,dir:root,ai:'agy',model:model.label,text:'SYNTHETIC'}),error=>error.code==='WINDOWS_PROVIDER_ISOLATION_UNVERIFIED');assert.equal(chat.read(root,'t').length,0);assert.equal(fs.existsSync(path.join(root,'.ai/chat/t.json')),false);assert.equal(runner.busy('p','t'),null);assert.equal(chat.parse('agy',{event:'init',init:{model:'other'}})[0].abort,true);return;}
+
+    const cli = install(root, `
 console.log(JSON.stringify({event:'init',conversation_id:'wrong',init:{model:'other'}}));
 console.log(JSON.stringify({event:'step_update',step_update:{step_type:'agent_response',text_delta:'unsafe-output'}}));
 setInterval(()=>{},1000);
-`, { mode: 0o755 });
+`);
     const runner = new chat.ChatRunner();
     const row = await new Promise(resolve => runner.send({ project: 'p', task: 't', pdir: root, dir: root,
-      ai: 'agy', model: model.label, text: 'check', perm: './agy-wrong', onEnd: resolve }));
+      ai: 'agy', model: model.label, text: 'check', perm: cli.command, env: cli.env, onEnd: resolve }));
     assert.ok(row.error);
     assert.equal(row.text, '');
     assert.equal(chat.readMeta(root, 't').sessions.agy, undefined);

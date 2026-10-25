@@ -1,0 +1,14 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "title":"Reviewed Windows private installation package",
+ "type":"object","additionalProperties":false,"required":["version","releaseId","source","platform","dependencies","files"],
+ "properties":{
+  "version":{"const":1},"releaseId":{"type":"string","pattern":"^4\\.68\\.2-windows-codex-[a-f0-9]{12}$"},"platform":{"const":"win32-x64"},
+  "source":{"type":"object","additionalProperties":false,"required":["repository","tag","revision"],"properties":{"repository":{"const":"https://github.com/kieiken/project-hub"},"tag":{"const":"v4.68.2"},"revision":{"type":"string","pattern":"^[a-f0-9]{40}$"}}},
+  "dependencies":{"type":"object","additionalProperties":false,"required":["npm","ffmpeg"],"properties":{
+   "npm":{"type":"object","additionalProperties":false,"required":["lockfileSha256","installation"],"properties":{"lockfileSha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"installation":{"const":"npm ci --ignore-scripts; reviewed node-pty 1.1.0 Windows prebuild"}}},
+   "ffmpeg":{"type":"object","additionalProperties":false,"required":["version","sha256","license","source","publisher","archiveSha256"],"properties":{"version":{"const":"9.0.2-essentials_build-www.gyan.dev"},"sha256":{"const":"3256173f3f8bffd7df12227c68adf68025edb1832273a9530688a7bb1ed8edec"},"license":{"const":"GPLv3"},"source":{"const":"https://github.com/FFmpeg/FFmpeg/commit/946fcce07b"},"publisher":{"const":"https://www.gyan.dev/ffmpeg/builds/"},"archiveSha256":{"const":"60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba"}}}
+  }},
+  "files":{"type":"array","minItems":1,"maxItems":20000,"items":{"type":"object","additionalProperties":false,"required":["path","sha256","bytes"],"properties":{"path":{"type":"string","minLength":1,"maxLength":32768},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"},"bytes":{"type":"integer","minimum":0,"maximum":536870912}}}}
+ }
+}

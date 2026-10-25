@@ -1,0 +1,58 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net'),crypto=require('node:crypto');
+const fixture=require('./helpers/owned-native-fixture'),{Store}=require('../lib/store');
+const win=process.platform==='win32'?test:test.skip;
+const digest=text=>crypto.createHash('sha256').update(text).digest('hex');
+win('local no-cookie native HTTP handoffs preserve owner and reject unauthorized, stale, replay and unsafe inputs',{timeout:300000},async t=>{
+ const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'hub-web-chat-http-')),root=path.join(temporary,'workspace'),store=new Store(root),oldEnvironment={...process.env};
+ const project=store.createProject({name:'合成專案'}).project,task=store.createTask(project.id,{title:'手動交接測試',owner:'codex',model:'GPT-6.1-Sol'}),scope={project:project.id,task:task.id};
+ fs.copyFileSync(path.join(__dirname,'../windows/roles.yaml'),path.join(root,'_hub/roles.yaml'));
+ const provider=fixture.provider(temporary,{count:path.join(temporary,'provider-starts.txt')}),restoreInventory=fixture.freshInventory();
+ const listener=net.createServer();await new Promise(resolve=>listener.listen(0,'127.0.0.1',resolve));const port=listener.address().port;await new Promise(resolve=>listener.close(resolve));
+ Object.assign(process.env,{PATH:fixture.environment(provider.bin),HUB_ROOT:root,HUB_PORT:String(port),HUB_DRY_RUN:'1',HUB_LOCAL_TOKEN:'C'.repeat(43),HUB_AI_HOME:path.join(temporary,'empty-home')});
+ delete require.cache[require.resolve('../server')];const service=require('../server');await new Promise(resolve=>service.server.listen(port,'127.0.0.1',resolve));
+ const base='http://127.0.0.1:'+port;let cookie='';
+ const request=async(route,body,{anonymous=false,headers={},raw=false}={})=>fetch(base+route,{method:'POST',headers:{'X-Hub':'1',Origin:base,'Content-Type':'application/json',Connection:'close',...(!anonymous&&cookie?{Cookie:cookie}:{}),...headers},body:raw?body:JSON.stringify(body)});
+ const post=async(route,body,expected=200)=>{const response=await request(route,body),value=await response.json();assert.equal(response.status,expected,JSON.stringify(value));return value;};
+ t.after(async()=>{
+   await new Promise(resolve=>service.server.close(resolve));restoreInventory();
+   for(const key of Object.keys(process.env))if(!Object.hasOwn(oldEnvironment,key))delete process.env[key];Object.assign(process.env,oldEnvironment);
+   const resolved=fs.realpathSync(temporary);assert.equal(path.dirname(resolved).toLowerCase(),fs.realpathSync(os.tmpdir()).toLowerCase());assert.ok(path.basename(resolved).startsWith('hub-web-chat-http-'));fs.rmSync(resolved,{recursive:true,force:true,maxRetries:20,retryDelay:50});
+ });
+ assert.equal((await request('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'synthetic',responseLanguage:'zh-TW'},{anonymous:true})).status,200);
+ const login=await request('/api/local/login',{token:'C'.repeat(43)},{anonymous:true});assert.equal(login.status,200);cookie=login.headers.get('set-cookie').split(';')[0];
+ assert.equal((await request('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'synthetic',responseLanguage:'zh-TW'},{headers:{Origin:'https://invalid.example'}})).status,403);
+ await post('/api/chatgpt/prompt',{...scope,text:'legacy'},409);await post('/api/chatgpt/result',{...scope,text:'legacy'},409);
+ await post('/api/web-chat/preview',{...scope,actor:'claude',text:'synthetic',responseLanguage:'zh-TW'},400);
+ await post('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'synthetic',responseLanguage:'zh-TW',owner:'forged'},400);
+ await post('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'\ud800',responseLanguage:'zh-TW'},400);
+ await post('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'a\0b',responseLanguage:'zh-TW'},400);
+ const badUtf8=Buffer.concat([Buffer.from('{"text":"'),Buffer.from([0xc0,0xaf]),Buffer.from('"}')]);assert.equal((await request('/api/web-chat/preview',badUtf8,{raw:true})).status,400);
+ const nativeWriter=service.webChat.receipts.writer;let refusedMetadata=false;
+ service.webChat.receipts.writer={...nativeWriter,atomicCreate:async(...args)=>{if(!refusedMetadata&&args[1].endsWith('/receipt.json')){refusedMetadata=true;throw Error('synthetic refuse initial metadata publication');}return nativeWriter.atomicCreate(...args);}};
+ await post('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'SYNTHETIC_KNOWN_ORPHAN',responseLanguage:'zh-TW'},409);
+ service.webChat.receipts.writer=nativeWriter;
+ const retriedPreview=await post('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'SYNTHETIC_RETRY_PREVIEW',responseLanguage:'zh-TW'});assert.equal(retriedPreview.state,'preview');
+ const startRequest={project:project.id,ai:'claude-chat',text:'SYNTHETIC_NEW_MANUAL_TASK',images:[],request:crypto.randomUUID()};
+ const startsBefore=fs.existsSync(path.join(temporary,'provider-starts.txt'))?fs.readFileSync(path.join(temporary,'provider-starts.txt'),'utf8'):'';
+ const manual=await post('/api/start',startRequest);assert.equal(manual.webManual,true);assert.equal(store.readTask(store.taskFile(project.id,manual.task)).owner,'claude-chat');assert.deepEqual(await post('/api/start',startRequest),manual);
+ await post('/api/start',{...startRequest,text:'different'},409);await post('/api/start',{...startRequest,request:crypto.randomUUID(),task:'missing-task'},400);await post('/api/start',{...startRequest,request:crypto.randomUUID(),images:['synthetic-image']},400);
+ assert.equal(fs.existsSync(path.join(temporary,'provider-starts.txt'))?fs.readFileSync(path.join(temporary,'provider-starts.txt'),'utf8'):'',startsBefore,'manual creation must not invoke a model');
+ for(const actor of ['chatgpt','claude-chat']){
+   const preview=await post('/api/web-chat/preview',{...scope,actor,text:'SYNTHETIC_REQUEST_'+actor,responseLanguage:'zh-TW'});
+   assert.match(preview.text||preview.prompt,/繁體中文/);
+   await post('/api/web-chat/confirm',{...scope,actor:actor==='chatgpt'?'claude-chat':'chatgpt',receiptId:preview.receiptId,previewToken:preview.previewToken,expectedTaskHash:preview.taskHash,expectedPromptSHA256:preview.promptSHA256,confirm:true},403);
+   const approved=await post('/api/web-chat/confirm',{...scope,actor,receiptId:preview.receiptId,previewToken:preview.previewToken,expectedTaskHash:preview.taskHash,expectedPromptSHA256:preview.promptSHA256,confirm:true});
+   const text='SYNTHETIC_UNATTESTED_'+actor+'\n<script>not executed</script>',result={...scope,actor,receiptId:preview.receiptId,taskHash:preview.taskHash,promptSHA256:preview.promptSHA256,requestId:crypto.randomUUID(),resultSHA256:digest(text),text,token:approved.token};
+   const committed=await post('/api/web-chat/result',result);assert.equal(committed.state,'committed');assert.equal(committed.provenance,'user-pasted/unattested');assert.equal(committed.partial,false);
+   assert.equal(committed.actualTargets.chat,'saved');assert.equal(committed.actualTargets.task,'saved');
+   const retry=await post('/api/web-chat/result',result);assert.equal(retry.state,'committed');
+   await post('/api/web-chat/result',{...result,text:text+' changed',resultSHA256:digest(text+' changed')},409);
+   const status=await post('/api/web-chat/status',{...scope,actor,receiptId:preview.receiptId});assert.equal(status.state,'committed');
+   const reference=encodeURIComponent(JSON.stringify({...scope,actor,receiptId:preview.receiptId}));const getStatus=await fetch(base+'/api/web-chat/status',{headers:{Cookie:cookie,'X-Hub-Web-Receipt':reference,Connection:'close'}});assert.equal(getStatus.status,200);
+   const after=store.readTask(store.taskFile(scope.project,scope.task));assert.equal(after.owner,'codex');assert.notEqual(after.state,'完了');
+   const rows=fs.readFileSync(path.join(project.dir,'.ai/chat',task.id+'.jsonl'),'utf8').trim().split('\n').map(JSON.parse);assert.equal(rows.filter(row=>row.webHandoff?.receiptId===preview.receiptId).length,1);
+ }
+ const stale=await post('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'SYNTHETIC_STALE',responseLanguage:'zh-TW'});fs.appendFileSync(store.taskFile(scope.project,scope.task),'\nSYNTHETIC_EXTERNAL_EDIT\n');
+ await post('/api/web-chat/confirm',{...scope,actor:'chatgpt',receiptId:stale.receiptId,previewToken:stale.previewToken,expectedTaskHash:stale.taskHash,expectedPromptSHA256:stale.promptSHA256,confirm:true},409);
+});

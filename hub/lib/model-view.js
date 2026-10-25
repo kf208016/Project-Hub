@@ -1,9 +1,10 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path');
 const order = require('../public/model-order');
-const launch = require('./launch'), { EFFORTS } = require('./roles');
-const INITIAL_PICK = { ai: 'codex', model: 'GPT-6.1-Sol', effort: '高' };
-const validPhoneKey = key => key === 'chatgpt|app' || order.valid([key]);
+const launch = require('./launch'), { CLI_DEFAULT_LABEL } = launch, { EFFORTS } = require('./roles');
+const registry = require('./provider-registry');
+const INITIAL_PICK = { ai: 'codex', model: process.platform === 'win32' ? CLI_DEFAULT_LABEL : 'GPT-6.1-Sol', effort: '高' };
+const validPhoneKey = key => registry.webIds.some(actor=>key===actor+'|app') || order.valid([key]);
 const validPhoneName = name => typeof name === 'string' && name.length <= 24 && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(name);
 class ModelView {
   constructor(file) { this.file = file; }
@@ -30,7 +31,7 @@ class ModelView {
     const keys = Object.keys(spec);
     const mode = keys.length === 1 && keys[0] === 'labels' && ['short', 'full'].includes(spec.labels);
     const name = keys.length === 2 && keys.includes('key') && keys.includes('name') && validPhoneKey(spec.key) && validPhoneName(spec.name)
-      && (spec.key === 'chatgpt|app' || order.ordered(models).includes(spec.key));
+      && (registry.webIds.some(actor=>spec.key===actor+'|app') || order.ordered(models).includes(spec.key));
     if (!mode && !name) return { status: 400, error: '名前は一覧のモデルを指定し、24字以内・改行なしで入力してください' };
     const data = this.read(true), phone = this.phone(data);
     if (mode) phone.labels = spec.labels;
@@ -39,15 +40,24 @@ class ModelView {
     data.phone = phone; this.write(data);
     return { phoneLabels: phone };
   }
-  initial(data = this.read()) {
+  initial(data = this.read(true)) {
     const s = data.initial;
-    return s && ['claude', 'codex'].includes(s.ai) && typeof s.model === 'string' && s.model.trim() &&
-      !/[\r\n]/.test(s.model) && EFFORTS.includes(s.effort)
-      ? { ai: s.ai, model: s.model, effort: s.effort } : { ...INITIAL_PICK };
+    if(s===undefined)return {...INITIAL_PICK};
+    if(!s||typeof s!=='object'||Array.isArray(s)||Object.keys(s).length!==3||Object.keys(s).some(key=>!['ai','model','effort'].includes(key)))throw Object.assign(Error('已保存的初始 AI 設定格式無效；未改用其他服務'),{status:400,code:'INVALID_INITIAL_ACTOR'});
+    const actor=registry.resolveActor(s.ai);
+    if(actor.kind==='external-chat'&&s.model==='app'&&s.effort==='')return {ai:actor.id,model:'app',effort:''};
+    if(actor.kind==='cli'&&typeof s.model==='string'&&s.model.trim()&&!/[\u0000-\u001f\u007f]/.test(s.model)&&EFFORTS.includes(s.effort))return {ai:actor.id,model:s.model,effort:s.effort};
+    throw Object.assign(Error('已保存的初始 AI 模型或思考格式無效；未改用其他服務'),{status:400,code:'INVALID_INITIAL_ACTOR'});
   }
   setInitial(spec, models, modelError = () => '') {
-    if (!spec || !['claude', 'codex'].includes(spec.ai) || typeof spec.model !== 'string' || !EFFORTS.includes(spec.effort))
+    if(spec && registry.webIds.includes(spec.ai)) {
+      if(Object.keys(spec).some(key=>!['ai','model','effort'].includes(key)) || spec.model!=='app' || spec.effort!=='') return {status:400,error:'網頁 Chat 使用人工交接，不設定 CLI 模型或思考'};
+      const error=modelError(spec.ai,'');if(error)return {status:400,error};
+      const data=this.read(true);data.initial={ai:spec.ai,model:'app',effort:''};this.write(data);return {initialPick:this.initial(data)};
+    }
+    if (!spec || typeof spec!=='object'||Array.isArray(spec)||Object.keys(spec).length!==3||Object.keys(spec).some(key=>!['ai','model','effort'].includes(key))||!registry.isActor(spec.ai)||registry.resolveActor(spec.ai).kind!=='cli'||typeof spec.model !== 'string' || !EFFORTS.includes(spec.effort))
       return { status: 400, error: '初期AI・モデル・思考の形式が違います' };
+    spec={...spec,ai:registry.cliActor(spec.ai).id};
     const model = launch.modelLabel(spec.ai, spec.model);
     if (!(models[launch.AI_KEY[spec.ai]] || []).includes(model)) return { status: 400, error: 'このモデルは初期AIに選べません' };
     const error = modelError(spec.ai, model);

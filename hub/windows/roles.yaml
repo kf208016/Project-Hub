@@ -1,0 +1,21 @@
+# Native Windows defaults. Existing user roles.yaml is never overwritten.
+# Workspace permission is issued by the controller for each workflow.
+# Other providers are deferred; role/model changes never grant execution rights.
+models:
+  codex: [CLI預設]
+  claude-code: []
+agents: [サンプル担当] # Upstream fictional Discord example; no automatic messaging.
+roles:
+  司令塔:       { main: [codex, CLI預設, 極高], backup: [人], job: 規劃、分工與進度追蹤 }
+  調査:         { main: [codex, CLI預設, 高], backup: [人], job: 資料蒐集與摘要 }
+  デザイン:     { main: [codex, CLI預設, 高], backup: [人], job: 介面、結構與視覺設計 }
+  画像生成:     { main: [codex, CLI預設, 中], backup: [人], job: 圖片製作 }
+  コーディング: { main: [codex, CLI預設, 高], backup: [人], job: 程式開發 }
+  チェック:     { main: [codex, CLI預設, 極高], backup: [人], job: 獨立審查（開發者仍須完成測試） }
+  文章:         { main: [codex, CLI預設, 中], backup: [人], job: 說明文件與操作手冊 }
+  最終確認:     { main: [人], backup: [人], job: 驗收與完成判定 }
+permissions:
+  codex: codex
+switch:
+  auto: false
+  confirm: 交接前需由人核准

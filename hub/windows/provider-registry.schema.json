@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:project-hub:provider-registry:v1",
+  "title": "Project Hub provider registry v1",
+  "type": "array",
+  "minItems": 6,
+  "maxItems": 6,
+  "items": {
+    "type": "object",
+    "required": ["id", "provider", "kind", "transport", "ownerKey", "label", "url", "isolationProfile", "capabilities", "readiness"],
+    "additionalProperties": false,
+    "properties": {
+      "id": {"enum": ["codex", "claude", "agy", "grok", "chatgpt", "claude-chat"]},
+      "provider": {"enum": ["openai", "anthropic", "google", "xai"]},
+      "kind": {"enum": ["cli", "external-chat"]},
+      "transport": {"enum": ["native-codex", "provider-adapter", "web-manual"]},
+      "ownerKey": {"enum": ["codex", "claude-code", "agy", "grok", "chatgpt", "claude-chat"]},
+      "label": {"type": "string", "minLength": 1, "maxLength": 64},
+      "url": {"enum": [null, "https://chatgpt.com/", "https://claude.ai/"]},
+      "isolationProfile": {"enum": ["native-codex", "provider-worker", "manual-web"]},
+      "capabilities": {"type": "array", "uniqueItems": true, "minItems": 1, "maxItems": 12, "items": {"enum": ["spawn", "chat", "terminal", "delegate", "queue", "resume", "stop", "transcript", "models", "usage", "update", "mcp", "preview", "confirm", "result"]}},
+      "readiness": {
+        "type": "object",
+        "required": ["ready", "state", "reasonCode", "runtimeVerificationRequired"],
+        "additionalProperties": false,
+        "properties": {
+          "ready": {"type": "boolean"},
+          "state": {"enum": ["ready", "blocked"]},
+          "reasonCode": {"enum": ["", "PROVIDER_ADAPTER_UNVERIFIED", "WINDOWS_PROVIDER_ISOLATION_UNVERIFIED"]},
+          "runtimeVerificationRequired": {"type": "boolean"}
+        },
+        "allOf": [{"if": {"properties": {"ready": {"const": true}}}, "then": {"properties": {"state": {"const": "ready"}, "reasonCode": {"const": ""}}}, "else": {"properties": {"state": {"const": "blocked"}, "reasonCode": {"enum": ["PROVIDER_ADAPTER_UNVERIFIED", "WINDOWS_PROVIDER_ISOLATION_UNVERIFIED"]}}}}]
+      }
+    },
+    "allOf": [
+      {"if": {"properties": {"kind": {"const": "external-chat"}}}, "then": {"properties": {"id": {"enum": ["chatgpt", "claude-chat"]}, "transport": {"const": "web-manual"}, "isolationProfile": {"const": "manual-web"}, "url": {"enum": ["https://chatgpt.com/", "https://claude.ai/"]}, "capabilities": {"items": {"enum": ["preview", "confirm", "result"]}}, "readiness": {"properties": {"ready": {"const": true}, "runtimeVerificationRequired": {"const": false}}}}}, "else": {"properties": {"id": {"enum": ["codex", "claude", "agy", "grok"]}, "url": {"const": null}, "capabilities": {"items": {"enum": ["spawn", "chat", "terminal", "delegate", "queue", "resume", "stop", "transcript", "models", "usage", "update", "mcp"]}}, "readiness": {"properties": {"runtimeVerificationRequired": {"const": true}}}}}},
+      {"if": {"properties": {"id": {"const": "chatgpt"}}}, "then": {"properties": {"provider": {"const": "openai"}, "ownerKey": {"const": "chatgpt"}, "url": {"const": "https://chatgpt.com/"}}}},
+      {"if": {"properties": {"id": {"const": "claude-chat"}}}, "then": {"properties": {"provider": {"const": "anthropic"}, "ownerKey": {"const": "claude-chat"}, "url": {"const": "https://claude.ai/"}}}},
+      {"if": {"properties": {"id": {"const": "claude"}}}, "then": {"properties": {"provider": {"const": "anthropic"}, "ownerKey": {"const": "claude-code"}, "kind": {"const": "cli"}}}},
+      {"if": {"properties": {"id": {"const": "codex"}}}, "then": {"properties": {"provider": {"const": "openai"}, "ownerKey": {"const": "codex"}, "transport": {"const": "native-codex"}, "isolationProfile": {"const": "native-codex"}}}},
+      {"if": {"properties": {"id": {"const": "agy"}}}, "then": {"properties": {"provider": {"const": "google"}, "ownerKey": {"const": "agy"}, "kind": {"const": "cli"}}}},
+      {"if": {"properties": {"id": {"const": "grok"}}}, "then": {"properties": {"provider": {"const": "xai"}, "ownerKey": {"const": "grok"}, "kind": {"const": "cli"}}}}
+    ]
+  },
+  "allOf": [
+    {"contains": {"properties": {"id": {"const": "codex"}}}, "minContains": 1, "maxContains": 1},
+    {"contains": {"properties": {"id": {"const": "claude"}}}, "minContains": 1, "maxContains": 1},
+    {"contains": {"properties": {"id": {"const": "agy"}}}, "minContains": 1, "maxContains": 1},
+    {"contains": {"properties": {"id": {"const": "grok"}}}, "minContains": 1, "maxContains": 1},
+    {"contains": {"properties": {"id": {"const": "chatgpt"}}}, "minContains": 1, "maxContains": 1},
+    {"contains": {"properties": {"id": {"const": "claude-chat"}}}, "minContains": 1, "maxContains": 1}
+  ]
+}

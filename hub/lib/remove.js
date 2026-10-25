@@ -6,7 +6,10 @@ const {expandHome}=require('./store');
 const hash=x=>createHash('sha256').update(x).digest('hex');
 const inside=(a,b)=>b===a||b.startsWith(a+path.sep);
 const exists=f=>{try{fs.lstatSync(f);return true;}catch(e){if(e.code==='ENOENT')return false;throw e;}};
-function noLinks(f) {for(let q=path.resolve(f);;q=path.dirname(q)){if(exists(q)&&fs.lstatSync(q).isSymbolicLink())throw Error('リンクを含む場所は移せません');if(q===path.dirname(q))break;}}
+function noLinks(f) {
+ if(process.platform==='win32'){try{require('./safe-path').localPath(f,{allowMissing:true});}catch(e){throw Error('リンクまたは無効な場所は移せません：'+e.message);}}
+ for(let q=path.resolve(f);;q=path.dirname(q)){if(exists(q)&&fs.lstatSync(q).isSymbolicLink())throw Error('リンクを含む場所は移せません');if(q===path.dirname(q))break;}
+}
 function snapshot(f) {
  noLinks(f);let n=0,bytes=0;const rows=[];
  const walk=q=>{if(++n>20000)throw Error('ファイルが多すぎて照合できません');const st=fs.lstatSync(q);if(st.isSymbolicLink()||!st.isFile()&&!st.isDirectory())throw Error('リンクや特殊なファイルを含むため移せません');bytes+=st.isFile()?st.size:0;if(bytes>256*1024*1024)throw Error('照合できる大きさを超えています');rows.push([path.relative(f,q),st.ino,st.size,st.mtimeMs,st.isFile()?hash(fs.readFileSync(q)):'']);if(st.isDirectory())for(const x of fs.readdirSync(q).sort())walk(path.join(q,x));};walk(f);return hash(JSON.stringify(rows));
@@ -51,7 +54,7 @@ class Removal {
     }
    }
    for(const f of [path.join(p.dir,'attachments',t.id),path.join(p.dir,'作業',t.id)])if(exists(f)){
-    try {snapshot(f);if(this.referenced(f,p,t,all))throw Error('他の台帳・作業・会話から参照されています');d.optional.push({id:path.relative(p.dir,f),path:f,why:'この作業の専用フォルダ。必要な場合だけ選んでください'});}catch(e){d.keep.push({path:f,why:e.message});}
+    try {snapshot(f);if(this.referenced(f,p,t,all))throw Error('他の台帳・作業・会話から参照されています');d.optional.push({id:path.relative(p.dir,f).split(path.sep).join('/'),path:f,why:'この作業の専用フォルダ。必要な場合だけ選んでください'});}catch(e){d.keep.push({path:f,why:e.message});}
    }
   } else {
    if(p.id==='Project Hub'||p.name==='Project Hub'||path.dirname(p.dir)!==path.resolve(this.store.product))d.blockers.push('Project Hub自身やProductの外は削除できません');
@@ -60,8 +63,8 @@ class Removal {
     for(const f of q.folders){const resolved=path.resolve(q.dir,expandHome(f.path));if(inside(p.dir,resolved))d.blockers.push(`「${q.name}」がこのフォルダ内を使っています`);}
     if(q.related.some(x=>ref(q,x)))d.warnings.push(`「${q.name}」の関連の記載は残り、リンク切れになります`);
    }
-   try {noLinks(p.dir);let top;try{top=execFileSync('git',['-C',p.dir,'rev-parse','--show-toplevel'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch(e){if(e.status!==128)throw e;}
-    if(top&&fs.realpathSync(top)!==fs.realpathSync(p.dir)) {const names=execFileSync('git',['-C',top,'ls-files','-z','--',p.dir],{encoding:'utf8'});if(names)d.blockers.push('外側のGitで追跡されています');}
+   try {noLinks(p.dir);const query=(dir,args)=>process.platform==='win32'?require('./git-policy').run(dir,args):execFileSync('git',['-C',dir,...args],{encoding:'utf8',stdio:['ignore','pipe','pipe']});let top;try{top=query(p.dir,['rev-parse','--show-toplevel']).trim();}catch(e){if(e.status!==128)throw e;}
+    if(top&&fs.realpathSync(top)!==fs.realpathSync(p.dir)) {const names=query(top,['ls-files','-z','--',p.dir]);if(names)d.blockers.push('外側のGitで追跡されています');}
    }catch(e){d.blockers.push(e.message);}
    d.move.push({path:p.dir,what:'このプロジェクトのフォルダ全体（台帳・資料・成果物を含む）'});
    d.typed=['資料','成果物'].some(n=>exists(path.join(p.dir,n))&&fs.readdirSync(path.join(p.dir,n)).length>0);
@@ -115,7 +118,7 @@ class Removal {
   });
  }
  preview(project,task){const d=this.describe(project,task),token=randomUUID();for(const [k,v] of this.tokens)if(Date.now()-v.at>600000)this.tokens.delete(k);this.tokens.set(token,{at:Date.now(),d});return {...d,token};}
- save(r){noLinks(this.records);fs.mkdirSync(this.records,{recursive:true});const f=path.join(this.records,r.id+'.json');fs.writeFileSync(f+'.tmp',JSON.stringify(r,null,2));fs.renameSync(f+'.tmp',f);}
+ save(r){if(!/^[0-9a-f-]{36}$/.test(r.id))throw Error('記録の識別が不正です');noLinks(this.records);fs.mkdirSync(this.records,{recursive:true});const f=path.join(this.records,r.id+'.json'),tmp=f+'.'+randomUUID()+'.tmp';noLinks(f);noLinks(tmp);try{fs.writeFileSync(tmp,JSON.stringify(r,null,2),{flag:'wx'});fs.renameSync(tmp,f);}finally{if(exists(tmp))fs.unlinkSync(tmp);}}
  apply({token,optional=[],confirm,typed}){
   const old=this.tokens.get(token);if(confirm!==true||!old||Date.now()-old.at>600000)throw Error('もう一度削除内容を確認してください');
   const d=this.describe(old.d.project,old.d.task);if(d.blockers.length)throw Error(d.blockers.join(' / '));if(JSON.stringify(d)!==JSON.stringify(old.d))throw Error('確認中に変わりました。もう一度確認してください');
@@ -154,4 +157,80 @@ class Removal {
   return {ok:!skipped.length,restored,skipped};
  }
 }
+// Native plans are created before confirmation. The legacy fingerprint remains
+// separate; it is never reinterpreted as native-tree-v1 evidence.
+Removal.prototype.planNativeEntries=async function({id,project,task='',title,entries,kind=task?'task':'project'}) {
+ if(process.platform!=='win32')throw Error('Native removal is Windows-only');
+ if(!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(id||'')||!Array.isArray(entries)||!entries.length||entries.length>100||typeof title!=='string')throw Error('Native cleanup plan is invalid');
+ const p=this.store.readProject(project);if(!p||task&&!p.tasks.some(t=>t.id===task)||kind!==(task?'task':'project'))throw Error('Native cleanup membership is invalid');
+ const safe=require('./safe-path').localPath,rooted=require('./rooted-move');
+ const sourceRoot=safe(task?p.dir:this.store.product),targetRoot=safe(this.trash,{allowMissing:true}),journalRoot=safe(path.join(this.store.root,'_hub/rooted-moves'),{allowMissing:true});
+ const control=safe(path.join(this.store.root,'_hub'),{allowMissing:true}),code=safe(path.join(__dirname,'..'));
+ const overlaps=(a,b)=>{a=a.toLowerCase();b=b.toLowerCase();return inside(a,b)||inside(b,a);};
+ for(const e of entries){if(!e||typeof e.from!=='string'||typeof e.to!=='string'||!/^[a-f0-9]{64}$/.test(e.fingerprint||''))throw Error('Native entry is invalid');const from=safe(e.from),to=safe(e.to,{allowMissing:true});if(from===sourceRoot||!inside(sourceRoot,from)||!inside(p.dir,from)||to===targetRoot||!inside(targetRoot,to)||overlaps(from,control)||overlaps(from,code))throw Error('Native cleanup scope overlaps protected Hub controls or code');}
+ fs.mkdirSync(targetRoot,{recursive:true});fs.mkdirSync(journalRoot,{recursive:true});safe(targetRoot);safe(journalRoot);
+ const planned=[];
+ for(const e of entries){const native=await rooted.plan({sourceRoot,sourcePath:path.relative(sourceRoot,e.from),targetRoot,targetPath:path.relative(targetRoot,e.to),journalRoot});if(snapshot(e.from)!==e.fingerprint)throw Error('Cleanup source changed during native preview');planned.push({...e,moved:false,restored:false,native});}
+ return this.validateNativeRecord({id,at:new Date().toISOString(),kind,project,task,title,entries:planned,error:'',nativeVersion:1});
+};
+Removal.prototype.validateNativeRecord=function(r) {
+ const rooted=require('./rooted-move'),safe=require('./safe-path').localPath;
+ const component=value=>typeof value==='string'&&value.length>0&&value.length<=255&&!/[\\/:*?"<>|\x00-\x1f]/.test(value)&&value!=='.'&&value!=='..'&&!/[. ]$/.test(value);
+ if(!r||Object.keys(r).sort().join(',')!=='at,entries,error,id,kind,nativeVersion,project,task,title'||r.nativeVersion!==1||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(r.id||'')||!Array.isArray(r.entries)||!r.entries.length||r.entries.length>100||!['task','project'].includes(r.kind)||!component(r.project)||typeof r.task!=='string'||r.kind==='task'&&!component(r.task)||r.kind==='project'&&r.task!==''||typeof r.title!=='string'||r.title.length>4096||typeof r.error!=='string'||r.error.length>8192||typeof r.at!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(r.at)||!Number.isFinite(Date.parse(r.at)))throw Error('Legacy or invalid cleanup record requires a fresh native preview');
+ const sourceRoot=safe(r.kind==='task'?path.join(this.store.product,r.project):this.store.product),targetRoot=safe(this.trash),journalRoot=safe(path.join(this.store.root,'_hub/rooted-moves'));
+ const control=safe(path.join(this.store.root,'_hub')),code=safe(path.join(__dirname,'..'));
+ const overlaps=(a,b)=>{a=a.toLowerCase();b=b.toLowerCase();return inside(a,b)||inside(b,a);};
+ const seenFrom=new Set(),seenTo=new Set(),seenNative=new Set(),entryFields=new Set('from to fingerprint moved restored moving restoring native nativeRestore nativeState nativeRestoreState'.split(' '));
+ for(const e of r.entries){if(!e||Object.keys(e).some(k=>!entryFields.has(k))||typeof e.from!=='string'||typeof e.to!=='string'||typeof e.moved!=='boolean'||typeof e.restored!=='boolean'||!/^[a-f0-9]{64}$/.test(e.fingerprint||'')||['moving','restoring'].some(k=>e[k]!==undefined&&typeof e[k]!=='boolean')||['nativeState','nativeRestoreState'].some(k=>e[k]!==undefined&&!['planned','complete','partial','moved-unreceipted','not-moved'].includes(e[k])))throw Error('Native cleanup entry is invalid');rooted.validatePlan(e.native);if(seenFrom.has(e.from.toLowerCase())||seenTo.has(e.to.toLowerCase())||seenNative.has(e.native.recordId))throw Error('Duplicate native cleanup entry');seenFrom.add(e.from.toLowerCase());seenTo.add(e.to.toLowerCase());seenNative.add(e.native.recordId);if(path.resolve(e.from)!==e.from||path.resolve(e.to)!==e.to||e.from===sourceRoot||!inside(path.join(this.store.product,r.project),e.from)||overlaps(e.from,control)||overlaps(e.from,code)||e.native.sourceRoot!==sourceRoot||e.native.targetRoot!==targetRoot||e.native.journalRoot!==journalRoot||path.resolve(sourceRoot,e.native.sourcePath)!==e.from||path.resolve(targetRoot,e.native.targetPath)!==e.to)throw Error('Native cleanup authority changed');if(e.nativeRestore){rooted.validatePlan(e.nativeRestore);const undo=e.nativeRestore,forward=e.native;if(undo.sourceRoot!==forward.targetRoot||undo.sourceRootFingerprint!==forward.targetRootFingerprint||undo.sourcePath!==forward.targetPath||undo.targetRoot!==forward.sourceRoot||undo.targetRootFingerprint!==forward.sourceRootFingerprint||undo.targetPath!==forward.sourcePath||undo.objectId!==forward.objectId||undo.treeHash!==forward.treeHash||undo.journalRoot!==forward.journalRoot||undo.journalRootFingerprint!==forward.journalRootFingerprint||undo.recordId===forward.recordId)throw Error('Native restore authority changed');}else if(e.restored||e.restoring)throw Error('Native restore evidence is missing');}
+ return r;
+};
+Removal.prototype.nativeRecord=function(recordOrId) {
+ if(typeof recordOrId!=='string')return this.validateNativeRecord(recordOrId);
+ if(!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(recordOrId))throw Error('Invalid cleanup record id');const file=path.join(this.records,recordOrId+'.json');noLinks(file);const r=JSON.parse(fs.readFileSync(file,'utf8'));if(r.id!==recordOrId)throw Error('Cleanup record identity mismatch');return this.validateNativeRecord(r);
+};
+Removal.prototype.moveEntryAsync=async function(record,e) {
+ const r=this.validateNativeRecord(record);if(!r.entries.includes(e)||e.restored)throw Error('Native cleanup entry is not active');
+ if(e.moved&&!e.moving){const evidence=await require('./rooted-move').recover(e.native);if(evidence.state!=='complete')throw Error('Native cleanup completion is unverified');return e;}
+ if(e.moving&&e.nativeState){const rooted=require('./rooted-move');let recovery;try{recovery=await rooted.recover(e.native);}catch(error){if(error.code!=='RECORD_NOT_FOUND'||e.nativeState!=='planned')throw error;}if(recovery){if(recovery.state==='moved-unreceipted'){await rooted.finalize(e.native);recovery=await rooted.recover(e.native);}if(recovery.state==='complete'){e.moved=true;e.moving=false;e.nativeState='complete';this.save(r);return e;}throw Object.assign(Error('Native cleanup needs recovery review: '+recovery.state),{recoveryRequired:true,recordId:e.native.recordId});}}
+ if(snapshot(e.from)!==e.fingerprint)throw Error('Cleanup source changed since confirmation');
+ e.moving=true;e.nativeState='planned';this.save(r);
+ const out=await require('./rooted-move').move(e.native);
+ e.moved=out.moved;e.nativeState=out.state;e.moving=out.state!=='complete';if(e.moving){r.error=out.error;this.save(r);throw Object.assign(Error('Native cleanup is partial: '+out.error),{recoveryRequired:true,recordId:out.recordId});}this.save(r);return e;
+};
+Removal.prototype.cleanupRecordAsync=async function(recordOrId,{beforeEntry}={}) {
+ if(beforeEntry!==undefined&&typeof beforeEntry!=='function')throw Error('Invalid private cleanup entry validator');
+ const r=this.nativeRecord(recordOrId);if(this.busy(r.project)||this.locked(r.project))throw Error('AI or maintenance is active');if(r.entries.some(e=>e.restored))throw Error('Restored cleanup requires a fresh reviewed deletion');const failed=[];
+ for(const e of r.entries.filter(e=>!e.restored))try{await beforeEntry?.(r,e);await this.moveEntryAsync(r,e);}catch(error){r.error=error.message;this.save(r);failed.push({path:e.from,why:error.message});break;}
+ return {ok:!failed.length,record:r.id,moved:r.entries.filter(e=>e.moved&&!e.moving).map(e=>e.from),failed,recoveryRequired:failed.length>0};
+};
+Removal.prototype.recoverAsync=async function(recordOrId) {
+ const r=this.nativeRecord(recordOrId);let changed=false;
+ for(const e of r.entries){if(e.restoring&&e.nativeRestore){const out=await require('./rooted-move').recover(e.nativeRestore);if(out.state==='complete'){e.restored=true;e.restoring=false;changed=true;}else{e.nativeRestoreState=out.state;r.error='Native restore needs recovery review';changed=true;}}else if(e.moving){const out=await require('./rooted-move').recover(e.native);if(out.state==='complete'){e.moved=true;e.moving=false;e.nativeState='complete';changed=true;}else{e.nativeState=out.state;r.error='Native cleanup needs recovery review';changed=true;}}}
+ if(changed)this.save(r);return r;
+};
+Removal.prototype.restoreAsync=async function(id,confirm) {
+ if(confirm!==true)throw Error('Confirm the restore');const r=await this.recoverAsync(id);if(this.busy(r.project)||this.locked(r.project))throw Error('AI or maintenance is active');let restored=0;const skipped=[];
+ for(const e of r.entries.filter(e=>e.moved&&!e.restored))try{if(e.moving)throw Error('Partial cleanup requires recovery review');if(r.kind==='task'&&!exists(path.join(this.store.product,r.project,'PROJECT.md')))throw Error('Restore the project first');const rooted=require('./rooted-move'),evidence=await rooted.recover(e.native);if(evidence.state!=='complete')throw Error('Native move receipt is not complete');e.nativeRestore=await rooted.plan({sourceRoot:e.native.targetRoot,sourceRootFingerprint:e.native.targetRootFingerprint,sourcePath:e.native.targetPath,targetRoot:e.native.sourceRoot,targetRootFingerprint:e.native.sourceRootFingerprint,targetPath:e.native.sourcePath,journalRoot:e.native.journalRoot,journalRootFingerprint:e.native.journalRootFingerprint});if(e.nativeRestore.objectId!==e.native.objectId||e.nativeRestore.treeHash!==e.native.treeHash)throw Error('Trash content changed');e.restoring=true;this.save(r);const out=await rooted.move(e.nativeRestore);e.nativeRestoreState=out.state;if(out.state!=='complete')throw Error('Native restore is partial: '+out.error);e.restored=true;e.restoring=false;restored++;this.save(r);}catch(error){r.error=error.message;this.save(r);skipped.push({path:e.from,why:error.message});}
+ return {ok:!skipped.length,restored,skipped,recoveryRequired:skipped.length>0};
+};
+Removal.prototype.previewAsync=async function(project,task) {
+ if(process.platform!=='win32')return this.preview(project,task);
+ const d=this.describe(project,task),token=randomUUID();for(const [k,v]of this.tokens)if(Date.now()-v.at>600000)this.tokens.delete(k);if(this.tokens.size>=128)throw Error('Too many deletion previews');
+ let native=null;if(!d.blockers.length){const id=randomUUID(),dest=path.join(this.trash,`ProjectHub 削除 ${new Date().toISOString().replace(/[:.]/g,'-')} ${id}`);native=await this.planNativeEntries({id,project:d.project,task:d.task,title:d.title,entries:[...d.move,...d.optional].map(x=>({from:x.path,to:path.join(dest,path.relative(this.store.root,x.path)),fingerprint:x.fingerprint}))});if(JSON.stringify(this.describe(project,task))!==JSON.stringify(d))throw Error('Deletion source changed during native preview');}
+ this.tokens.set(token,{at:Date.now(),d,native});return {...d,token};
+};
+Removal.prototype.applyAsync=async function({token,optional=[],confirm,typed}) {
+ if(process.platform!=='win32')return this.apply({token,optional,confirm,typed});
+ const old=this.tokens.get(token);this.tokens.delete(token);if(confirm!==true||!old?.native||Date.now()<old.at||Date.now()-old.at>600000)throw Error('Please preview and confirm the deletion again');
+ const d=this.describe(old.d.project,old.d.task);if(d.blockers.length)throw Error(d.blockers.join(' / '));if(JSON.stringify(d)!==JSON.stringify(old.d))throw Error('Deletion source changed since preview');if(d.typed&&typed!==d.title)throw Error('Enter the project title exactly');if(!Array.isArray(optional)||new Set(optional).size!==optional.length||optional.some(id=>!d.optional.some(x=>x.id===id)))throw Error('Invalid optional deletion selection');
+ const paths=new Set([...d.move,...d.optional.filter(x=>optional.includes(x.id))].map(x=>x.path)),r={...old.native,entries:old.native.entries.filter(e=>paths.has(e.from))};this.validateNativeRecord(r);this.save(r);return this.cleanupRecordAsync(r);
+};
+Removal.prototype.historyAsync=async function() {
+ if(process.platform!=='win32')return this.history();if(!exists(this.records))return [];noLinks(this.records);const records=[];
+ for(const name of fs.readdirSync(this.records).filter(n=>/^[a-f0-9-]{36}\.json$/i.test(n))){const file=path.join(this.records,name);noLinks(file);let r=JSON.parse(fs.readFileSync(file,'utf8'));if(r.id+'.json'!==name)throw Error('Cleanup record identity mismatch');if(r.nativeVersion!==1){records.push({id:r.id,at:r.at,title:r.title,project:r.project,task:r.task,count:0,restored:false,recoveryRequired:true,error:'Legacy record has no native move evidence; review its retained files manually'});continue;}r=await this.recoverAsync(r);let count=0,restored=true,recoveryRequired=false,error=r.error;
+  for(const e of r.entries){if(e.restored){const evidence=await require('./rooted-move').recover(e.nativeRestore);if(evidence.state!=='complete')throw Error('Native restore completion is unverified');count++;}else if(e.moved||e.moving){const evidence=await require('./rooted-move').recover(e.native);if(evidence.state==='complete'){count++;restored=false;}else{restored=false;recoveryRequired=true;error='Native cleanup needs recovery review: '+evidence.state;}}}
+  records.push({id:r.id,at:r.at,title:r.title,project:r.project,task:r.task,count,restored:count>0&&restored,recoveryRequired,error});
+ }
+ return records.sort((a,b)=>b.at.localeCompare(a.at)).slice(0,100);
+};
 module.exports={Removal,snapshot,noLinks,inside,exists};

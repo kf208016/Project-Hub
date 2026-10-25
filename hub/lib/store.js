@@ -6,8 +6,11 @@ const os = require('os');
 const { createHash } = require('crypto');
 const { parseDoc, parseYaml, setScalar, scalar } = require('./frontmatter');
 const { Completion, hash } = require('./completion');
+const taskWrites = require('./task-write-lock');
+function write(file, text, options) { taskWrites.assertPathWritable(file); return fs.writeFileSync(file, text, options); }
 
 const SAFE_NAME = /^[^/\\\0]+$/;
+function validatePath(file) {if(process.platform==='win32')require('./safe-path').localPath(file,{allowMissing:true});return file;}
 
 function expandHome(p) {
   if (!p || typeof p !== 'string') return '';
@@ -15,7 +18,7 @@ function expandHome(p) {
 }
 
 function read(file) {
-  try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+  try { validatePath(file);return fs.readFileSync(file, 'utf8'); } catch { return null; }
 }
 
 // 読んで分けた結果の使い回し：ファイルの更新時刻と大きさが前と同じなら、読み直さずに前の結果を使う
@@ -132,6 +135,7 @@ function pick(secs, word) {
 
 class Store {
   constructor(root) {
+    validatePath(root);validatePath(path.join(root,'_hub'));validatePath(path.join(root,'Product'));
     this.root = root;
     this.product = path.join(root, 'Product');
     this.completion = new Completion(root, c => {
@@ -152,6 +156,7 @@ class Store {
   projectDir(id) {
     if (!SAFE_NAME.test(id || '') || id === '.' || id === '..') return null;
     const dir = path.join(this.product, id);
+    try{validatePath(path.join(dir,'PROJECT.md'));}catch{return null;}
     return fs.existsSync(path.join(dir, 'PROJECT.md')) ? dir : null;
   }
 
@@ -159,6 +164,7 @@ class Store {
     const dir = this.projectDir(projectId);
     if (!dir || !SAFE_NAME.test(taskId || '') || taskId.startsWith('_') || taskId.startsWith('.')) return null;
     const f = path.join(dir, '.ai', 'tasks', taskId + '.md');
+    try{validatePath(f);}catch{return null;}
     return fs.existsSync(f) ? f : null;
   }
 
@@ -245,6 +251,7 @@ class Store {
     try { parent = h.resolve(parent, projects); derivedFrom = h.resolve(derivedFrom, projects); } catch(e) { return { error: e.message }; }
     if (projects.some(p => p.name === nm)) return { error: '同じ名前のプロジェクトがあります' };
     const dir = path.join(this.product, nm);
+    try{validatePath(dir);if(templateDir&&process.platform==='win32')require('./safe-path').localTree(templateDir);}catch(e){return {error:e.message};}
     if (fs.existsSync(dir)) return { error: `「${nm}」はもうあります` };
     fs.mkdirSync(dir, { recursive: true });
     if (templateDir && fs.existsSync(templateDir)) {
@@ -275,17 +282,19 @@ class Store {
       '# メモ',
       '',
     ].join('\n');
-    fs.writeFileSync(path.join(dir, 'PROJECT.md'), text);
+    write(path.join(dir, 'PROJECT.md'), text);
     return { project: this.readProject(nm) };
   }
 
   // 参考フォルダ・ファイルを足す（PROJECT.md の folders に「参考N」として書く。同じ場所は足さない）
   addRefs(id, paths) {
+    const guarded = this.projectDir(id); if (guarded) taskWrites.assertPathWritable(guarded);
     const p = this.readProject(id);
     if (!p) return null;
     const file = path.join(p.dir, 'PROJECT.md');
-    const lines = read(file).split('\n');
+    const original=read(file),eol=original.includes('\r\n')?'\r\n':'\n',lines=original.split(/\r?\n/);
     const end = lines.indexOf('---', 1);
+    if(end<1)throw Error('專案檔案的 frontmatter 不完整，未新增參考資料');
     let i = lines.findIndex((l, k) => k > 0 && k < end && /^folders:/.test(l));
     if (i < 0) { lines.splice(end, 0, 'folders:'); i = end; }
     else if (/^folders:\s*\{\s*\}/.test(lines[i])) lines[i] = 'folders:';
@@ -303,7 +312,7 @@ class Store {
       add.push(`  参考${n}: ${scalar(x)}`);
     }
     lines.splice(j, 0, ...add);
-    fs.writeFileSync(file, lines.join('\n'));
+    write(file, lines.join(eol));
     return { project: this.readProject(id), added: add.length };
   }
 
@@ -322,6 +331,7 @@ class Store {
 
   // 状態・質問を書き換え、メモを1行足す
   updateTask(projectId, taskId, { state, question, memo, owner, role, model, effort, parent, workdir, phase, via, mergeExcluded, kind, derivedFrom, workspaceMode, workspaceStarted }) {
+    const guarded = this.projectDir(projectId); if (guarded) taskWrites.assertPathWritable(guarded);
     const file = this.taskFile(projectId, taskId);
     if (!file) return null;
     let text = read(file);
@@ -345,17 +355,18 @@ class Store {
         ? text.replace(/^## メモ\s*$/m, m => `${m}\n${line}`)
         : text.replace(/\s*$/, `\n\n## メモ\n${line}\n`);
     }
-    fs.writeFileSync(file, text);
+    write(file, text);
     if (preserve && parseDoc(text).data.state === '完了') this.completion.approveTask(key, text);
     return this.readTask(file);
   }
 
   // 手順だけを更新。全部付いても、人の承認までは一覧に残す。
   setStep(projectId, taskId, index, done) {
+    if (!Number.isSafeInteger(index) || index < 0 || typeof done !== 'boolean') return null;
     const file = this.taskFile(projectId, taskId);
     if (!file) return null;
-    const before = read(file), key = `${projectId}/${taskId}`, preserve = this.completion.data.tasks[key]?.hash === hash(before);
-    const lines = before.split('\n');
+    const before = read(file), key = `${projectId}/${taskId}`, preserve = this.completion.data.tasks[key]?.hash === hash(before), eol=before.includes('\r\n')?'\r\n':'\n';
+    const lines = before.split(/\r?\n/);
     let inside = false, n = -1, hit = false;
     for (let i = 0; i < lines.length; i++) {
       if (/^##\s/.test(lines[i])) { inside = /^##\s+手順/.test(lines[i]); continue; }
@@ -366,7 +377,8 @@ class Store {
     const steps = readSteps(parseDoc(text).body);
     const cur = parseDoc(text).data.state;
     if (!steps.every(x => x.done) && cur === '完了') text = setScalar(text, 'state', '実行中');
-    fs.writeFileSync(file, text);
+    text=text.replace(/\r?\n/g,eol);
+    write(file, text);
     if (preserve && parseDoc(text).data.state === '完了') this.completion.approveTask(key,text);
     return this.readTask(file);
   }
@@ -376,7 +388,7 @@ class Store {
     const file = this.taskFile(projectId, taskId);
     const item = oneLine(textIn).slice(0, 120);
     if (!file || !item) return null;
-    const lines = read(file).split('\n');
+    const original=read(file),eol=original.includes('\r\n')?'\r\n':'\n',lines=original.split(/\r?\n/);
     const h = lines.findIndex(l => /^##\s+手順/.test(l));
     if (h >= 0) {
       let end = h + 1;
@@ -386,11 +398,12 @@ class Store {
       if (blank >= 0) lines[blank] = `- [ ] ${item}`; else lines.splice(end, 0, `- [ ] ${item}`);
     } else {
       const close = lines.indexOf('---', 1);
+      if(close<1)throw Error('作業檔案的 frontmatter 不完整，未新增步驟');
       lines.splice(close + 1, 0, '## 手順', `- [ ] ${item}`, '');
     }
     let text = setScalar(lines.join('\n'), 'updated', now());
     if (parseDoc(text).data.state === '完了') text = setScalar(text, 'state', '実行中');
-    fs.writeFileSync(file, text);
+    write(file, text.replace(/\r?\n/g,eol));
     return this.readTask(file);
   }
 
@@ -406,22 +419,24 @@ class Store {
       for (let i = h + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) if (lines[i].trim()) end = i + 1;
       lines.splice(end, 0, add);
     }
-    fs.writeFileSync(file, setScalar(lines.join('\n'), 'updated', now()));
+    write(file, setScalar(lines.join('\n'), 'updated', now()));
     return this.readTask(file);
   }
 
   // プロジェクトの状態（人が［プロジェクトを完了にする］を押した時など）
   setProjectStatus(projectId, status) {
+    const guarded = this.projectDir(projectId); if (guarded) taskWrites.assertPathWritable(guarded);
     const p = this.readProject(projectId);
     if (!p) return null;
     const file = path.join(p.dir, 'PROJECT.md');
-    fs.writeFileSync(file, setScalar(read(file), 'status', status));
+    write(file, setScalar(read(file), 'status', status));
     if (status === '完了') this.completion.approveProject(projectId, parseDoc(read(file)).data, { status: true });
     return this.readProject(projectId);
   }
 
   // 今のフェーズ（最初の未完了）を完了にして、次を進行中にする
   nextPhase(projectId) {
+    const guarded = this.projectDir(projectId); if (guarded) taskWrites.assertPathWritable(guarded);
     const p = this.readProject(projectId);
     if (!p) return null;
     const i = p.phases.findIndex(ph => ph && ph.state !== '完了');
@@ -430,7 +445,7 @@ class Store {
     let text = setPhaseLine(read(file), p.phases[i].name, '完了');
     if (p.phases[i + 1] && !p.phases[i + 1].completionPending) text = setPhaseLine(text, p.phases[i + 1].name, '進行中');
     else if (!p.phases[i + 1]) text = setScalar(text, 'status', '完了');
-    fs.writeFileSync(file, text);
+    write(file, text);
     this.completion.approveProject(projectId, parseDoc(text).data, { phase: p.phases[i].name, status: !p.phases[i + 1] });
     return this.readProject(projectId);
   }
@@ -438,10 +453,11 @@ class Store {
   phaseOfferKey(p) { return hash(JSON.stringify(p.tasks.map(t => [t.id,t.state,t.phase,t.steps]))); }
 
   continuePhase(projectId) {
+    const guarded = this.projectDir(projectId); if (guarded) taskWrites.assertPathWritable(guarded);
     const p = this.readProject(projectId); if (!p) return null;
     const ph = p.phases.find(x => x.state !== '完了'); if (!ph) return p;
     const file = path.join(p.dir, 'PROJECT.md');
-    fs.writeFileSync(file, setPhaseLine(read(file), ph.name, '進行中'));
+    write(file, setPhaseLine(read(file), ph.name, '進行中'));
     this.completion.data.projects[projectId] ||= { phases: {} };
     this.completion.data.projects[projectId].continued = this.phaseOfferKey(p); this.completion.save();
     return this.readProject(projectId);
@@ -454,7 +470,7 @@ class Store {
     if (hash(before) !== expectedHash) return { error: '確認中に作業が更新されました', status: 409 };
     const raw = parseDoc(before).data.state || '未着手';
     const text = setScalar(setScalar(before, 'state', action === 'approve' ? '完了' : raw === '完了' ? '実行中' : raw), 'updated', now());
-    fs.writeFileSync(file, text);
+    write(file, text);
     const key = `${projectId}/${taskId}`;
     if (action === 'approve') this.completion.approveTask(key, text);
     else this.completion.continueTask(key, readSteps(parseDoc(text).body));
@@ -465,15 +481,17 @@ class Store {
   createTask(projectId, { title, owner, model, effort, next, role, parent, phase, via, steps, kind, derivedFrom, workspaceMode }) {
     const dir = this.projectDir(projectId);
     if (!dir || !title || !String(title).trim()) return null;
+    taskWrites.assertPathWritable(dir);
     let context; try { context = require('./work-context').validateTask(this.readProject(projectId), null, {parent,kind,derivedFrom,workspaceMode}, this.listProjects()); } catch(e) { return null; }
     const tdir = path.join(dir, '.ai', 'tasks');
+    validatePath(tdir);
     fs.mkdirSync(tdir, { recursive: true });
     const day = now().slice(0, 10).replace(/-/g, '');
     const id = require('./task-ids').reserveTaskId(this, projectId, dir, day);
     const one = scalar;
     const list = (Array.isArray(steps) ? steps : String(steps || '').split(/\r?\n/)).map(oneLine).filter(Boolean).slice(0, 12);
     const text = `---\nid: ${id}\ntitle: ${one(title)}\nrole: ${one(role)}\nparent: ${one(parent)}\nkind: ${context.kind}\nderivedFrom: ${one(context.derivedFrom)}\nworkspaceMode: ${context.workspaceMode}\nphase: ${one(phase)}\nowner: ${one(owner)}\nvia: ${one(via)}\nstate: 未着手\nworkdir:\nmodel: ${one(model)}\neffort: ${one(effort)}\nquestion:\nskills: []\nupdated: ${now()}\n---\n## 手順\n${list.map(x => `- [ ] ${x}`).join('\n')}\n\n## やったこと\n\n## 次にやること\n${one(next)}\n\n## 注意\n`;
-    fs.writeFileSync(path.join(tdir, id + '.md'), text, { flag: 'wx' });
+    write(path.join(tdir, id + '.md'), text, { flag: 'wx' });
     return this.readTask(path.join(tdir, id + '.md'));
   }
 }

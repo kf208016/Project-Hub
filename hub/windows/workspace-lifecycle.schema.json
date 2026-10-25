@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Controller owned workspace lifecycle summary",
+  "description":"Read-only task.workspaceLifecycle in GET /api/state. Derived from the current controller private flows, never task metadata or a saved journal. Null means no current owned flow, not evidence that cold-restart secret files or locks were cleaned. No permit, flow ID, run ID, credential, secret path or raw error is returned. idle：Hub owned 程序已退出、MCP 與目的地同意已撤銷，lease 保留至多 10 分鐘；下次由使用者送出時完整重新驗證，失敗則釋放並要求重新核准。",
+  "oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["kind","state","ownedChildren","retryClose","errorCode"],"properties":{
+    "kind":{"enum":["chat","terminal"]},
+    "state":{"enum":["starting","active","idle","waiting","verification-blocked","stopping","cleaning","cleanup-failed"]},
+    "ownedChildren":{"type":"integer","minimum":0},
+    "retryClose":{"type":"boolean","description":"UI may offer the existing authenticated close route; this value grants no authority."},
+    "errorCode":{"enum":["","WORKSPACE_CLEANUP_REQUIRED"]}
+  }}],
+  "$defs":{"closeRequest":{"type":"object","additionalProperties":false,"required":["project","task","confirm"],"properties":{"project":{"type":"string","minLength":1},"task":{"type":"string","minLength":1},"confirm":{"const":true}}}}
+}

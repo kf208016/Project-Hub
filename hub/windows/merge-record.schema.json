@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub reviewed Git merge transaction",
+  "description": "Local recovery journal, not a trusted signature. Runtime binds canonical registered worktree paths, task identity, snapshots, repo locks, commit ancestry and cleanup content before mutation. Windows semantic index includes ls-files stage and -v flags; assume-unchanged, skip-worktree and actual tracked bytes hidden by stat cache require manual handling and are never silently cleared. Normalized blobs are freshly calculated without writing objects or invoking unadmitted external filters.",
+  "type": "object",
+  "required": ["version", "id", "at", "project", "task", "title", "taskHash", "source", "target", "workRoot", "state", "complete", "files", "error", "sourceOriginal", "targetOriginal", "gitExecution", "skipHooks"],
+  "properties": {
+    "version": {"const": 1},
+    "id": {"type": "string", "format": "uuid"},
+    "at": {"type": "string", "format": "date-time"},
+    "project": {"type": "string", "minLength": 1},
+    "task": {"type": "string", "minLength": 1},
+    "title": {"type": "string"},
+    "taskHash": {"type": "string"},
+    "source": {"type": "string", "minLength": 1},
+    "target": {"type": "string", "minLength": 1},
+    "workRoot": {"type": "string", "minLength": 1},
+    "state": {"enum": ["planned", "source-saving", "source-saved", "target-saving", "target-saved", "merging", "conflict", "merged", "cleanup-planned", "cleanup-moved", "complete"]},
+    "complete": {"type": "boolean"},
+    "files": {"type": "array", "items": {"type": "string"}},
+    "error": {"type": "string"},
+    "sourceOriginal": {"$ref": "#/$defs/snapshot"},
+    "targetOriginal": {"$ref": "#/$defs/snapshot"},
+    "sourceSaved": {"$ref": "#/$defs/snapshot"},
+    "targetMerged": {"$ref": "#/$defs/snapshot"},
+    "nativeCleanup": {"$ref": "rooted-move.schema.json"},
+    "nativeVerified": {"type":"object","required":["objectId","recordId","treeHash"],"properties":{"objectId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"recordId":{"type":"string","pattern":"^[a-f0-9]{32}$"},"treeHash":{"type":"string","pattern":"^[a-f0-9]{64}$"}},"additionalProperties":false},
+    "nativeRepaired":{"type":"object","required":["algorithm","objectId","treeHash","ok","directory","entries","bytes"],"properties":{"algorithm":{"const":"native-tree-v1"},"ok":{"const":true},"directory":{"const":true},"objectId":{"type":"string","pattern":"^[a-f0-9]{64}$"},"treeHash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"entries":{"type":"integer","minimum":1,"maximum":20000},"bytes":{"type":"integer","minimum":0,"maximum":268435456}},"additionalProperties":false},
+    "sourceHead": {"$ref": "#/$defs/commit"},
+    "mergeBefore": {"$ref": "#/$defs/commit"},
+    "commit": {"$ref": "#/$defs/commit"},
+    "mergeMessage": {"type": "string"},
+    "sourceFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "trashPlanned": {"type": "string", "minLength": 1},
+    "trashed": {"type": "string", "minLength": 1},
+    "skipHooks": {"type": "boolean"},
+    "gitExecution": {"type": "object", "required": ["hooks", "configHash", "blockers"], "properties": {
+      "hooks": {"type": "array", "items": {"type": "object", "required": ["path", "sha256"], "properties": {"path": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}, "additionalProperties": false}},
+      "configHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "sourceExecution":{"type":["object","null"],"properties":{"configHash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"configRowsHash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"attributesHash":{"type":"string","pattern":"^(?:[a-f0-9]{64})?$"}},"additionalProperties":true},
+      "targetExecution":{"type":"object","properties":{"configHash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"configRowsHash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"attributesHash":{"type":"string","pattern":"^(?:[a-f0-9]{64})?$"}},"additionalProperties":true},
+      "blockers": {"type": "array", "items": {"type": "string"}}
+    }, "additionalProperties": true}
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[a-f0-9]{40,64}$"},
+    "snapshot": {"type": "object", "required": ["head", "branch", "status", "content", "allContent"], "properties": {
+      "head": {"$ref": "#/$defs/commit"}, "branch": {"type": "string"}, "status": {"type": "string"},
+      "content": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "allContent": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    }, "additionalProperties": false}
+  },
+  "additionalProperties": false
+}

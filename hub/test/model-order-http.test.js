@@ -1,11 +1,13 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+const native=process.platform==='win32',fixture=require('./helpers/owned-native-fixture'),originalPath=process.env.PATH;
 const root=fs.mkdtempSync(path.join(os.tmpdir(),'model-order-http-'));
+const restoreInventory=native?fixture.freshInventory():()=>{};if(native)process.env.PATH=fixture.environment(fixture.provider(root).bin);
 process.env.HUB_ROOT=root;process.env.HUB_DRY_RUN='1';process.env.HUB_AI_HOME=path.join(root,'home');const port=49000+Math.floor(Math.random()*500);process.env.HUB_PORT=String(port);
 fs.mkdirSync(path.join(root,'_hub'),{recursive:true});fs.copyFileSync(path.join(__dirname,'../../docs/project-hub/templates/_hub/roles.yaml'),path.join(root,'_hub/roles.yaml'));
 const {server}=require('../server'),order=require('../public/model-order');let base;
 test.before(async()=>{await new Promise(r=>server.listen(port,'127.0.0.1',r));base='http://127.0.0.1:'+server.address().port;});
-test.after(async()=>{await new Promise(r=>server.close(r));fs.rmSync(root,{recursive:true,force:true});});
+test.after(async()=>{await new Promise(r=>server.close(r));restoreInventory();process.env.PATH=originalPath;fs.rmSync(root,{recursive:true,force:true,maxRetries:20,retryDelay:50});});
 const post=(route,b,headers={'X-Hub':'1'})=>fetch(base+route,{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify(b)});
 test('隔離HTTP：保存/再読・相互保持・before拒否・不正入力・既存権限条件',async()=>{
  const first=await(await fetch(base+'/api/state')).json(),before=order.ordered(first.roles.models,first.modelOrder),next=before.slice().reverse(),roles=fs.readFileSync(path.join(root,'_hub/roles.yaml'));
@@ -19,11 +21,12 @@ test('隔離HTTP：保存/再読・相互保持・before拒否・不正入力・
 
 test('初期AI APIの検証・状態・再読込・相互保持と既存役割の保持', async () => {
   const { ModelView } = require('../lib/model-view');
-  const initial = { ai: 'claude', model: 'Opus 5.5', effort: '中' }, file = path.join(root, '_hub/model-view.json');
+  const initial = native?{ai:'codex',model:'GPT-6.1-Sol',effort:'中'}:{ ai: 'claude', model: 'Opus 5.5', effort: '中' }, file = path.join(root, '_hub/model-view.json');
   const before = await (await fetch(base + '/api/state')).json();
-  assert.deepEqual(before.initialPick, { ai: 'codex', model: 'GPT-6.1-Sol', effort: '高' });
+  assert.deepEqual(before.initialPick, { ai: 'codex', model: native?'CLI預設':'GPT-6.1-Sol', effort: '高' });
   assert.equal((await post('/api/models/initial', initial, {})).status, 403);
-  const r = await post('/api/models/initial', { ...initial, model: 'claude-opus-5-5' });
+  if(native){const snapshot=fs.readFileSync(file);const deferred=await post('/api/models/initial',{ai:'claude',model:'Opus 5.5',effort:'中'});assert.equal(deferred.status,400);assert.deepEqual(fs.readFileSync(file),snapshot);}
+  const r = await post('/api/models/initial', { ...initial, model: native?'gpt-6.1-sol':'claude-opus-5-5' });
   assert.equal(r.status, 200); assert.deepEqual((await r.json()).initialPick, initial);
   let current = await (await fetch(base + '/api/state')).json();
   assert.deepEqual(current.initialPick, initial); assert.equal(current.initialPickError, '');
@@ -34,7 +37,7 @@ test('初期AI APIの検証・状態・再読込・相互保持と既存役割�
   for (const bad of [{ ...initial, ai: 'agy' }, { ...initial, ai: 'discord:しおり' }, { ...initial, model: 'unknown' }, { ...initial, effort: 'invalid' }]) {
     assert.equal((await post('/api/models/initial', bad)).status, 400); assert.deepEqual(fs.readFileSync(file), stored);
   }
-  await post('/api/models/hidden', { ai: 'claude-code', model: initial.model, hidden: true });
+  await post('/api/models/hidden', { ai: native?'codex':'claude-code', model: initial.model, hidden: true });
   current = await (await fetch(base + '/api/state')).json();
   assert.deepEqual(current.initialPick, initial);
   // 候補消失時も保存値を勝手に置き換えない。

@@ -1,0 +1,65 @@
+{
+  "version": 2,
+  "validationScope": "synthetic contract examples; no provider call",
+  "validPreview": {
+    "actor": "chatgpt",
+    "project": "synthetic-project",
+    "task": "synthetic-task",
+    "text": "\u53ea\u56de\u8986 WEB_CHAT_SYNTHETIC_OK",
+    "responseLanguage": "zh-TW"
+  },
+  "validClaudePreview": {
+    "actor": "claude-chat",
+    "project": "synthetic-project",
+    "task": "synthetic-task",
+    "text": "\u53ea\u56de\u8986 WEB_CHAT_SYNTHETIC_OK",
+    "responseLanguage": "zh-TW"
+  },
+  "invalidPreview": [
+    {
+      "actor": "grok",
+      "project": "p",
+      "task": "t",
+      "text": "no CLI fallback"
+    },
+    {
+      "actor": "chatgpt",
+      "project": "p",
+      "task": "t",
+      "text": "extra field denied",
+      "owner": "untrusted-owner"
+    },
+    {
+      "actor": "chatgpt",
+      "project": "p",
+      "task": "t",
+      "text": "\u0000"
+    },
+    {
+      "actor": "chatgpt",
+      "project": "p",
+      "task": "t",
+      "text": "\ud800"
+    }
+  ],
+  "limitsUTF8Bytes": {
+    "input": 49152,
+    "prompt": 131072,
+    "result": 262144,
+    "row": 2097152,
+    "task": 4194304,
+    "metadata": 1048576,
+    "log": 67108864
+  },
+  "tokenLifetimeMilliseconds": {
+    "preview": 300000,
+    "result": 3600000
+  },
+  "provenance": "user-pasted/unattested",
+  "taskNoteEncoding": "web-task-blockquote-preserve-newlines-v1",
+  "untrustedHeadingExample": {
+    "raw": "## \u624b\u9806\n- [x] injected",
+    "taskNote": "> ## \u624b\u9806\n> - [x] injected",
+    "effect": "original steps/owner/state remain unchanged"
+  }
+}

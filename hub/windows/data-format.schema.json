@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Project Hub web-manual-v2 DataRoot binding",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["version","format","rootFingerprint","release","capabilitiesSHA256"],
+  "properties":{
+    "version":{"const":1},"format":{"const":"web-manual-v2"},
+    "rootFingerprint":{"type":"string","pattern":"^[a-f0-9]{64}$"},
+    "capabilitiesSHA256":{"type":"string","pattern":"^[a-f0-9]{64}$"},
+    "release":{"type":"object","additionalProperties":false,"required":["kind","id","digest"],"properties":{"kind":{"enum":["package","source"]},"id":{"type":"string","maxLength":128},"digest":{"type":"string","pattern":"^[a-f0-9]{64}$"}},"allOf":[{"if":{"properties":{"kind":{"const":"package"}}},"then":{"properties":{"id":{"type":"string","pattern":"^4\\.68\\.2-windows-codex-[a-f0-9]{12}$"}}},"else":{"properties":{"id":{"type":"string","pattern":"^source-[a-f0-9]{12}$"}}}}]}
+  }
+}

@@ -1,0 +1,755 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub manual web handoff contract v2",
+  "description": "Local receipt reconciliation only; no external provenance, signature, WORM or CLI capabilities. Runtime validates byte ceilings, clocks, roots/FileIDs, full source and blob hashes, fixed actor destinations and state cross-references. Owner is injected by authenticated controller and is not an HTTP body field.",
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative",
+        "rootFingerprint",
+        "fileFingerprint",
+        "sha256",
+        "bytes",
+        "missing"
+      ],
+      "properties": {
+        "relative": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "pattern": "^(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\u0000]+$"
+        },
+        "rootFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "fileFingerprint": {
+          "type": "string",
+          "pattern": "^(?:missing|[a-f0-9]{64})$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^(?:missing|[a-f0-9]{64})$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
+        },
+        "missing": {
+          "type": "boolean"
+        }
+      }
+    },
+    "extraction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rule",
+        "startByte",
+        "endByte",
+        "rowIndexes",
+        "truncated"
+      ],
+      "properties": {
+        "rule": {
+          "enum": [
+            "utf8-prefix",
+            "project-body-prefix",
+            "recent-human-assistant-rows"
+          ]
+        },
+        "startByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endByte": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rowIndexes": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      }
+    },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative",
+        "rootFingerprint",
+        "fileFingerprint",
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "relative": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768,
+          "pattern": "^(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\u0000]+$"
+        },
+        "rootFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "fileFingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4194304
+        }
+      }
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestId",
+        "resultSHA256",
+        "rowId",
+        "acceptedAt",
+        "resultBlob",
+        "rowBlob",
+        "taskBeforeBlob",
+        "taskAfterBlob",
+        "taskBefore",
+        "logBefore",
+        "taskAfterSHA256",
+        "logAfterSHA256",
+        "chatJournalId",
+        "taskJournalId",
+        "taskNoteEncoding",
+        "logAfterFileFingerprint"
+      ],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "resultSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rowId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "acceptedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resultBlob": {
+          "$ref": "#/$defs/blob"
+        },
+        "rowBlob": {
+          "$ref": "#/$defs/blob"
+        },
+        "taskBeforeBlob": {
+          "$ref": "#/$defs/blob"
+        },
+        "taskAfterBlob": {
+          "$ref": "#/$defs/blob"
+        },
+        "taskBefore": {
+          "$ref": "#/$defs/identity"
+        },
+        "logBefore": {
+          "$ref": "#/$defs/identity"
+        },
+        "taskAfterSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "logAfterSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "chatJournalId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "taskJournalId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        },
+        "taskNoteEncoding": {
+          "const": "web-task-blockquote-preserve-newlines-v1"
+        },
+        "logAfterFileFingerprint": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          ]
+        }
+      }
+    },
+    "preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "project",
+        "task",
+        "text"
+      ],
+      "properties": {
+        "actor": {
+          "enum": [
+            "chatgpt",
+            "claude-chat"
+          ]
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 49152,
+          "description": "Runtime additionally rejects NUL, invalid UTF-8, isolated surrogate and over-limit UTF-8 byte length. maxLength is a Unicode length bound, not a replacement for the byte validator."
+        },
+        "responseLanguage": {
+          "enum": [
+            "zh-TW",
+            "ja"
+          ]
+        }
+      }
+    },
+    "confirm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "project",
+        "task",
+        "receiptId",
+        "previewToken",
+        "expectedTaskHash",
+        "expectedPromptSHA256",
+        "confirm"
+      ],
+      "properties": {
+        "actor": {
+          "enum": [
+            "chatgpt",
+            "claude-chat"
+          ]
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "receiptId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "previewToken": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "expectedTaskHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "expectedPromptSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "confirm": {
+          "const": true
+        }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "project",
+        "task",
+        "receiptId",
+        "taskHash",
+        "promptSHA256",
+        "requestId",
+        "resultSHA256",
+        "text",
+        "token"
+      ],
+      "properties": {
+        "actor": {
+          "enum": [
+            "chatgpt",
+            "claude-chat"
+          ]
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "receiptId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "taskHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "promptSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "requestId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "resultSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 262144,
+          "description": "Runtime additionally rejects NUL, invalid UTF-8, isolated surrogate and over-limit UTF-8 byte length. maxLength is a Unicode length bound, not a replacement for the byte validator."
+        },
+        "token": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "lookup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "project",
+        "task",
+        "receiptId"
+      ],
+      "properties": {
+        "actor": {
+          "enum": [
+            "chatgpt",
+            "claude-chat"
+          ]
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "receiptId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "receiptId",
+        "ownerHash",
+        "actor",
+        "project",
+        "task",
+        "transport",
+        "destination",
+        "responseLanguage",
+        "state",
+        "createdAt",
+        "previewExpiresAt",
+        "approvedAt",
+        "resultExpiresAt",
+        "previewTokenHash",
+        "resultTokenHash",
+        "taskHash",
+        "taskHashAlgorithm",
+        "rawTaskSHA256",
+        "promptSHA256",
+        "sourceManifest",
+        "truncation",
+        "promptBlob",
+        "transaction",
+        "revokedAt",
+        "nativeJournalRootFingerprint"
+      ],
+      "properties": {
+        "version": {
+          "const": 2
+        },
+        "receiptId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "ownerHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "actor": {
+          "enum": [
+            "chatgpt",
+            "claude-chat"
+          ]
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "transport": {
+          "const": "web-manual"
+        },
+        "destination": {
+          "enum": [
+            "https://chatgpt.com/",
+            "https://claude.ai/"
+          ]
+        },
+        "responseLanguage": {
+          "enum": [
+            "zh-TW",
+            "ja"
+          ]
+        },
+        "state": {
+          "enum": [
+            "preview",
+            "approved",
+            "revoked",
+            "planned",
+            "chat_saved",
+            "task_note_saved",
+            "committed"
+          ]
+        },
+        "createdAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "previewExpiresAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approvedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "resultExpiresAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "previewTokenHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "resultTokenHash": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          ]
+        },
+        "taskHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "taskHashAlgorithm": {
+          "const": "hub-completion-crlf-to-lf-v1"
+        },
+        "rawTaskSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "promptSHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "sourceManifest": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "identity",
+              "extraction"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "task",
+                  "project",
+                  "chat"
+                ]
+              },
+              "identity": {
+                "$ref": "#/$defs/identity"
+              },
+              "extraction": {
+                "$ref": "#/$defs/extraction"
+              }
+            }
+          }
+        },
+        "truncation": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "rule",
+              "startByte",
+              "endByte",
+              "rowIndexes",
+              "fullSourceBytes"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "task",
+                  "project",
+                  "chat"
+                ]
+              },
+              "rule": {
+                "enum": [
+                  "utf8-prefix",
+                  "project-body-prefix",
+                  "recent-human-assistant-rows"
+                ]
+              },
+              "startByte": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "endByte": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "rowIndexes": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "fullSourceBytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "promptBlob": {
+          "$ref": "#/$defs/blob"
+        },
+        "transaction": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/transaction"
+            }
+          ]
+        },
+        "revokedAt": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "nativeJournalRootFingerprint": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        }
+      }
+    },
+    "metadataRevision": {
+      "type": "object",
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "record": {
+          "$ref": "#/$defs/receipt"
+        },
+        "version": {
+          "const": 1
+        },
+        "previousMetadata": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "relative": {
+              "type": "string",
+              "minLength": 1
+            },
+            "fileFingerprint": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "relative",
+            "sha256",
+            "fileFingerprint"
+          ]
+        },
+        "sequence": {
+          "type": "integer",
+          "maximum": 16,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "receiptId",
+        "sequence",
+        "previousMetadata",
+        "record"
+      ]
+    },
+    "recover": {
+      "type": "object",
+      "properties": {
+        "recoveryToken": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "receiptId": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "confirm": {
+          "const": true
+        },
+        "actor": {
+          "enum": [
+            "chatgpt",
+            "claude-chat"
+          ]
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\\\/\\u0000]+$"
+        },
+        "expectedRecoverySHA256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "description": "Owner confirms only the exact current target FileID/SHA and previously accepted native after bytes shown by recovery preview; token expires in five minutes and is one-use.",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "project",
+        "task",
+        "receiptId",
+        "confirm",
+        "recoveryToken",
+        "expectedRecoverySHA256"
+      ]
+    }
+  }
+}

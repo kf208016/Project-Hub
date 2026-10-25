@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub cleanup record with optional recovery markers",
+  "description": "Existing records remain valid. Runtime verifies project membership, canonical source/trash paths, content fingerprints, active work and restore collisions before changing files.",
+  "type": "object",
+  "required": ["id", "project", "at", "entries", "error"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[0-9a-f-]{36}$"},
+    "project": {"type": "string", "minLength": 1},
+    "at": {"type": "string", "format": "date-time"},
+    "error": {"type": "string"},
+    "nativeVersion": {"const": 1},
+    "legacyImport": {"type":"object","required":["id","sha256"],"additionalProperties":false,"properties":{"id":{"type":"string","format":"uuid"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}},
+    "entries": {"type": "array", "items": {
+      "type": "object", "required": ["src", "dest", "fingerprint", "restored"],
+      "properties": {
+        "src": {"type": "string", "minLength": 1},
+        "dest": {"type": "string", "minLength": 1},
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "restored": {"type": "boolean"},
+        "moved": {"type": "boolean"},
+        "moving": {"type": "boolean"},
+        "restoring": {"type": "boolean"},
+        "native": {"$ref": "rooted-move.schema.json"},
+        "restoreNative": {"$ref": "rooted-move.schema.json"},
+        "historicalNativeBaseline": {"type": "boolean", "description": "Explicitly reviewed current trash FileID for a legacy record; not a claim about original historical FileID."},
+        "historicalNativeSource": {"type": "boolean", "description": "Legacy source retained in place and reverified at its current FileID."}
+      },
+      "additionalProperties": true
+    }}
+  },
+  "additionalProperties": true
+}

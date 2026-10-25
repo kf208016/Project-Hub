@@ -1,0 +1,11 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Native file overwrite prepared journal",
+  "description":"Private issuer-controlled journal outside the task root. A backup and prepared record are flushed before changing an existing file through its exclusive handle. This is local crash recovery evidence, not a signature or immutable external attestation.",
+  "type":"object","additionalProperties":false,
+  "required":["version","recordId","root","rootFingerprint","path","fileFingerprint","beforeHash","afterHash","state"],
+  "properties":{
+    "version":{"const":1},"recordId":{"type":"string","pattern":"^[a-f0-9]{32}$"},"root":{"type":"string","pattern":"^[A-Za-z]:\\\\"},"rootFingerprint":{"$ref":"#/$defs/hash"},"path":{"type":"string","minLength":1,"maxLength":32768},"fileFingerprint":{"$ref":"#/$defs/hash"},"beforeHash":{"$ref":"#/$defs/hash"},"afterHash":{"$ref":"#/$defs/hash"},"state":{"const":"prepared"}
+  },
+  "$defs":{"hash":{"type":"string","pattern":"^[a-f0-9]{64}$"}}
+}

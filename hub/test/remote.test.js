@@ -6,13 +6,14 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { Remote, isRemote, whoOf, cookieOf } = require('../lib/remote');
+const WIN=process.platform==='win32';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-remote-'));
 const root = path.join(tmp, 'workspace'), pdir = path.join(root, 'Product', 'サンプルアプリ');
 const FILE = path.join(root, '_hub', 'remote.json');
 const port = 49000 + Math.floor(Math.random() * 500);
 const HOST = 'mac.tail1234.ts.net';
-const REMOTE = { Host: HOST, 'X-Forwarded-For': '100.64.0.7', 'X-Forwarded-Host': HOST, 'X-Forwarded-Proto': 'https', 'Tailscale-User-Login': 'owner@example.com' };
+const REMOTE = { Host: HOST, 'X-Forwarded-For': '100.64.0.7', 'X-Forwarded-Host': HOST, 'X-Forwarded-Proto': 'https', 'Tailscale-User-Login': 'owner@example.test' };
 // fetch は Host を変えられないので http で送る（tailscale serve は元の Host のまま中継する）
 const http = require('http');
 function call(p, { method = 'GET', headers = {}, body } = {}) {
@@ -25,8 +26,9 @@ function call(p, { method = 'GET', headers = {}, body } = {}) {
     rq.on('error', reject); if (data) rq.write(data); rq.end();
   });
 }
-const local = (p, body, headers = {}) => call(p, body === undefined ? { headers } : { method: 'POST', headers: { 'X-Hub': '1', ...headers }, body });
-const remoteReq = (p, { body, cookie, headers = {}, method } = {}) => call(p, {
+let localCookie='',nativeTls,nativeRemote;
+const local = (p, body, headers = {}) => call(p, body === undefined ? { headers:{...(localCookie?{Cookie:localCookie}:{}),...headers} } : { method: 'POST', headers: { 'X-Hub': '1',...(localCookie?{Cookie:localCookie}:{}), ...headers }, body });
+const remoteReq = (p, { body, cookie, headers = {}, method,peer } = {}) => WIN?nativeTls.request(p,{body,cookie,headers,method,peer}):call(p, {
   method: method || (body === undefined ? 'GET' : 'POST'), body,
   headers: { ...REMOTE, ...(body === undefined ? {} : { 'X-Hub': '1', Origin: `https://${HOST}` }), ...(cookie ? { Cookie: cookie } : {}), ...headers } });
 let server, sessions, deletionFixture;
@@ -43,10 +45,12 @@ test.before(async () => {
   deletionFixture={parent:parent.id,child:child.id,parentChat,childChat,taskFile:fixtureStore.taskFile('サンプルアプリ',child.id)};
   fs.writeFileSync(path.join(root,'_hub/unread.json'),JSON.stringify({items:['サンプルアプリ\u0000'+parent.id,'サンプルアプリ\u0000'+child.id]}));
   Object.assign(process.env, { HUB_TRASH:path.join(tmp,'Trash'), HUB_ROOT: root, HUB_PORT: String(port), HUB_DRY_RUN: '1', HUB_AI_HOME: path.join(tmp, 'empty-home') });
-  ({ server, sessions } = require('../server'));
+  const token=WIN?require('node:crypto').randomBytes(32).toString('base64url'):'';if(WIN){process.env.HUB_LOCAL_TOKEN=token;const pw=require('../lib/procwatch'),create=pw.create;pw.create=o=>{const watch=create({...o,exec:async()=>JSON.stringify([{pid:process.pid,ppid:0,since:new Date().toISOString(),name:'node.exe',command:'synthetic controller'}])});void watch.scan();return watch;};}
+  ({ server, sessions,nativeRemote } = require('../server'));
   await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
+  if(WIN){const login=await local('/api/local/login',{token});assert.equal(login.status,200);localCookie=login.headers.get('set-cookie').split(';')[0];nativeTls=await require('./helpers/native-tls').nativeTlsFixture(tmp);const preview=await local('/api/remote/tls/preview',nativeTls.config);assert.equal(preview.status,200,await preview.text());const p=await preview.json();assert.equal((await local('/api/remote/tls/configure',{token:p.token,origin:p.origin,certFingerprint:p.certFingerprint,confirm:true})).status,200);}
 });
-test.after(async () => { sessions.stopAll(); await new Promise(resolve => server.close(resolve)); fs.rmSync(tmp, { recursive: true, force: true }); });
+test.after(async () => { sessions.stopAll();await nativeRemote?.stop();server.closeAllConnections(); await new Promise(resolve => server.close(resolve));assert.ok(tmp.startsWith(os.tmpdir()+path.sep));fs.rmSync(tmp, { recursive: true, force: true,maxRetries:20,retryDelay:50 }); });
 
 test('中継の印がある通信だけを外からとみなす', () => {
   assert.equal(isRemote({ headers: { host: '127.0.0.1:4545' } }), false);
@@ -88,9 +92,13 @@ test('Mac の中からの通信は今まで通り（オフでも使え、印の�
 });
 
 test('オフの間は外からの通信をすべて断る', async () => {
+  // Start only the synthetic loopback TLS fixture to exercise the disabled
+  // handler; the normal disabled endpoint has no live listener.
+  if(WIN)await nativeRemote.start();
   let res = await remoteReq('/api/state'); assert.equal(res.status, 403); assert.equal((await res.json()).error, '外からの利用はオフです');
   res = await remoteReq('/'); assert.equal(res.status, 403); assert.match(res.headers.get('content-type'), /text\/html/); assert.match(await res.text(), /外からの利用はオフです/);
   assert.equal((await remoteReq('/api/login', { body: { passcode: 'x' } })).status, 403);
+  if(WIN)await nativeRemote.stop();
 });
 
 let cookie = '';
@@ -99,7 +107,8 @@ test('オンにすると合言葉でログインし、札（Cookie）が無け�
   assert.equal((await local('/api/remote', { passcode: '1234567' })).status, 400);
   assert.equal((await local('/api/remote', { passcode: 'iphone-pass-1' })).status, 200);
   const on = await (await local('/api/remote', { enabled: true })).json(); assert.equal(on.enabled, true); assert.equal(on.hasPasscode, true);
-  assert.equal((await (await local('/api/state')).json()).remote.enabled, true);
+  if(WIN){assert.equal((await (await local('/api/remote')).json()).tls.running,true);for(const h of ['X-Forwarded-For','X-Forwarded-Host','Tailscale-User-Login'])assert.equal((await local('/api/state',undefined,{[h]:'synthetic-forwarded'})).status,403);}
+  else assert.equal((await (await local('/api/state')).json()).remote.enabled, true);
   // ログインしていなければ設定にも触れない
   assert.equal((await remoteReq('/api/remote', { body: { enabled: false } })).status, 401);
 
@@ -115,11 +124,12 @@ test('オンにすると合言葉でログインし、札（Cookie）が無け�
   assert.match(set, /^hub_session=[\w-]+;/); for (const a of ['HttpOnly', 'Secure', 'SameSite=Lax', 'Max-Age=2592000', 'Path=/']) assert.ok(set.includes(a), a);
   cookie = set.split(';')[0];
   assert.equal((await remoteReq('/api/state', { cookie: 'hub_session=forged' })).status, 401);
-  res = await remoteReq('/api/state', { cookie }); assert.equal(res.status, 200); assert.equal((await res.json()).remote.enabled, true);
+  res = await remoteReq('/api/state', { cookie }); assert.equal(res.status, 200);const remoteState=await res.json();assert.equal(remoteState.remote.enabled,WIN?false:true);
+  if(WIN){assert.equal((await remoteReq('/api/state',{cookie:localCookie})).status,401);assert.equal((await local('/api/state',undefined,{Cookie:cookie})).status,200);}
   assert.equal((await remoteReq('/', { cookie })).status, 200);
   assert.equal((await remoteReq('/app.js', { cookie })).status, 200);
   const r = await (await local('/api/remote')).json();
-  assert.equal(r.sessions.length, 1); assert.equal(r.sessions[0].ua, 'iPhone Safari'); assert.equal(r.url, `https://${HOST}`);
+  assert.equal(r.sessions.length, 1); assert.equal(r.sessions[0].ua, 'iPhone Safari'); assert.equal(r.url, WIN?nativeTls.origin:`https://${HOST}`);
   assert.doesNotMatch(JSON.stringify(r), new RegExp(cookie.split('=')[1]));
 });
 
@@ -131,18 +141,18 @@ test('ログイン後は作業と設定をMacと同じ条件で操作し、未�
       assert.equal((await remoteReq(route, { cookie, body: identity, headers })).status, 403, route);
   }
   for (const route of ['/api/remote', '/api/mcp/tools']) {
-    assert.equal((await remoteReq(route, { cookie, headers: { 'X-Hub': '1' } })).status, 200, route);
+    assert.equal((await remoteReq(route, { cookie, headers: { 'X-Hub': '1' } })).status, WIN&&route==='/api/mcp/tools'?403:200, route);
   }
   let res = await remoteReq('/api/task', { cookie, body: { ...identity, memo: 'iPhone から', owner: 'codex', model: 'GPT-6.1-Sol', effort: 'high' } });
   assert.equal(res.status, 200); const task = await res.json();
   assert.equal(task.owner, 'codex'); assert.equal(task.model, 'GPT-6.1-Sol'); assert.equal(task.effort, 'high');
   res = await remoteReq('/api/task/step', { cookie, body: { ...identity, add: '遠隔fixtureの手順' } });
   assert.equal(res.status, 200); assert.equal((await res.json()).steps.at(-1).text, '遠隔fixtureの手順');
-  res = await remoteReq('/api/term/start', { cookie, body: { ...identity, ai: 'codex' } });
-  assert.equal(res.status, 200); const terminal = await res.json();
+  res = WIN?await require('./helpers/reviewed-workspace').startReviewedFixture((route,body)=>remoteReq(route,{cookie,body}),'/api/term/start',{...identity,ai:'codex'}):await remoteReq('/api/term/start', { cookie, body: { ...identity, ai: 'codex' } });
+  assert.equal(res.status, 200,await res.clone().text()); const terminal = await res.json();
   assert.equal(terminal.dry, true); assert.ok(terminal.args.includes('gpt-6.1-sol'));
   assert.ok(terminal.dir.startsWith(tmp)); assert.equal(sessions.list().length, 0);
-  assert.equal((await remoteReq('/api/task/merge', { cookie, body: { ...identity } })).status, 400); // コピーなしはMacと同じ理由で拒否
+  assert.equal((await remoteReq('/api/task/merge', { cookie, body: { ...identity } })).status, WIN?409:400); // Windows requires a reviewed token; Mac has no copy.
   const rolesBefore = fs.readFileSync(path.join(root, '_hub/roles.yaml'));
   assert.equal((await remoteReq('/api/roles', { cookie, body: {} })).status, 400); // 形式検査は維持
   assert.deepEqual(fs.readFileSync(path.join(root, '_hub/roles.yaml')), rolesBefore);
@@ -161,13 +171,13 @@ test('ログイン後は作業と設定をMacと同じ条件で操作し、未�
 });
 
 test('同じ相手から5回まちがえると423で15分止まり、別の相手は入れる', async () => {
-  const other = { 'Tailscale-User-Login': 'guest@example.com', 'X-Forwarded-For': '100.64.0.9' };
-  for (let i = 0; i < 4; i++) assert.equal((await remoteReq('/api/login', { body: { passcode: 'bad-' + i }, headers: other })).status, 401);
-  let res = await remoteReq('/api/login', { body: { passcode: 'bad-5' }, headers: other });
+  const other = WIN?{peer:'127.0.0.2'}:{headers:{ 'Tailscale-User-Login': 'guest@example.test', 'X-Forwarded-For': '100.64.0.9' }};
+  for (let i = 0; i < 4; i++) assert.equal((await remoteReq('/api/login', { body: { passcode: 'bad-' + i },...other })).status, 401);
+  let res = await remoteReq('/api/login', { body: { passcode: 'bad-5' }, ...other });
   assert.equal(res.status, 423); assert.equal((await res.json()).error, '15分待ってください');
-  assert.equal((await remoteReq('/api/login', { body: { passcode: 'iphone-pass-1' }, headers: other })).status, 423);
+  assert.equal((await remoteReq('/api/login', { body: { passcode: 'iphone-pass-1' },...other })).status, 423);
   assert.equal((await remoteReq('/api/login', { body: { passcode: 'iphone-pass-1' } })).status, 200);
-  assert.equal(JSON.stringify(JSON.parse(fs.readFileSync(FILE, 'utf8')).failures).includes('guest@example.com'), true);
+  const failures=JSON.parse(fs.readFileSync(FILE,'utf8')).failures;assert.equal(failures.some(x=>x.who===(WIN?require('node:crypto').createHash('sha256').update('127.0.0.2').digest('hex'):'guest@example.test')),true);
 });
 
 test('ログアウトはその端末だけ、すべての端末から出るは Mac から', async () => {
@@ -181,12 +191,13 @@ test('ログアウトはその端末だけ、すべての端末から出るは M
   // オフに戻すと、ログインしていても断る
   const res3 = await remoteReq('/api/login', { body: { passcode: 'iphone-pass-1' } }), third = res3.headers.get('set-cookie').split(';')[0];
   await local('/api/remote', { enabled: false });
-  assert.equal((await remoteReq('/api/state', { cookie: third })).status, 403);
+  if(WIN){assert.equal(nativeRemote.status().running,false);await assert.rejects(remoteReq('/api/state',{cookie:third}),/ECONNREFUSED/);}
+  else assert.equal((await remoteReq('/api/state', { cookie: third })).status, 403);
 });
 
 test('deletion APIs preview without moving, reject changed content, preserve parent unread and restore original files',async()=>{
  const f=deletionFixture,body={project:'サンプルアプリ',task:f.child};
- let res=await local('/api/hierarchy/remove/preview',body),d=await res.json();assert.equal(res.status,200);assert.equal(fs.existsSync(f.taskFile),true);assert.equal(d.blockers.length,0);
+ let res=await local('/api/hierarchy/remove/preview',body),d=await res.json();assert.equal(res.status,200);assert.equal(fs.existsSync(f.taskFile),true);assert.equal(d.blockers.length,0,JSON.stringify(d.blockers));
  fs.appendFileSync(f.childChat,' changed');res=await local('/api/hierarchy/remove/apply',{token:d.token,confirm:true});assert.equal(res.status,409);assert.equal(fs.existsSync(f.taskFile),true);
  d=await (await local('/api/hierarchy/remove/preview',body)).json();res=await local('/api/hierarchy/remove/apply',{token:d.token,optional:[],confirm:true});assert.equal(res.status,200);const moved=await res.json();assert.equal(moved.ok,true);assert.equal(fs.existsSync(f.taskFile),false);
  const unread=JSON.parse(fs.readFileSync(path.join(root,'_hub/unread.json'))).items;assert.equal(unread.includes('サンプルアプリ\u0000'+f.child),false);assert.equal(unread.includes('サンプルアプリ\u0000'+f.parent),true);assert.equal(fs.readFileSync(f.parentChat,'utf8'),'parent result');

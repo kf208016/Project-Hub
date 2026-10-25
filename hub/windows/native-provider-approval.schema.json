@@ -1,0 +1,11 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Owner-only native provider approval requests",
+  "oneOf":[{"$ref":"#/$defs/preview"},{"$ref":"#/$defs/approve"},{"$ref":"#/$defs/revoke"}],
+  "$defs":{
+    "id":{"type":"string","minLength":1,"maxLength":200,"pattern":"^[^/\\\\\u0000-\u001f\u007f]+$"},
+    "preview":{"type":"object","additionalProperties":false,"required":["actor","project","task","model","effort"],"properties":{"actor":{"enum":["claude","grok"]},"project":{"$ref":"#/$defs/id"},"task":{"$ref":"#/$defs/id"},"model":{"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\u0000-\u001f\u007f]+$"},"effort":{"type":"string","maxLength":256,"pattern":"^[^\u0000-\u001f\u007f]*$"}}},
+    "approve":{"type":"object","additionalProperties":false,"required":["token","confirm","ackAuthenticationRead","ackCommandAccess","ackDestination","ackSessionWrite"],"properties":{"token":{"type":"string","format":"uuid"},"confirm":{"const":true},"ackAuthenticationRead":{"const":true},"ackCommandAccess":{"const":true},"ackDestination":{"const":true},"ackSessionWrite":{"const":true}}},
+    "revoke":{"type":"object","additionalProperties":false,"required":["actor","project","task"],"properties":{"actor":{"enum":["claude","grok"]},"project":{"$ref":"#/$defs/id"},"task":{"$ref":"#/$defs/id"}}}
+  }
+}

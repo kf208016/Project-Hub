@@ -1,4 +1,7 @@
 'use strict';
+// Native Windows validates the approved provider/authority contract; original
+// POSIX integration assertions remain intact in the other branch.
+if(process.platform==='win32'){require('./helpers/native-deferred-policy').register('preflight');}else{
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -356,3 +359,5 @@ test('待機中に手動解除したキューは開始時にFable、開始済み
   assert.equal((await post('/api/limits/fable/clear')).status, 200); await reply(started);
   assert.equal(replies(started)[0].model, 'GPT-6-Astra'); assert.equal(replies(started)[0].error, '');
 });
+
+}

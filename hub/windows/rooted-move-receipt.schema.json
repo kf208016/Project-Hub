@@ -1,0 +1,20 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "title":"Immutable native namespace move receipt",
+  "description":"Local recovery evidence. Partial overrides complete. A complete receipt is accepted only after current native FileID and treeHash verification. This is not whole-tree freezing or an external attestation.",
+  "type":"object","additionalProperties":false,
+  "required":["version","algorithm","sourceRoot","sourceRootFingerprint","sourcePath","targetRoot","targetRootFingerprint","targetPath","objectId","treeHash","journalRoot","journalRootFingerprint","recordId","state","at"],
+  "properties":{
+    "version":{"const":1},"algorithm":{"const":"native-tree-v1"},
+    "sourceRoot":{"type":"string","minLength":4},"targetRoot":{"type":"string","minLength":4},"journalRoot":{"type":"string","minLength":4},
+    "sourceRootFingerprint":{"$ref":"#/$defs/hash"},"targetRootFingerprint":{"$ref":"#/$defs/hash"},"journalRootFingerprint":{"$ref":"#/$defs/hash"},
+    "sourcePath":{"type":"string","minLength":1},"targetPath":{"type":"string","minLength":1},"objectId":{"$ref":"#/$defs/hash"},"treeHash":{"$ref":"#/$defs/hash"},
+    "recordId":{"type":"string","pattern":"^[a-f0-9]{32}$"},"state":{"enum":["planned","complete","partial"]},"at":{"$ref":"#/$defs/time"},"completedAt":{"$ref":"#/$defs/time"},"moved":{"type":"boolean"},"error":{"type":"string","pattern":"^[_A-Z0-9]{1,100}$"}
+  },
+  "oneOf":[
+    {"properties":{"state":{"const":"planned"}},"not":{"anyOf":[{"required":["completedAt"]},{"required":["moved"]},{"required":["error"]}]}},
+    {"properties":{"state":{"const":"complete"}},"required":["completedAt"],"not":{"anyOf":[{"required":["moved"]},{"required":["error"]}]}},
+    {"properties":{"state":{"const":"partial"}},"required":["moved","error"],"not":{"required":["completedAt"]}}
+  ],
+  "$defs":{"hash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"time":{"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{7}Z$"}}
+}

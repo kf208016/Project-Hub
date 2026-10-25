@@ -166,14 +166,23 @@ test('historical secret names survive rename and identical blobs under safe name
 });
 test('history checks all merge parents and preserves newline/tab/Unicode paths', async () => {
   const f = fixture(), initial = git(f.base, 'symbolic-ref', '--short', 'HEAD');
-  git(f.base, 'checkout', '-qb', 'secret-side');
-  const folder = '日本語\nwith\ttab'; fs.mkdirSync(path.join(f.base, folder));
-  fs.writeFileSync(path.join(f.base, folder, '.env'), 'side');
-  git(f.base, 'add', '.'); git(f.base, 'commit', '-qm', 'secret side');
-  git(f.base, 'mv', folder + '/.env', folder + '/safe.txt'); git(f.base, 'commit', '-qm', 'renamed on side');
-  git(f.base, 'checkout', '-q', initial);
+  const folder = '日本語\nwith\ttab', parent = git(f.base, 'rev-parse', 'HEAD');
+  // Git trees can contain names forbidden by the Windows filesystem. Build
+  // real historical objects through Git's import protocol without checkout.
+  const importText = [
+    'commit refs/heads/secret-side', 'committer test <test@local> 1700000000 +0000',
+    'data 11', 'secret side', 'from ' + parent,
+    'M 100644 inline ' + JSON.stringify(folder + '/.env'), 'data 4', 'side', '',
+    'commit refs/heads/secret-side', 'committer test <test@local> 1700000001 +0000',
+    'data 15', 'renamed on side', 'D ' + JSON.stringify(folder + '/.env'),
+    'M 100644 inline ' + JSON.stringify(folder + '/safe.txt'), 'data 4', 'side', '', ''
+  ].join('\n');
+  execFileSync('git', ['-c', 'core.protectNTFS=false', '-C', f.base, 'fast-import', '--quiet'], { input: importText, env: { ...process.env, ...identity }, stdio: ['pipe', 'pipe', 'pipe'] });
   fs.writeFileSync(path.join(f.base, 'other.txt'), 'other'); git(f.base, 'add', '.'); git(f.base, 'commit', '-qm', 'main side');
-  git(f.base, 'merge', '--no-ff', '-qm', 'merge', 'secret-side');
+  const main = git(f.base, 'rev-parse', 'HEAD'), side = git(f.base, 'rev-parse', 'secret-side');
+  const tree = execFileSync('git', ['-c', 'core.protectNTFS=false', '-C', f.base, 'merge-tree', '--write-tree', main, side], { encoding: 'utf8', env: { ...process.env, ...identity }, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const merged = git(f.base, 'commit-tree', tree, '-p', main, '-p', side, '-m', 'merge');
+  git(f.base, 'update-ref', 'refs/heads/' + initial, merged);
   const d = await f.gh.preview(f.project);
   assert.ok(d.risky.some(x => x.file === folder + '/.env'));
   assert.ok(!d.risky.some(x => x.file.includes('safe.txt')));

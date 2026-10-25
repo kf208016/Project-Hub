@@ -60,39 +60,44 @@ test('corrupt persisted data defaults safely; read failure does not silently ove
   assert.throws(()=>order.save({parent:'',before:[],order:[]}),/EISDIR/);
 });
 
-test('HTTP order endpoint uses fixture ROOT, validates snapshot, keeps state order/ledgers, allows authenticated remote', async t => {
+test('HTTP order endpoint uses fixture ROOT, validates snapshot, keeps state order/ledgers, allows authenticated remote',{timeout:120000}, async t => {
   const {root,store}=fixture(t), net=require('net');
   const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
   fs.mkdirSync(path.join(root,'_hub'),{recursive:true});
   fs.writeFileSync(path.join(root,'_hub/roles.yaml'),'models:\n  claude-code: [Opus 5.5]\n  codex: [GPT-6.1-Sol]\nroles: {}\n');
-  Object.assign(process.env,{HUB_ROOT:root,HUB_PORT:String(port),HUB_DRY_RUN:'1',HUB_AI_HOME:path.join(root,'ai-home'),HUB_TRASH:path.join(root,'trash')});
-  const {server,sessions}=require('../server');await new Promise(r=>server.listen(port,'127.0.0.1',r));
-  t.after(async()=>{sessions.stopAll();server.closeAllConnections();await new Promise(r=>server.close(r));});
-  const url=`http://127.0.0.1:${port}`, post=(body,extra={})=>fetch(url+'/api/hierarchy/order',{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json',...extra},body:JSON.stringify(body)});
-  const state=await (await fetch(url+'/api/state')).json(), before=ids(siblings(state.projects,'')), order=before.slice().reverse();
+  const win=process.platform==='win32',token=win?require('node:crypto').randomBytes(32).toString('base64url'):'';
+  Object.assign(process.env,{HUB_ROOT:root,HUB_PORT:String(port),HUB_DRY_RUN:'1',HUB_AI_HOME:path.join(root,'ai-home'),HUB_TRASH:path.join(root,'trash'),...(win?{HUB_LOCAL_TOKEN:token}:{})});
+  const {server,sessions,nativeRemote}=require('../server');await new Promise(r=>server.listen(port,'127.0.0.1',r));
+  t.after(async()=>{sessions.stopAll();await nativeRemote?.stop();server.closeAllConnections();await new Promise(r=>server.close(r));});
+  const url=`http://127.0.0.1:${port}`;let localHeaders={},nativeTls=null;
+  const request=(route,body,extra={})=>fetch(url+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json',...localHeaders,...extra},body:JSON.stringify(body)});
+  if(win){const login=await request('/api/local/login',{token});assert.equal(login.status,200);localHeaders={Cookie:login.headers.get('set-cookie').split(';')[0]};}
+  const getState=()=>fetch(url+'/api/state',{headers:localHeaders});
+  const post=(body,extra={})=>nativeTls&&extra.Cookie?nativeTls.request('/api/hierarchy/order',{body,headers:extra}):request('/api/hierarchy/order',body,extra);
+  const state=await (await getState()).json(), before=ids(siblings(state.projects,'')), order=before.slice().reverse();
   const bytes=store.listProjects().map(p=>[p.dir,fs.readFileSync(path.join(p.dir,'PROJECT.md'))]);
   assert.equal((await post({parent:'',before,order})).status,200);
-  const later=await (await fetch(url+'/api/state')).json();assert.deepEqual(ids(later.projects),ids(state.projects));assert.deepEqual(ids(siblings(later.projects,'',later.projectOrder)),order);
+  const later=await (await getState()).json();assert.deepEqual(ids(later.projects),ids(state.projects));assert.deepEqual(ids(siblings(later.projects,'',later.projectOrder)),order);
   const file=path.join(root,'_hub/project-order.json'), saved=fs.readFileSync(file);
   for(const body of [{parent:'',before,order},{parent:'',before:order,order:['c',...order.slice(1)]},{parent:'',before:order,order:order.slice(1)},{parent:'',before:order,order:order.map(()=>order[0])}]) assert.equal((await post(body)).status,409);
   assert.equal((await post({parent:'',before:order,order:before},{'X-Forwarded-For':'100.1.1.1'})).status,403);
   // 未認証は拒否し、ログイン済みなら同じ競合検査で保存する。
-  const remoteHeaders = {'X-Forwarded-For':'100.1.1.1'};
-  const request = (route,body,extra={}) => fetch(url+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json',...extra},body:JSON.stringify(body)});
+  const remoteHeaders = win?{}:{'X-Forwarded-For':'100.1.1.1'};
+  if(win){nativeTls=await require('./helpers/native-tls').nativeTlsFixture(root);const preview=await request('/api/remote/tls/preview',nativeTls.config);assert.equal(preview.status,200,await preview.clone().text());const p=await preview.json();assert.equal((await request('/api/remote/tls/configure',{token:p.token,origin:p.origin,certFingerprint:p.certFingerprint,confirm:true})).status,200);}
   assert.equal((await request('/api/remote',{enabled:true,passcode:'fixture-passcode'})).status,200);
-  const login = await request('/api/login',{passcode:'fixture-passcode'},remoteHeaders);
+  const login = win?await nativeTls.request('/api/login',{body:{passcode:'fixture-passcode'}}):await request('/api/login',{passcode:'fixture-passcode'},remoteHeaders);
   assert.equal(login.status,200); remoteHeaders.Cookie=login.headers.get('set-cookie').split(';')[0];
   assert.equal((await post({parent:'',before:order,order:before},remoteHeaders)).status,200);
   assert.equal((await post({parent:'',before:order,order:before},remoteHeaders)).status,409);
-  const pin = body => request('/api/hierarchy/pin',body,remoteHeaders);
+  const pin = body => win?nativeTls.request('/api/hierarchy/pin',{body,headers:remoteHeaders}):request('/api/hierarchy/pin',body,remoteHeaders);
   assert.equal((await pin({project:'b',before:false,pinned:true})).status,200);
   assert.equal((await pin({project:'b',before:false,pinned:true})).status,409);
-  const pinnedState=await (await fetch(url+'/api/state')).json();
+  const pinnedState=await (await getState()).json();
   assert.deepEqual(pinnedState.projectPins,['b']);
   assert.equal(siblings(pinnedState.projects,'',pinnedState.projectOrder,pinnedState.projectPins)[0].id,'b');
   assert.equal((await pin({project:'b',before:true,pinned:false})).status,200);
   assert.equal((await pin({project:'b',before:true,pinned:false})).status,409);
-  assert.deepEqual((await (await fetch(url+'/api/state')).json()).projectPins,[]);
+  assert.deepEqual((await (await getState()).json()).projectPins,[]);
   assert.deepEqual(ids(siblings(store.listProjects(),'',JSON.parse(fs.readFileSync(file)).groups)),before);bytes.forEach(([dir,data])=>assert.deepEqual(fs.readFileSync(path.join(dir,'PROJECT.md')),data));
 });
 

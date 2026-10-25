@@ -4,7 +4,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { AiTools, codexModels, claudeModels, claudeInitialize } = require('../lib/ai-tools');
+const { AiTools: PlatformAiTools, codexModels, claudeModels, claudeInitialize } = require('../lib/ai-tools');
+// These existing assertions exercise the original macOS CLI protocol. Native
+// Windows discovery has separate real-process tests in codex-models.test.js.
+class AiTools extends PlatformAiTools {
+  constructor(options = {}) { super({ ...options, platform: 'darwin' }); }
+}
 const launch = require('../lib/launch');
 const roles = require('../lib/roles');
 const { latestVersion, newer } = require('../lib/update-check');
@@ -211,16 +216,25 @@ test('Claudeの制御応答はmainだけ使い、cache不変なら前回候補�
 test('Claude制御プロセスはSIGTERMを無視してもSIGKILLで回収する', async () => {
   const f = fixture();
   try {
+    const runnable = (file) => {
+      if (process.platform !== 'win32') return file;
+      const dir = file + '-npm', root = path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code');
+      fs.mkdirSync(root, {recursive:true}); fs.copyFileSync(file, path.join(root,'cli.js'));
+      fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'@anthropic-ai/claude-code',bin:{claude:'cli.js'}}));
+      const shim=path.join(dir,'claude.cmd');fs.writeFileSync(shim,'');return shim;
+    };
     const pidFile = path.join(f.tmp, 'pid');
     const cli = path.join(f.tmp, 'claude-fixture');
     fs.writeFileSync(cli, `#!/usr/bin/env node\nconst fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);process.stdin.on('data',()=>console.log(JSON.stringify({type:'control_response',response:{subtype:'success',response:{models:[{value:'claude-opus-5-5'}]}}})));\n`, { mode: 0o755 });
-    assert.deepEqual(await claudeInitialize(cli, 3000), ['claude-opus-5-5']);
+    // Explicit macOS protocol fixture: the native Windows provider path is
+    // separately verified to reject before process creation.
+    assert.deepEqual(await claudeInitialize(runnable(cli), 5000, {platform:'darwin'}), ['claude-opus-5-5']);
     const pid = Number(fs.readFileSync(pidFile, 'utf8'));
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
 
     const silent = path.join(f.tmp, 'claude-silent');
     fs.writeFileSync(silent, `#!/usr/bin/env node\nconst fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);\n`, { mode: 0o755 });
-    await assert.rejects(claudeInitialize(silent, 150), e => e.stage === 'models' && /時間切れ/.test(e.reason));
+    await assert.rejects(claudeInitialize(runnable(silent), process.platform === 'win32' ? 2000 : 150, {platform:'darwin'}), e => e.stage === 'models' && /時間切れ/.test(e.reason));
     const silentPid = Number(fs.readFileSync(pidFile, 'utf8'));
     assert.throws(() => process.kill(silentPid, 0), { code: 'ESRCH' });
   } finally { f.close(); }

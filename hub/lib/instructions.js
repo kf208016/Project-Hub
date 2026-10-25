@@ -17,8 +17,9 @@ function packet({ pdir, task, project, policy, issues, common, contextRule, askR
   const info = infoAt < 0 ? '' : guidance.slice(infoAt).replace('【操作情報（会話画面からの依頼を受け取った時点。順番待ち・作業中に変わるため現在の画面と一致する時だけ案内）】', '【操作情報（受付時点。順番待ち・作業中に変わる。現在の画面と一致する時だけ案内）】').replace(/本作業で成果を受け取ったら[^\n]+/, 'push・公開・本番適用は対象/変更/検証を人へ最終確認。').replace('この作業の会話画面なら、以下の作業操作はその画面の上部でできる。', 'この作業の会話画面なら上部で操作可。').replace('フェーズ：フェーズが設定されていないので、次へ進む確認帯は無い。この作業の操作を案内する。', 'フェーズ：設定なし、確認帯なし。');
   const delegateAt = models.indexOf('【別の AI');
   const modelPart = models.slice(0, delegateAt < 0 ? models.length : delegateAt);
-  const delegate = delegateAt < 0 ? '' : models.slice(delegateAt);
-  const full = ['## モデルと上限', modelPart, '## 委任', delegate, DIFFERENCE, TEMPLATES, '## 問題点', issues, '## 操作案内', fixedGuidance, '## 長い会話', contextRule, '## 質問', askRule].join('\n\n');
+  const delegate = process.platform==='win32' ? '原生 Windows 僅執行 Codex；Claude／Agy 待後續處理。需要委派時使用已授權的 hub_delegate MCP 工具，限同作業與使用者指定的精確 Codex 模型一次。先以 hub_get_task 取得授權模型；只交接差分。排隊成功後結束目前回合。無 MCP 委派授權時，將具體交接文字回報至 Hub，由使用者核准授權或在同作業開始下一位 Codex。不要以無憑證 curl、自行啟動其他 CLI、擴權或新增作業繞過。' : delegateAt < 0 ? '' : models.slice(delegateAt);
+  const templates=process.platform==='win32' ? '## 委任の定型\n實作→獨立檢查：確認 HEAD 與未保存變更→最小實作→相关測試→回報實際證據→以已授權 hub_delegate 將差分交給指定 Codex 模型一次。檢查→回報：獨立核對差分及測試，列出可重現問題；由人核對主體合併、push、公開或正式環境變更。' : TEMPLATES;
+  const full = ['## モデルと上限', modelPart, '## 委任', delegate, DIFFERENCE, templates, '## 問題点', issues, '## 操作案内', fixedGuidance, '## 長い会話', contextRule, '## 質問', askRule].join('\n\n');
   const file = path.join(pdir, '.ai', 'chat', `${task}.rules.md`);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let old; try { old = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -27,10 +28,11 @@ function packet({ pdir, task, project, policy, issues, common, contextRule, askR
   const limit = /現在は自動交代がオフ/.test(modelPart) ? lines.slice(1).join('\n') : '【利用上限の時】会話の司令塔・チェックFableだけ、HubがCLIエラー構造＋正式文で判定し終了後Astraへ。保持中は期限か手動解除までHubがAstra開始。AIは確認不要。本文の「上限」・引用で自分で担当を変えない・止まらない。main不変。済んだ部分は繰り返さず残りを続ける。';
   const ids = JSON.stringify({ project: project || path.basename(pdir), task }).slice(1, -1);
   const fixed = [
+    process.platform==='win32' ? '【回覆語言】預設使用台灣繁體中文說明進度、結果與操作；程式碼、API 名稱、原始資料與使用者指定的語言保留。畫面顯示名稱可能翻譯，送給 Hub 的 role/state/phase 值必須以工具取得的原值為準。' : '',
     `台帳=${pdir}。cwd内は相対パス。全文：台帳/.ai/chat/${task}.rules.md（必要時だけ読む）。`,
     lines[0], limit,
     `全文版：${crypto.createHash('sha256').update(full).digest('hex').slice(0, 12)}`,
-    `【別の AI に作業を渡す時】自分で codex / claude / agy を裏で起動しない。会話でcurl -s -X POST http://127.0.0.1:${port}/api/delegate -H 'X-Hub: 1' -H 'Content-Type: application/json' -d '{${ids},"ai":"codex","model":"gpt-6.1-sol","title":"短い名前","text":"差分"}'。ai・model欄は必須。同じ作業へ渡したら番を終える。詳細：全文の ## 委任。`,
+    process.platform==='win32' ? '【Codex 委派】僅使用同作業已授權的 hub_delegate MCP 工具一次，model 必須符合 hub_get_task 的授權模型；排隊後結束回合。無授權時回報交接差分由人處理。不要自行啟動 CLI 或以無憑證 curl 繞過。詳細：全文 ## 委任。' : `【別の AI に作業を渡す時】自分で codex / claude / agy を裏で起動しない。会話でcurl -s -X POST http://127.0.0.1:${port}/api/delegate -H 'X-Hub: 1' -H 'Content-Type: application/json' -d '{${ids},"ai":"codex","model":"gpt-6.1-sol","title":"短い名前","text":"差分"}'。ai・model欄は必須。同じ作業へ渡したら番を終える。詳細：全文の ## 委任。`,
     '【プロジェクトや作業を増やさない】新しいプロジェクト・子プロジェクト・作業ファイルを自分で作らない。やっていない手順に [x] を付けない。',
     DIFFERENCE,
     '【人への操作案内の決まり】あなたは人の画面を見ていない。見える名前・［ボタン名］・場所で条件付き案内。操作の効果：全文の ## 操作案内。AI終了後に行う。委任がターミナル稼働で断られた時だけ、作業画面［ターミナル］の対象AI欄［停止］を頼む。',

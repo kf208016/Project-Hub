@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub Windows launcher state v1",
+  "description": "Local launcher metadata. Runtime additionally validates canonical paths, the process creation time, DPAPI CurrentUser decryption and the live service HMAC proof.",
+  "type": "object",
+  "required": ["version", "root", "hubDir", "pid", "createdTicks", "port", "protectedToken"],
+  "properties": {
+    "version": {"const": 1},
+    "root": {"type": "string", "pattern": "^[a-zA-Z]:[\\\\/]"},
+    "hubDir": {"type": "string", "pattern": "^[a-zA-Z]:[\\\\/]"},
+    "pid": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+    "createdTicks": {"type": "string", "pattern": "^[0-9]{1,19}$"},
+    "port": {"type": "integer", "minimum": 1024, "maximum": 65535},
+    "protectedToken": {"type": "string", "maxLength": 8192, "pattern": "^[A-Za-z0-9+/]+={0,2}$"}
+  },
+  "additionalProperties": true
+}

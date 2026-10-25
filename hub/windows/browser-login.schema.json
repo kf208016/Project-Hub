@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local browser login request bodies",
+  "oneOf": [
+    {"type":"object","maxProperties":0,"additionalProperties":false},
+    {"type":"object","required":["requestId"],"properties":{"requestId":{"type":"string","minLength":32,"maxLength":32,"pattern":"^[a-f0-9]{32}$"}},"additionalProperties":false}
+  ]
+}

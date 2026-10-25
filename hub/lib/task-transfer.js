@@ -6,21 +6,38 @@ const chat = require('./chat');
 const { taskTarget, integrators, canIntegrate } = require('../public/project-order');
 const { snapshot, noLinks, inside, exists } = require('./remove');
 const hash = text => createHash('sha256').update(text).digest('hex');
+const journal=require('./local-journal'),artifact=require('./scoped-artifact'),nativeFiles=require('./scoped-file');
+const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,DIGEST=/^[a-f0-9]{64}$/;
+const RECORD_KEYS=new Set('id project task title taskHash targetProject targetTask targetName targetHash handedUp receiving integrating destination files integrated move cleanupVersion optional notified complete cleanup nativeDestination nativeCleanup error'.split(' '));
+const canonical=x=>process.platform==='win32'?path.resolve(x).toLowerCase():path.resolve(x);
 const FINAL_CHECK = '成果を確認し、GitHubへの更新やソフト・ホームページの本番適用が必要な場合は、対象・変更内容・検証結果を整理して人に最終確認する。引渡しだけでpush・公開・本番適用は行わない。';
 class TaskTransfer {
-  constructor({ store, removal, baseOf = p => p.dir, integration = () => null, notify = () => {}, beforeCleanup = () => {} }) {
+  constructor({ store, removal, baseOf = p => p.dir, integration = () => null, notify = () => {}, beforeCleanup = () => {}, now=Date.now }) {
     Object.assign(this, { store, removal, baseOf, integration, notify, beforeCleanup }); this.tokens = new Map();
     this.dir = path.join(store.root, '_hub/task-handoffs');
+    this.now=now;this.nativeOperations=new Map();
   }
-  file(project, task) { return path.join(this.dir, hash(project + '\0' + task) + '.json'); }
-  read(project, task) { const f = this.file(project, task); noLinks(f); return exists(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : null; }
-  save(r) { const f = this.file(r.project, r.task); noLinks(f); fs.mkdirSync(this.dir, { recursive: true }); fs.writeFileSync(f + '.tmp', JSON.stringify(r, null, 2)); fs.renameSync(f + '.tmp', f); }
+  file(project, task) { for(const x of [project,task])if(typeof x!=='string'||!x||/[\\/\0]|^\.{1,2}$/.test(x))throw Error('引渡し作業識別が不正です');return path.join(this.dir, hash(project + '\0' + task) + '.json'); }
+  validate(r){
+    if(!r||typeof r!=='object'||Array.isArray(r)||!UUID.test(r.id)||Object.keys(r).some(k=>!RECORD_KEYS.has(k)))throw Error('引渡し記録の型別・識別が不正です');this.file(r.project,r.task);
+    for(const k of ['complete','notified','handedUp','receiving'])if(r[k]!==undefined&&typeof r[k]!=='boolean')throw Error('引渡し記録の状態型別が不正です');
+    if(r.integrating!==undefined&&!UUID.test(r.integrating))throw Error('引渡し統合識別が不正です');
+    if(r.destination){this.file(r.targetProject,r.targetTask);const expected=path.join(this.store.product,r.targetProject,'成果物','受取',r.id);if(typeof r.destination!=='string'||canonical(r.destination)!==canonical(expected))throw Error('受領先が確認範囲の外です');noLinks(r.destination);}
+    if(r.files!==undefined){if(!Array.isArray(r.files)||r.files.length>500)throw Error('成果ファイル記録が不正です');for(const f of r.files){if(!f||typeof f.path!=='string'||!path.isAbsolute(f.path)||typeof f.relative!=='string'||path.isAbsolute(f.relative)||f.relative.split(/[\\/]/).some(x=>!x||x==='.'||x==='..'||x.startsWith('.'))||!['project','body'].includes(f.location)||!Number.isSafeInteger(f.bytes)||f.bytes<0||f.bytes>64*1024*1024||!DIGEST.test(f.fingerprint))throw Error('成果ファイル記録の型別・範囲が不正です');noLinks(f.path);if(f.digest!==undefined&&!DIGEST.test(f.digest))throw Error('成果ダイジェストが不正です');if(f.to&&(typeof f.to!=='string'||!r.destination||canonical(f.to)!==canonical(path.join(r.destination,f.location,f.relative))))throw Error('成果ファイルの受領先が不正です');if(f.native&&(!DIGEST.test(f.native.rootFingerprint)||!DIGEST.test(f.native.sha256)||!DIGEST.test(f.native.fileFingerprint)||typeof f.native.root!=='string'||typeof f.native.path!=='string'||canonical(path.resolve(f.native.root,f.native.path))!==canonical(f.path)))throw Error('成果の native source binding が不正です');if(f.copyReceipt&&(!DIGEST.test(f.copyReceipt.sha256)||!DIGEST.test(f.copyReceipt.fileFingerprint)))throw Error('成果の native copy receipt が不正です');}}
+    if(r.move!==undefined&&(!Array.isArray(r.move)||r.move.some(x=>!x||typeof x.path!=='string'||!path.isAbsolute(x.path))))throw Error('引渡し管理範囲が不正です');
+    if(r.files&&r.files.reduce((sum,x)=>sum+x.bytes,0)>64*1024*1024||r.optional!==undefined&&(!Array.isArray(r.optional)||r.optional.some(x=>typeof x!=='string'))||r.cleanup!==undefined&&!UUID.test(r.cleanup)||r.cleanupVersion!==undefined&&r.cleanupVersion!==2||r.error!==undefined&&typeof r.error!=='string')throw Error('引渡し範囲・状態が不正です');
+    if(r.nativeDestination){const n=r.nativeDestination;if(typeof n.root!=='string'||!DIGEST.test(n.rootFingerprint)||canonical(n.root)!==canonical(path.join(this.store.product,r.targetProject)))throw Error('native受領先が別プロジェクトです');noLinks(n.root);}
+    if(r.nativeCleanup){this.removal.validateNativeRecord(r.nativeCleanup);if(r.nativeCleanup.project!==r.project||r.nativeCleanup.task!==r.task)throw Error('native清理計畫跨作業');}
+    return r;
+  }
+  read(project, task) {const r=journal.read(this.file(project,task));if(!r)return null;this.validate(r);if(r.project!==project||r.task!==task)throw Error('引渡し記録の跨檔識別が不正です');return r;}
+  save(r) {this.validate(r);journal.save(this.file(r.project,r.task),r);}
   pending() {
     if (!exists(this.dir)) return []; noLinks(this.dir);
     return fs.readdirSync(this.dir).filter(n => /^[a-f0-9]{64}\.json$/.test(n)).flatMap(n => {
-      try { const f=path.join(this.dir,n); noLinks(f); const r=JSON.parse(fs.readFileSync(f,'utf8'));
+      try { const f=path.join(this.dir,n); noLinks(f); const r=this.validate(journal.read(f));if(canonical(this.file(r.project,r.task))!==canonical(f))throw Error('引渡し記錄跨檔識別不符');
         return r.complete || r.handedUp && !r.receiving || r.integrating ? [] : [{project:r.project,task:r.task,title:r.title,targetProject:r.targetProject,targetTask:r.targetTask}];
-      } catch { return []; } // 壊れた記録は消さず、他の正常な引渡しの再開を妨げない。
+      } catch(error) {if(process.platform==='win32')throw error;return []; } // Windows writes fail closed when the record scope is unknown.
     });
   }
   expectTitle(project, task, expected, receipt) {
@@ -30,7 +47,7 @@ class TaskTransfer {
   }
   offers() {
     if(!exists(this.dir))return [];noLinks(this.dir);
-    return fs.readdirSync(this.dir).filter(n=>/^[a-f0-9]{64}\.json$/.test(n)).flatMap(n=>{try{const f=path.join(this.dir,n);noLinks(f);const r=JSON.parse(fs.readFileSync(f,'utf8'));return r.handedUp&&!r.complete?[{project:r.project,task:r.task,title:r.title,integrating:r.integrating}]:[];}catch{return [];}});
+    return fs.readdirSync(this.dir).filter(n=>/^[a-f0-9]{64}\.json$/.test(n)).flatMap(n=>{try{const f=path.join(this.dir,n);noLinks(f);const r=this.validate(journal.read(f));if(canonical(this.file(r.project,r.task))!==canonical(f))throw Error('引渡し記錄跨檔識別不符');return r.handedUp&&!r.complete?[{project:r.project,task:r.task,title:r.title,integrating:r.integrating}]:[];}catch(error){if(process.platform==='win32')throw error;return [];}});
   }
   context(project, task, options = {}) {
     const all = this.store.listProjects(), p = all.find(x => x.id === project), t = p?.tasks.find(x => x.id === task);
@@ -97,7 +114,7 @@ class TaskTransfer {
   preview(project, task, paths = [], expectTitle) {
     const pending = this.read(project, task);
     this.expectTitle(project,task,expectTitle,pending);
-    if (pending && !pending.complete) return { token: this.token({ pending: pending.id, project, task }), title: pending.title, target: pending.targetName, files: pending.files, blockers: [], resume: true, destination: pending.destination, guidance: FINAL_CHECK };
+    if (pending && !pending.complete) return { token: this.token({ pending: pending.id,recordHash:hash(JSON.stringify(pending)), project, task }), title: pending.title, target: pending.targetName, files: pending.files, blockers: [], resume: true, destination: pending.destination, guidance: FINAL_CHECK };
     const { p, t, target, d } = this.context(project, task);
     if (pending?.complete) throw Error('引渡し済みの作業が復元されています。受け取った成果を確認し、削除は［削除…］から行ってください');
     let files = []; try { files = this.artifacts(p, t, paths); } catch (e) { d.blockers.push(e.message); }
@@ -106,7 +123,67 @@ class TaskTransfer {
     const result = { project, task, title: t.title, target: `${target.project.name}／${target.task.title}`, targetProject: target.project.id, targetTask: target.task.id, taskHash: t.completionHash, targetHash: target.task.completionHash, files, integrated, blockers: [...new Set(d.blockers)], move: d.move, keep: [...d.keep, ...d.optional].map(x => ({path:x.path, why:x.why || '成果の元ファイルは残します'})), guidance: FINAL_CHECK };
     return { ...result, token: this.token(result) };
   }
-  token(value) { for (const [id, x] of this.tokens) if (Date.now() - x.at > 600000) this.tokens.delete(id); const token = randomUUID(); this.tokens.set(token, { at: Date.now(), value }); return token; }
+  token(value) {const at=this.now();for (const [id, x] of this.tokens) if (at<x.at||at-x.at>600000) this.tokens.delete(id);if(this.tokens.size>=128)throw Error('引渡し預覽過多');const token = randomUUID();this.tokens.set(token,{at,value});return token;}
+  nativeActive(){return this.nativeOperations.size;}
+  nativeBusy(project,task){return [...this.nativeOperations.values()].some(x=>[x.project,x.targetProject].includes(project)&&(!task||[x.task,x.targetTask].includes(task)));}
+  async previewAsync(project,task,paths=[],expectTitle){return this.nativePreview('preview',project,task,paths,expectTitle);}
+  async offerPreviewAsync(project,task,paths=[],expectTitle){return this.nativePreview('offerPreview',project,task,paths,expectTitle);}
+  async nativePreview(method,project,task,paths,expectTitle){
+    const out=this[method](project,task,paths,expectTitle),entry=this.tokens.get(out.token);this.tokens.delete(out.token);
+    const old=out.resume?this.read(project,task):null,p=this.store.readProject(project),targetProject=entry.value.targetProject||old?.targetProject,sourceProject=p?.dir||path.join(this.store.product,project),targetRoot=path.join(this.store.product,targetProject||project),operation=randomUUID();
+    if(this.nativeBusy(project,task)||this.nativeBusy(targetProject))throw Error('引渡しが実行中です');this.nativeOperations.set(operation,{project,task,targetProject,targetTask:entry.value.targetTask||old?.targetTask});
+    try{const nativeDestination={root:targetRoot,rootFingerprint:(await nativeFiles.identity(targetRoot)).rootFingerprint},native=[];
+      for(const f of out.files||[]){let root=f.location==='body'?this.baseOf(p):sourceProject;noLinks(root);const relative=path.relative(root,f.path).split(path.sep).join('/');if(canonical(path.resolve(root,relative))!==canonical(f.path)||!relative||relative.startsWith('../')||path.isAbsolute(relative))throw Error('成果來源不屬於確認專案');
+        if(out.resume&&f.to&&exists(f.to)){const received=await artifact.inspect({root:nativeDestination.root,rootFingerprint:nativeDestination.rootFingerprint,path:path.relative(targetRoot,f.to).split(path.sep).join('/')});if(received.sha256!==f.digest)throw Error('受領済みの成果が変更されています');native.push({id:f.id,native:f.native||null,copyReceipt:{sha256:received.sha256,fileFingerprint:received.fileFingerprint}});continue;}
+        const rootFingerprint=(await nativeFiles.identity(root)).rootFingerprint,value=await artifact.inspect({root,rootFingerprint,path:relative});if(snapshot(f.path)!==f.fingerprint)throw Error('預覽中成果檔案已變更');native.push({id:f.id,native:{root,rootFingerprint,path:relative,sha256:value.sha256,fileFingerprint:value.fileFingerprint}});
+      }
+      if(old&&hash(JSON.stringify(this.read(project,task)))!==hash(JSON.stringify(old)))throw Error('預覽中引渡し記錄已變更');
+      if(!old){const c=this.context(project,task,{offer:method==='offerPreview'});if(c.t.completionHash!==entry.value.taskHash||c.target.project.id!==targetProject||c.target.task.id!==entry.value.targetTask)throw Error('預覽中作業關係已變更');}
+      let nativeCleanup=old?.nativeCleanup||null;
+      if(method!=='offerPreview'&&!nativeCleanup){if(old?.cleanup)throw Error('Legacy cleanup requires a fresh reviewed native recovery plan');const c=this.context(project,task);nativeCleanup=await this.planNativeCleanup(c.p,c.t,[...c.d.move,...c.d.optional]);}
+      const value={...entry.value,targetProject,targetTask:entry.value.targetTask||old?.targetTask,nativeFiles:native,nativeDestination,nativeCleanup},token=this.token(value);return {...out,token,nativeFiles:native.map(x=>({id:x.id,sha256:x.native?.sha256||x.copyReceipt?.sha256})),nativeCleanup:nativeCleanup?{id:nativeCleanup.id,entries:nativeCleanup.entries.map(e=>({from:e.from,to:e.to,objectId:e.native.objectId,treeHash:e.native.treeHash}))}:null,guidance:FINAL_CHECK};
+    }finally{this.nativeOperations.delete(operation);}
+  }
+  async applyAsync(input){return this.nativeApply('apply',input);}
+  async offerAsync(input){return this.nativeApply('offer',input);}
+  async receiveIntegratedAsync(input){return this.nativeApply('receiveIntegrated',input);}
+  async planNativeCleanup(p,t,moves){const id=randomUUID(),dest=path.join(this.removal.trash,'ProjectHub 引渡し '+id),taskFile=this.store.taskFile(p.id,t.id);return this.removal.planNativeEntries({id,project:p.id,task:t.id,title:t.title,entries:moves.slice().sort((a,b)=>Number(a.path===taskFile)-Number(b.path===taskFile)).map(x=>({from:x.path,to:path.join(dest,path.relative(this.store.root,x.path)),fingerprint:x.fingerprint}))});}
+  async nativeApply(method,input){
+    if(!input||typeof input!=='object'||Array.isArray(input))throw Error('引渡し確認格式無效');let grant=null,coreInput=input;
+    if(method!=='receiveIntegrated'){
+      const x=this.tokens.get(input.token);this.tokens.delete(input.token);const at=this.now();if(!x||input.confirm!==true||input.project!==x.value.project||input.task!==x.value.task||at<x.at||at-x.at>600000||!Array.isArray(x.value.nativeFiles)||!x.value.nativeDestination)throw Error('請重新預覽並明確確認本次引渡し');grant=x.value;
+      if(grant.pending&&hash(JSON.stringify(this.read(input.project,input.task)))!==grant.recordHash)throw Error('引渡し恢復記錄已變更，請重新預覽');
+      const privateToken=randomUUID();this.tokens.set(privateToken,{at:Date.now(),value:grant});coreInput={...input,token:privateToken};
+    }
+    const project=input.project,task=input.task,operation=randomUUID();if(this.nativeBusy(project,task)||this.nativeBusy(grant?.targetProject||input.targetProject))throw Error('其他引渡し仍在執行');this.nativeOperations.set(operation,{project,task,targetProject:grant?.targetProject||input.targetProject,targetTask:grant?.targetTask||input.targetTask});
+    let planned=null,initial;const continuation=this.continue,prior=method==='receiveIntegrated'?this.read(project,task):null;
+    try{
+      // Capture the synchronous plan after its durable journal save; no file
+      // copy or cleanup happens until the owned native broker returns.
+      this.continue=r=>{planned=r;};try{initial=this[method](coreInput);}finally{this.continue=continuation;if(coreInput!==input)this.tokens.delete(coreInput.token);}
+      if(!planned){const saved=this.read(project,task);if(saved?.complete){if(!saved.nativeCleanup||!saved.cleanup||saved.cleanup!==saved.nativeCleanup.id)throw Error('缺少完整native接收／清理收據');await this.copyNative(saved);const cleaned=await this.removal.cleanupRecordAsync(saved.cleanup,{beforeEntry:(record,e)=>this.assertNativeCleanupEntry(saved,record,e)});if(!cleaned.ok)throw Error('已完成接收的native清理證據已變更');return initial;}if(method==='offer'&&grant){if(saved&&!saved.complete){saved.nativeDestination=grant.nativeDestination;for(const f of saved.files){const binding=grant.nativeFiles.find(x=>x.id===f.id);if(!binding?.native)throw Error('Offer缺少確認前native成果來源');f.native=binding.native;}this.save(saved);}}return initial;}
+      if(grant){planned.nativeDestination=grant.nativeDestination;if(!planned.nativeCleanup&&grant.nativeCleanup)planned.nativeCleanup={...grant.nativeCleanup,entries:grant.nativeCleanup.entries.filter(e=>planned.move.some(m=>canonical(m.path)===canonical(e.from)&&m.fingerprint===e.fingerprint))};for(const f of planned.files){const bound=grant.nativeFiles.find(x=>x.id===f.id);if(!bound)throw Error('成果缺少 native preview binding');if(bound.native)f.native=bound.native;if(bound.copyReceipt)f.copyReceipt=bound.copyReceipt;}}
+      else{const targetRoot=path.join(this.store.product,planned.targetProject);planned.nativeDestination=planned.nativeDestination||input.nativeDestination||prior?.nativeDestination;if(!planned.nativeDestination||canonical(planned.nativeDestination.root)!==canonical(targetRoot)||!DIGEST.test(planned.nativeDestination.rootFingerprint))throw Error('統合缺少確認前受領RootFileID');const p=this.store.readProject(project);for(const f of planned.files){if(f.to&&exists(f.to))continue;const root=f.location==='body'?this.baseOf(p):p.dir,relative=path.relative(root,f.path).split(path.sep).join('/');if(!f.native||canonical(f.native.root)!==canonical(root)||f.native.path!==relative)throw Error('統合缺少確認前native成果來源');const value=await artifact.inspect({root,rootFingerprint:f.native.rootFingerprint,path:relative});if(value.sha256!==f.digest||value.sha256!==f.native.sha256||value.fileFingerprint!==f.native.fileFingerprint||snapshot(f.path)!==f.fingerprint)throw Error('統合後成果來源已變更');}}
+      if(!planned.nativeCleanup&&input.nativeCleanup)planned.nativeCleanup=input.nativeCleanup;
+      if(!planned.nativeCleanup)throw Error('缺少使用者預覽前建立的 native清理計畫，未清理管理記錄');this.removal.validateNativeRecord(planned.nativeCleanup);if(planned.nativeCleanup.project!==project||planned.nativeCleanup.task!==task||planned.move.some(m=>!planned.nativeCleanup.entries.some(e=>e.from===m.path&&e.fingerprint===m.fingerprint))||planned.nativeCleanup.entries.some(e=>!planned.move.some(m=>m.path===e.from&&m.fingerprint===e.fingerprint)))throw Error('native清理計畫與已核准管理範圍不同');
+      this.save(planned);await this.copyNative(planned);await this.continueAsync(planned,continuation);return this.result(planned);
+    }finally{this.continue=continuation;this.nativeOperations.delete(operation);}
+  }
+  async copyNative(r){
+    const dest=r.nativeDestination;for(const f of r.files){const relative=path.relative(dest.root,f.to).split(path.sep).join('/');if(exists(f.to)){const current=await artifact.inspect({root:dest.root,rootFingerprint:dest.rootFingerprint,path:relative});if(current.sha256!==f.digest||f.copyReceipt&&current.fileFingerprint!==f.copyReceipt.fileFingerprint)throw Error('受領成果或FileID已變更，未覆寫');f.copyReceipt={sha256:current.sha256,fileFingerprint:current.fileFingerprint};f.copyState='copied';this.save(r);continue;}
+      if(r.notified||!f.native||snapshot(f.path)!==f.fingerprint)throw Error('成果來源已變更或通知後遺失，管理記錄保留');const source=await artifact.inspect({root:f.native.root,rootFingerprint:f.native.rootFingerprint,path:f.native.path});if(source.sha256!==f.native.sha256||source.fileFingerprint!==f.native.fileFingerprint||source.sha256!==f.digest)throw Error('成果來源native hash/FileID已變更');f.copyState='copying';this.save(r);const copied=await artifact.copy({sourceRoot:f.native.root,sourceRootFingerprint:f.native.rootFingerprint,sourcePath:f.native.path,sourceHash:f.digest,sourceFingerprint:f.native.fileFingerprint,root:dest.root,rootFingerprint:dest.rootFingerprint,path:relative});f.copyReceipt={sha256:copied.sha256,fileFingerprint:copied.fileFingerprint};f.copyState='copied';this.save(r);
+    }
+  }
+  async continueAsync(r,continuation=this.continue){
+    const hook=this.beforeCleanup,PAUSE=Symbol('native-cleanup-boundary');let paused=false;this.beforeCleanup=()=>{paused=true;throw PAUSE;};
+    try{try{continuation.call(this,r);}catch(error){if(error!==PAUSE)throw error;}}finally{this.beforeCleanup=hook;}
+    if(paused){await hook(r);if(!r.nativeCleanup)throw Error('缺少已核准 native清理計畫');if(!r.cleanup){this.removal.save(r.nativeCleanup);r.cleanup=r.nativeCleanup.id;this.save(r);}const result=await this.removal.cleanupRecordAsync(r.cleanup,{beforeEntry:(record,e)=>this.assertNativeCleanupEntry(r,record,e)});if(!result.ok)throw Error('native清理未完成：'+result.failed.map(e=>e.why).join(' / '));r.complete=true;this.save(r);}
+  }
+  assertNativeCleanupEntry(r,record,e){
+    if(record.id!==r.nativeCleanup?.id||record.project!==r.project||record.task!==r.task)throw Error('native清理記錄與已核准接收作業不符');const root=path.join(this.store.product,r.project),allowed=[path.join(root,'.ai/tasks',r.task+'.md'),path.join(root,'.ai/work',r.task),...['.jsonl','.json','.queue.json','.rules.md'].map(ext=>path.join(root,'.ai/chat',r.task+ext)),...(r.optional||[]).filter(x=>x==='作業/'+r.task||x==='attachments/'+r.task).map(x=>path.join(root,x))],handoff=path.dirname(e.from)===path.join(root,'.ai/handoff')&&path.basename(e.from).startsWith(r.task+'-')&&/^\d{8}-\d{6}-(claude|codex|agy)\.md$/.test(path.basename(e.from).slice(r.task.length+1));
+    if(!allowed.includes(e.from)&&!handoff||!inside(path.resolve(this.removal.trash),e.to)||e.restored)throw Error('片付け記録の場所・復元状態を確認してください');noLinks(e.from);noLinks(e.to);if(e.moved){if(exists(e.from))throw Error('元の管理記録が復元されています。上書きしません');return;}
+    if(e.from===path.join(root,'.ai/work',r.task)||(r.optional||[]).some(x=>e.from===path.join(root,x))||handoff){const p=this.store.readProject(r.project),t=p?.tasks.find(x=>x.id===r.task);if(!t||this.removal.referenced(e.from,p,t,this.store.listProjects()))throw Error('他の記録から参照されているため専用フォルダ・引継ぎ資料を残します');}
+  }
   offerPreview(project, task, paths = [], expectTitle) {
     const r=this.read(project,task); this.expectTitle(project,task,expectTitle,r);
     if (r && !r.complete && !r.handedUp && !r.integrating) return this.preview(project,task,paths,expectTitle);
@@ -210,7 +287,7 @@ class TaskTransfer {
     const targetFile = this.store.taskFile(r.targetProject, r.targetTask); noLinks(targetFile);
     if (!fs.readFileSync(targetFile, 'utf8').includes(`受領記録：${r.id}`)) this.store.appendSection(r.targetProject, r.targetTask, 'やったこと', `- 「${r.title}」の成果${r.files.length}ファイルを受領：${r.destination}${r.integrated ? (r.integrating ? '／統合先への取り込み済み' : '／本体への取り込み済み') + recovered : ''}。受領記録：${r.id}。${FINAL_CHECK}`);
     r.notified = true; this.save(r); this.notify(r.targetProject, r.targetTask, r.id);
-    if(r.integrating)this.beforeCleanup(r);
+    if(r.integrating||process.platform==='win32'&&r.nativeCleanup)this.beforeCleanup(r);
     if (!r.cleanup) {
       const id = randomUUID(), dest = path.join(this.removal.trash, 'ProjectHub 引渡し ' + id);
       noLinks(dest);

@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Project Hub reviewed SSH credential migration manifest",
+  "description": "Non-secret closed manifest. Cross-field identity, real-time expiry, canonical bytes, filesystem/credential ownership, build/catalog binding and reviewed native admission are mandatory; this schema is not authorization or evidence of migration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "migrationId",
+    "issuedAt",
+    "expiresAt",
+    "reviewReference",
+    "sourceDescriptor",
+    "destinationDescriptor",
+    "sourceReceiptSHA256",
+    "sourceUid",
+    "sourceBroker",
+    "helper",
+    "helperSHA256",
+    "destinationBroker",
+    "catalogSHA256",
+    "payloadSHA256",
+    "payloadLength",
+    "pointerRoot",
+    "pointerRootFingerprint",
+    "pointerExpectedSHA256",
+    "pointerFileName"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "migrationId": {
+      "type": "string",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+    },
+    "issuedAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "expiresAt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "reviewReference": {
+      "const": "docs/superpowers/specs/2026-10-14-ssh-vault-maintenance-design.md"
+    },
+    "sourceDescriptor": {
+      "$ref": "ssh-password-vault.schema.json"
+    },
+    "destinationDescriptor": {
+      "$ref": "ssh-password-vault.schema.json"
+    },
+    "sourceReceiptSHA256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "sourceUid": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "sourceBroker": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 239,
+      "pattern": "^[A-Za-z]:\\\\[^\\u0000\\r\\n]+$"
+    },
+    "helper": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 239,
+      "pattern": "^[A-Za-z]:\\\\[^\\u0000\\r\\n]+$"
+    },
+    "helperSHA256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "destinationBroker": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 239,
+      "pattern": "^[A-Za-z]:\\\\[^\\u0000\\r\\n]+$"
+    },
+    "catalogSHA256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "payloadSHA256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "payloadLength": {
+      "type": "integer",
+      "minimum": 5,
+      "maximum": 1048576
+    },
+    "pointerRoot": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 239,
+      "pattern": "^[A-Za-z]:\\\\[^\\u0000\\r\\n]+$"
+    },
+    "pointerRootFingerprint": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "pointerExpectedSHA256": {
+      "oneOf": [
+        {
+          "const": "absent"
+        },
+        {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      ]
+    },
+    "pointerFileName": {
+      "const": "active-registration.json"
+    }
+  }
+}

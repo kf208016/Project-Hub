@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const chat = require('../lib/chat');
 const launch = require('../lib/launch');
+const native=process.platform==='win32',fixture=require('./helpers/owned-native-fixture'),reviewed=require('./helpers/reviewed-workspace'),originalPath=process.env.PATH;
+let restoreInventory=()=>{},nativeProvider;
 
 // 本物の CLI・利用者の台帳を呼ばず、渡された引数と会話を返す fixture で検証する。
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-delegate-'));
@@ -34,6 +36,8 @@ async function waitReplies(n) {
   return replies().at(-1);
 }
 const delegate = body => post('/api/delegate', { title: '確認する', text: 'review', ...body });
+async function restartFixture(){await new Promise(r=>server.close(r));delete require.cache[require.resolve('../server')];({server,sessions}=require('../server'));await new Promise(r=>server.listen(Number(process.env.HUB_PORT),'127.0.0.1',r));}
+const nativeCases=()=>require('./helpers/native-delegate-cases').cases({key,dir,root,provider:nativeProvider,post,tasks,restart:restartFixture});
 
 test.before(async () => {
   fs.mkdirSync(path.join(root, '_hub'), { recursive: true });
@@ -43,7 +47,7 @@ test.before(async () => {
   fs.writeFileSync(path.join(dir, '.ai/tasks/existing.md'), '---\nid: existing\ntitle: 元の作業\nrole: 文章\nowner: claude-code\nmodel: Opus 5.5\nworkspaceMode: direct\nstate: 実行中\n---\n## 手順\n- [ ] 人による確認\n');
   fs.writeFileSync(path.join(dir, '.ai/tasks/old-child.md'), '---\nid: old-child\ntitle: 既存の子\nkind: derived\nderivedFrom: existing\n---\n');
   fs.mkdirSync(bin);
-  for (const ai of ['claude', 'codex']) fs.writeFileSync(path.join(bin, ai), `#!${process.execPath}
+  if(!native)for (const ai of ['claude', 'codex']) fs.writeFileSync(path.join(bin, ai), `#!${process.execPath}
 const ai=${JSON.stringify(ai)}, args=process.argv.slice(2);let input='';
 process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{
  const out=x=>console.log(JSON.stringify(x));
@@ -62,7 +66,8 @@ process.stdin.on('data',d=>input+=d);process.stdin.on('end',()=>{
 });
 process.on('SIGTERM',()=>process.exit(143));
 `, { mode: 0o755 });
-  process.env.PATH = bin + ':/usr/bin:/bin';
+  if(native){restoreInventory=fixture.freshInventory();nativeProvider=fixture.provider(tmp,{echo:true,delay:8000});process.env.PATH=fixture.environment(nativeProvider.bin);fs.writeFileSync(path.join(root,'_hub/ai-tools-models.json'),JSON.stringify({v:1,codex:{models:[{id:'gpt-6.1-sol',label:'GPT-6.1-Sol'},{id:'gpt-6-astra',label:'GPT-6-Astra'}],known:[],source:'synthetic-fixture'}}));}
+  else process.env.PATH = bin + ':/usr/bin:/bin';
   process.env.HUB_ROOT = root; process.env.HUB_PORT = '0'; process.env.HUB_DRY_RUN = '1';
   process.env.HUB_AI_HOME = path.join(tmp, 'ai-home'); process.env.HUB_TRASH = path.join(tmp, 'trash');
   ({ server, sessions } = require('../server'));
@@ -76,9 +81,9 @@ process.on('SIGTERM',()=>process.exit(143));
   await new Promise(r => server.listen(port, '127.0.0.1', r));
   base = `http://127.0.0.1:${port}`;
 });
-test.after(async () => { if (server) await new Promise(r => server.close(r)); });
+test.after(async () => { if(native&&server?.listening){await post('/api/chat/stop',{});const runtime=require('../server').workspaceRuntime;for(const flow of [...runtime.flows.values()]){await runtime.stop(flow.id);await runtime.finish(flow.id);}}if (server?.listening) await new Promise(r => server.close(r));restoreInventory();process.env.PATH=originalPath;if(native){const resolved=fs.realpathSync(tmp);assert.equal(path.dirname(resolved).toLowerCase(),fs.realpathSync(os.tmpdir()).toLowerCase());assert.ok(path.basename(resolved).startsWith('hub-delegate-'));fs.rmSync(resolved,{recursive:true,force:true,maxRetries:20,retryDelay:50});} });
 
-test('未指定・未知モデルは CLI 既定へ落とさず、台帳・会話を増やさない', async () => {
+test('未指定・未知モデルは CLI 既定へ落とさず、台帳・会話を増やさない', {timeout:240000}, async () => {
   const before = tasks(), task = fs.readFileSync(path.join(dir, '.ai/tasks/existing.md'), 'utf8');
   assert.equal((await delegate({ ai: 'claude' })).status, 400); // 元の作業の Opus を継承しない
   assert.equal((await delegate({ ai: 'claude', model: 'claude-opus-4-6' })).status, 409);
@@ -89,7 +94,8 @@ test('未指定・未知モデルは CLI 既定へ落とさず、台帳・会話
   assert.equal(fs.readFileSync(path.join(dir, '.ai/tasks/existing.md'), 'utf8'), task);
 });
 
-test('正式 ID で指定した Fable が同じ会話・同じ作業で起動する', async () => {
+test('正式 ID で指定した Fable が同じ会話・同じ作業で起動する', {timeout:240000}, async () => {
+  if(native)return nativeCases().success();
   const before = tasks(), child = fs.readFileSync(path.join(dir, '.ai/tasks/old-child.md'), 'utf8');
   const list = sessions.list;
   let result;
@@ -119,7 +125,8 @@ test('正式 ID で指定した Fable が同じ会話・同じ作業で起動す
   assert.equal(t.owner, 'claude-code'); assert.equal(t.role, '文章'); assert.equal(t.model, 'Opus 5.5');
 });
 
-test('稼働中は止めず、Codex→Fable→Opusを指定順で実行し履歴・待ち順を保存する', async () => {
+test('稼働中は止めず、Codex→Fable→Opusを指定順で実行し履歴・待ち順を保存する', {timeout:240000}, async () => {
+  if(native)return nativeCases().queue();
   const before = tasks();
   assert.equal((await post('/api/chat/send', { ai: 'codex', model: 'gpt-6.1-sol', text: 'parent-working' })).status, 200);
   const check = await (await delegate({ ai: 'claude', role: 'チェック', title: '律の確認' })).json();
@@ -151,7 +158,7 @@ test('稼働中は止めず、Codex→Fable→Opusを指定順で実行し履歴
   assert.deepEqual(tasks(), before);
 });
 
-test('CLI ID の改名・無効化は正式名での委任にも適用される', async () => {
+test('CLI ID の改名・無効化は正式名での委任にも適用される', {timeout:240000}, async () => {
   const old = structuredClone(launch.getOverrides());
   try {
     launch.setOverrides({ claude: { 'Fable 5.1': 'test-fable-id' } });
@@ -163,7 +170,8 @@ test('CLI ID の改名・無効化は正式名での委任にも適用される'
   } finally { launch.setOverrides(old); }
 });
 
-test('再起動後の保存済み委任は同じ作業の［始める］で再開できる', async () => {
+test('再起動後の保存済み委任は同じ作業の［始める］で再開できる', {timeout:240000}, async () => {
+  if(native)return nativeCases().saved();
   const item = { id: 'saved-delegate', ai: 'claude', model: 'Fable 5.1', text: 'saved-review', shown: '【渡した依頼：保存済みの確認】\nsaved-review' };
   // メモリ上の空キューを再ロードして、保存ファイルの復旧経路を通す。
   await new Promise(r => server.close(r));
@@ -179,7 +187,8 @@ test('再起動後の保存済み委任は同じ作業の［始める］で再�
   assert.equal(tasks().length, 2);
 });
 
-test('［止める］は現在の AI と委任の順番待ちを止め、勝手に次のモデルを起動しない', async () => {
+test('［止める］は現在の AI と委任の順番待ちを止め、勝手に次のモデルを起動しない', {timeout:240000}, async () => {
+  if(native)return nativeCases().stopped();
   assert.equal((await post('/api/chat/send', { ai: 'codex', model: 'GPT-6.1-Sol', text: 'parent-working' })).status, 200);
   assert.equal((await (await delegate({ ai: 'claude', model: 'Fable 5.1' })).json()).queued, true);
   assert.equal((await post('/api/chat/stop', {})).status, 200);
@@ -189,7 +198,8 @@ test('［止める］は現在の AI と委任の順番待ちを止め、勝手�
   assert.equal(tasks().length, 2);
 });
 
-test('待っている間にモデル名が無効になっても、理由を表示して待ち順を保持し既定で起動しない', async () => {
+test('待っている間にモデル名が無効になっても、理由を表示して待ち順を保持し既定で起動しない', {timeout:240000}, async () => {
+  if(native)return nativeCases().disabled();
   const old = structuredClone(launch.getOverrides());
   try {
     assert.equal((await post('/api/chat/send', { ai: 'codex', model: 'GPT-6.1-Sol', text: 'parent-working' })).status, 200);
@@ -220,7 +230,8 @@ test('待っている間にモデル名が無効になっても、理由を表�
 const taskFile = path.join(dir, '.ai/tasks/existing.md');
 const taskData = async () => (await (await fetch(base + '/api/state', { headers: { Connection: 'close' } })).json()).projects[0].tasks.find(t => t.id === key.task);
 
-test('同じ作業の稼働端末だけを拒否し、対象AI欄の停止を案内して状態を保持する', async () => {
+test('同じ作業の稼働端末だけを拒否し、対象AI欄の停止を案内して状態を保持する', {timeout:240000}, async () => {
+  if(native)return nativeCases().terminal();
   const before = fs.readFileSync(taskFile, 'utf8'), count = rows().length;
   const list = sessions.list;
   try {
@@ -245,7 +256,8 @@ test('同じ作業の稼働端末だけを拒否し、対象AI欄の停止を案
   } finally { sessions.list = list; }
 });
 
-test('開始直前の検査で断られても、状態・質問を起動前に書き換えない', async () => {
+test('開始直前の検査で断られても、状態・質問を起動前に書き換えない', {timeout:240000}, async () => {
+  if(native)return nativeCases().beforeLaunch();
   assert.equal((await post('/api/task', { state: '返事待ち', question: '人の判断がまだ必要' })).status, 200);
   const before = fs.readFileSync(taskFile, 'utf8'), count = rows().length;
   const send = chat.ChatRunner.prototype.send;
@@ -258,7 +270,8 @@ test('開始直前の検査で断られても、状態・質問を起動前に�
   } finally { chat.ChatRunner.prototype.send = send; }
 });
 
-test('CLIの起動失敗でも状態・質問を保持し、復旧後の起動成功でだけ更新する', async () => {
+test('CLIの起動失敗でも状態・質問を保持し、復旧後の起動成功でだけ更新する', {timeout:240000}, async () => {
+  if(native)return nativeCases().failedCLI();
   const before = fs.readFileSync(taskFile, 'utf8'), count = replies().length;
   const cli = path.join(bin, 'claude'), unavailable = path.join(bin, 'claude-unavailable');
   fs.renameSync(cli, unavailable);
@@ -273,7 +286,8 @@ test('CLIの起動失敗でも状態・質問を保持し、復旧後の起動�
   await waitReplies(count + 2); assert.equal(tasks().length, 2);
 });
 
-test('完了作業へは新規委任・保存キュー再開を拒否し、人の再開後も起動失敗なら質問と待ち順を保持する', async () => {
+test('完了作業へは新規委任・保存キュー再開を拒否し、人の再開後も起動失敗なら質問と待ち順を保持する', {timeout:240000}, async () => {
+  if(native)return nativeCases().completed();
   const old = structuredClone(launch.getOverrides()), count = replies().length;
   let pending;
   try {
@@ -309,7 +323,8 @@ test('完了作業へは新規委任・保存キュー再開を拒否し、人�
   assert.deepEqual(JSON.parse(fs.readFileSync(queueFile, 'utf8')), []); assert.equal(tasks().length, 2);
 });
 
-test('自動で次の委任を起動できない時は、質問・失敗した依頼・後続を残して再送せず止める', async () => {
+test('自動で次の委任を起動できない時は、質問・失敗した依頼・後続を残して再送せず止める', {timeout:240000}, async () => {
+  if(native)return nativeCases().autoFailure();
   const count = replies().length;
   assert.equal((await post('/api/chat/send', { ai: 'codex', model: 'GPT-6.1-Sol', text: 'parent-working' })).status, 200);
   const first = await (await delegate({ ai: 'claude', model: 'claude-fable-5-1' })).json();
@@ -332,7 +347,8 @@ test('自動で次の委任を起動できない時は、質問・失敗した�
   assert.deepEqual(JSON.parse(fs.readFileSync(queueFile, 'utf8')), []); assert.equal(tasks().length, 2);
 });
 
-test('最初の会話・継続の番に画面名案内が入り、手順更新後は黄色い帯の情報になる', async () => {
+test('最初の会話・継続の番に画面名案内が入り、手順更新後は黄色い帯の情報になる', {timeout:240000}, async () => {
+  if(native)return nativeCases().guidance();
   assert.equal((await post('/api/task', { state: '実行中', question: '' })).status, 200);
   assert.equal((await post('/api/task/step', { index: 0, done: false })).status, 200);
   // 会話の最初の番を作る。メタデータだけをfixture内で退避。
@@ -360,7 +376,8 @@ test('最初の会話・継続の番に画面名案内が入り、手順更新�
   assert.match(resumed.input, /黄色い帯「AI が手順をすべて済にしました/);
 });
 
-test('ターミナルの起動引数には画面を断定しない案内と名前を先にした指示が入る', async () => {
+test('ターミナルの起動引数には画面を断定しない案内と名前を先にした指示が入る', {timeout:240000}, async () => {
+  if(native)return nativeCases().termGuidance();
   const res = await post('/api/term/start', { ai: 'claude' });
   assert.equal(res.status, 200);
   const data = await res.json(), prompt = data.args.join('\n');
@@ -375,7 +392,8 @@ test('ターミナルの起動引数には画面を断定しない案内と名�
   assert.doesNotMatch(prompt, /Hubの同じ作業の/);
 });
 
-test('自動の順番待ちも前の番の古い表示情報を使わず、開始時の完了確認を渡す', async () => {
+test('自動の順番待ちも前の番の古い表示情報を使わず、開始時の完了確認を渡す', {timeout:240000}, async () => {
+  if(native)return nativeCases().queuedGuidance();
   assert.equal((await post('/api/task/step', { index: 0, done: false })).status, 200);
   const count = replies().length;
   assert.equal((await post('/api/chat/send', { ai: 'codex', model: 'gpt-6.1-sol', text: 'parent-working' })).status, 200);
@@ -390,7 +408,8 @@ test('自動の順番待ちも前の番の古い表示情報を使わず、開�
   assert.doesNotMatch(next.input.split('以下は、この作業の会話')[0].split('# 今回の依頼')[0], /今は確認の黄色い帯なし/);
 });
 
-test('長い委任は受け付けて差分化の案内を添え、8000字の上限は維持する', async () => {
+test('長い委任は受け付けて差分化の案内を添え、8000字の上限は維持する', {timeout:240000}, async () => {
+  if(native)return nativeCases().long();
   const count = replies().length;
   const r = await delegate({ ai: 'claude', model: 'claude-fable-5-1', text: 'r'.repeat(1501) });
   assert.equal(r.status, 200); assert.match((await r.json()).note, /Hub が付ける内容を除き、差分だけ/);

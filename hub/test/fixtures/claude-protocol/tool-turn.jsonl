@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"session-fixture","uuid":"event-1","model":"fixture-model","tools":["Read"],"permissionMode":"default"}
+{"type":"assistant","session_id":"session-fixture","uuid":"event-2","message":{"id":"message-1","role":"assistant","model":"fixture-model","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":"C:\\synthetic\\readme.md","limit":20}}]}}
+{"type":"control_request","request_id":"request-1","request":{"subtype":"can_use_tool","tool_name":"Read","input":{"limit":20,"file_path":"C:\\synthetic\\readme.md"},"tool_use_id":"tool-1","permission_suggestions":null,"blocked_path":null,"title":"Read synthetic fixture"}}
+{"type":"assistant","session_id":"session-fixture","uuid":"event-3","message":{"id":"message-2","role":"assistant","model":"fixture-model","content":[{"type":"text","text":"合成回覆：已完成。"}]}}
+{"type":"result","subtype":"success","session_id":"session-fixture","uuid":"event-4","duration_ms":25,"duration_api_ms":20,"is_error":false,"num_turns":1,"result":"合成回覆：已完成。","terminal_reason":"completed","total_cost_usd":0.001,"usage":{"input_tokens":2,"output_tokens":4}}

@@ -1,0 +1,41 @@
+{
+  "validationScope": "Synthetic documentation examples only; no credential, receipt or real execution evidence.",
+  "pending": {
+    "version": 2,
+    "state": "pending-migration",
+    "binding": "34f83f22662f20b0a7babe3edf4c2bae6e6b0e57bfc7efaa0b79872557f4e9aa",
+    "target": "ProjectHub.WorkerSshPassword.v1/22345678-1234-4234-8234-123456789abc/34f83f22662f20b0a7babe3edf4c2bae6e6b0e57bfc7efaa0b79872557f4e9aa",
+    "uid": 1000,
+    "migrationId": "32345678-1234-4234-8234-123456789abc",
+    "manifestSHA256": "e745d0b6760a0cf97dd00364bfc4e62cf1867d01f9cf22c906418f6421970a6b"
+  },
+  "pointer": {
+    "version": 1,
+    "migrationId": "32345678-1234-4234-8234-123456789abc",
+    "manifestSHA256": "e745d0b6760a0cf97dd00364bfc4e62cf1867d01f9cf22c906418f6421970a6b",
+    "binding": "34f83f22662f20b0a7babe3edf4c2bae6e6b0e57bfc7efaa0b79872557f4e9aa",
+    "descriptorRoot": "C:\\Example\\hub-destination"
+  },
+  "pointerPrior": {
+    "version": 1,
+    "manifestSHA256": "e745d0b6760a0cf97dd00364bfc4e62cf1867d01f9cf22c906418f6421970a6b",
+    "state": "absent",
+    "bytesBase64": "",
+    "sha256": "absent"
+  },
+  "probeDetails": {
+    "uid": 1000,
+    "bootId": "3d68605d-fc17-42f4-972b-40a18df72dbc",
+    "ordinal": 1,
+    "brokerPid": 1001,
+    "brokerCreated": "134000000000000001",
+    "brokerSHA256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "activation": {
+    "version": 1,
+    "state": "active",
+    "binding": "34f83f22662f20b0a7babe3edf4c2bae6e6b0e57bfc7efaa0b79872557f4e9aa",
+    "manifestSHA256": "e745d0b6760a0cf97dd00364bfc4e62cf1867d01f9cf22c906418f6421970a6b",
+    "pointerSHA256": "43de366c1c2cfd50f90dd58dd6174b72d3524ca1e0ca61b3df94f08684e71cb2"
+  }
+}

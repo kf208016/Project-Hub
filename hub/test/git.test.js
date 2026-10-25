@@ -7,6 +7,8 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const g = require('../lib/git');
+const WINDOWS = process.platform === 'win32';
+if (WINDOWS) Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'false' });
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-git-'));
 process.env.HUB_TRASH = path.join(tmp, 'Trash');
@@ -59,6 +61,11 @@ test('Git の無いフォルダ：保存を始めて本体で作業し、次か�
   const d = path.join(tmp, 'docs');
   fs.mkdirSync(d);
   fs.writeFileSync(path.join(d, 'memo.md'), 'x\n');
+  if (WINDOWS) {
+    assert.throws(() => g.prepare({ base: d, workRoot: path.join(tmp, 'Work', 'D'), taskId: 't' }), /不會替非 Git/);
+    assert.ok(!fs.existsSync(path.join(d, '.git')));
+    return;
+  }
   const r = g.prepare({ base: d, workRoot: path.join(tmp, 'Work', 'D'), taskId: 't' });
   assert.deepStrictEqual([r.dir, r.inited], [d, true]);
   assert.match(sh(d, 'log', '--oneline'), /最初の保存/);
@@ -75,6 +82,11 @@ test('台帳のフォルダは、別の Git の中にあっても作業用コピ
   const ledger = path.join(outer, 'Product', 'X');
   fs.mkdirSync(ledger, { recursive: true });
   fs.writeFileSync(path.join(ledger, 'PROJECT.md'), '---\nname: X\n---\n');
+  if (WINDOWS) {
+    assert.throws(() => g.prepare({ base: ledger, workRoot: path.join(tmp, 'Work', 'X'), taskId: 't', direct: true }), /不允許/);
+    assert.strictEqual(sh(outer, 'log', '--oneline').split('\n').length, 1);
+    return;
+  }
   const r = g.prepare({ base: ledger, workRoot: path.join(tmp, 'Work', 'X'), taskId: 't', direct: true });
   assert.strictEqual(r.dir, ledger);
   assert.ok(fs.existsSync(path.join(ledger, '.git')));
@@ -88,8 +100,9 @@ test('作業用コピーに .env を写し、取り込む前に変更の量と�
   fs.writeFileSync(path.join(main, '.env'), 'KEY=1\n');
   const w4 = path.join(tmp, 'Work', 'E');
   const r = g.prepare({ base: main, workRoot: w4, taskId: 'env' });
-  assert.deepStrictEqual(r.copied, ['.env']);
-  assert.strictEqual(fs.readFileSync(path.join(r.dir, '.env'), 'utf8'), 'KEY=1\n');
+  assert.deepStrictEqual(r.copied, WINDOWS ? [] : ['.env']);
+  if (WINDOWS) assert.ok(!fs.existsSync(path.join(r.dir, '.env')));
+  else assert.strictEqual(fs.readFileSync(path.join(r.dir, '.env'), 'utf8'), 'KEY=1\n');
   assert.deepStrictEqual(g.preview({ dir: r.dir, workRoot: w4 }).files, 0);
   fs.writeFileSync(path.join(r.dir, 'a.txt'), 'one\ntwo\n');
   fs.writeFileSync(path.join(r.dir, 'new.txt'), 'x\n');
@@ -151,8 +164,17 @@ test('すでに追跡された秘密設定の変更は、意図せず追跡解�
   fs.writeFileSync(path.join(main, '.env'), 'LOCAL_TEST_VALUE=old\n');
   sh(main, 'add', '.env'); sh(main, 'commit', '-qm', 'existing tracked setting');
   fs.writeFileSync(path.join(main, '.env'), 'LOCAL_TEST_VALUE=new\n');
-  assert.strictEqual(g.save(main, 'keep existing behavior'), true);
-  assert.match(sh(main, 'show', 'HEAD:.env'), /LOCAL_TEST_VALUE=new/);
+  if (WINDOWS) {
+    const before = sh(main, 'rev-parse', 'HEAD');
+    assert.throws(() => g.save(main, 'requires trusted manual save'), /機密|敏感|人工/);
+    assert.strictEqual(sh(main, 'rev-parse', 'HEAD'), before);
+    assert.match(sh(main, 'show', 'HEAD:.env'), /LOCAL_TEST_VALUE=old/);
+    assert.match(fs.readFileSync(path.join(main, '.env'), 'utf8'), /LOCAL_TEST_VALUE=new/);
+    assert.strictEqual(sh(main, 'ls-files', '--', '.env'), '.env');
+  } else {
+    assert.strictEqual(g.save(main, 'keep existing behavior'), true);
+    assert.match(sh(main, 'show', 'HEAD:.env'), /LOCAL_TEST_VALUE=new/);
+  }
 });
 
 test('初回の保存と未コミットrepoの準備でも秘密設定を追跡しない', () => {
@@ -161,6 +183,14 @@ test('初回の保存と未コミットrepoの準備でも秘密設定を追跡�
     fs.mkdirSync(dir);
     fs.writeFileSync(path.join(dir, '.env.local'), 'LOCAL_TEST_VALUE=placeholder\n');
     fs.writeFileSync(path.join(dir, 'memo.md'), 'public\n');
+    if (WINDOWS) {
+      if (preInit) sh(dir, 'init', '-q');
+      assert.throws(() => preInit
+        ? g.prepare({ base: dir, workRoot: path.join(tmp, 'Work', 'unborn'), taskId: 'safe' })
+        : g.init(dir), /需要先建立 Git 提交|不會替非 Git/);
+      assert.ok(fs.existsSync(path.join(dir, '.env.local')));
+      continue;
+    }
     if (preInit) {
       sh(dir, 'init', '-q');
       g.prepare({ base: dir, workRoot: path.join(tmp, 'Work', 'unborn'), taskId: 'safe' });
@@ -201,13 +231,13 @@ test('コピーされた秘密設定を取り込まず、作業成果だけ本�
   fs.writeFileSync(path.join(main, '.env.local'), 'LOCAL_TEST_VALUE=placeholder\n');
   const workRoot = path.join(tmp, 'Work', 'private-copy');
   const r = g.prepare({ base: main, workRoot, taskId: 'safe' });
-  assert.deepStrictEqual(r.copied, ['.env.local']);
+  assert.deepStrictEqual(r.copied, WINDOWS ? [] : ['.env.local']);
   fs.writeFileSync(path.join(r.dir, 'result.txt'), 'public\n');
   const m = g.merge({ dir: r.dir, workRoot, title: 'safe merge' });
   assert.ok(m.ok, m.error);
   assert.strictEqual(sh(main, 'ls-tree', '-r', '--name-only', 'HEAD'), 'a.txt\nresult.txt');
   assert.ok(fs.existsSync(path.join(main, '.env.local')));
-  assert.ok(fs.existsSync(path.join(m.trashed, '.env.local')));
+  assert.strictEqual(fs.existsSync(path.join(m.trashed, '.env.local')), !WINDOWS);
 });
 
 test('取り込み証跡はその作業の変更だけを示し、別本体・存在しないcommitを拒否する', () => {

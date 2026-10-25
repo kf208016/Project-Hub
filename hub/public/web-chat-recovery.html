@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Project Hub 交接復原</title><style>body{font:16px system-ui,sans-serif;max-width:850px;margin:40px auto;padding:0 20px}button{padding:8px 12px;margin:6px}pre{white-space:pre-wrap;word-break:break-word}.receipt{border:1px solid #888;padding:16px;margin:16px 0}#status{white-space:pre-wrap}</style></head>
+<body><h1>Project Hub 交接復原</h1><p>目前僅開放查詢與復原已接受的保存。一般作業、CLI、佇列與新交接均未啟動。</p><p>未知或未綁定的控制資料只供檢視；不會自動採用或刪除。復原只寫回先前已接受的內容，須先核對目前檔案身分與摘要。</p><button id="refresh">重新查詢</button><div id="records"></div><pre id="inspection"></pre><p id="status" role="status"></p>
+<script src="/local-auth.js"></script>
+<script>
+'use strict';
+const $=id=>document.getElementById(id),status=message=>{$('status').textContent=message;};
+async function api(route,input){const response=await fetch(route,input?{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json'},body:JSON.stringify(input)}:{}),value=await response.json();if(!response.ok)throw Error((value.code||'')+' '+(value.error||'復原失敗'));return value;}
+function describe(value){const labels={saved:'已核對保存',before:'保存前',changed:'已變更',missing:'不存在',unknown:'未確認'};return '歷史收據：'+value.state+'\n目前會話：'+(labels[value.actualTargets?.chat]||'未確認')+'\n目前作業記事：'+(labels[value.actualTargets?.task]||'未確認');}
+let pageOffset=0;
+async function load(){const value=await api('/api/web-chat/inspection?offset='+pageOffset);$('records').replaceChildren();$('inspection').textContent=value.inspection.length?'未能綁定的控制資料（只讀）：\n'+JSON.stringify(value.inspection,null,2):'';
+ for(const record of value.records){const section=document.createElement('section');section.className='receipt';const heading=document.createElement('h2');heading.textContent=[record.actor,record.project,record.task].filter(Boolean).join(' / ')||record.receiptId;section.appendChild(heading);const output=document.createElement('pre');output.textContent='交易：'+record.receiptId+'\n狀態：'+(record.state||record.reasonCode);section.appendChild(output);
+ if(record.repairable!==false){const scope={receiptId:record.receiptId,actor:record.actor,project:record.project,task:record.task},check=document.createElement('button');check.textContent='查詢實際狀態';check.onclick=async()=>{try{output.textContent=describe(await api('/api/web-chat/status',scope));}catch(error){status(error.message);}};section.appendChild(check);
+ const recover=document.createElement('button');recover.textContent='預覽並復原此筆已接受保存';recover.onclick=async()=>{recover.disabled=true;try{const preview=await api('/api/web-chat/recover/preview',scope),details=(preview.actions||[]).map(action=>[action.target+': '+action.relative,'FileID: '+(action.currentFileFingerprint||'missing'),'目前 SHA-256: '+(action.currentSHA256||'missing'),'已接受內容 SHA-256: '+action.acceptedAfterSHA256,action.willOverwrite?'會覆寫上述目前目標。':'只對帳已接受內容。'].join('\n')).join('\n\n');output.textContent=details;if(!confirm('確認復原這筆先前已接受的保存？\n\n'+details)){status('已取消復原；內容與紀錄保留。');return;}const value=await api('/api/web-chat/recover',{...scope,confirm:true,recoveryToken:preview.recoveryToken,expectedRecoverySHA256:preview.previewSHA256});output.textContent=describe(value);status(value.state==='committed'&&value.actualTargets?.chat==='saved'&&value.actualTargets?.task==='saved'?'此筆保存已核對完成；請停止復原模式，再用一般啟動器開啟。':'仍待覆核；資料與紀錄保留。');}catch(error){status(error.message);}finally{recover.disabled=false;}};section.appendChild(recover);}
+ $('records').appendChild(section);}
+ for(const [offset,label]of [[value.previousOffset,'上一頁'],[value.nextOffset,'下一頁']])if(offset!==null){const button=document.createElement('button');button.textContent=label;button.onclick=()=>{pageOffset=offset;load().catch(error=>status(error.message));};$('records').appendChild(button);}
+ status('目前顯示第 '+(pageOffset+1)+' 至 '+(pageOffset+100)+' 個啟動時紀錄範圍；已提交或撤銷的交易不再列出。'+(value.truncated?'請用下一頁覆核其他資料。':''));}
+async function start(){await window.hubAuthReady;await load();}
+$('refresh').onclick=()=>load().catch(error=>status(error.message));start().catch(error=>{if($('status'))status(error.message);});
+</script></body></html>

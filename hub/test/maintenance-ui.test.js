@@ -11,6 +11,9 @@ function fixture(overrides={}) {
  const click=dataset=>events.get('click')({target:{closest:selector=>selector==='[data-maint-action]'?{dataset,disabled:false}:null}});
  return {ctx,el,events,calls,selected,click};
 }
+test('native restore preview rejection is caught and never leaks a request or pending UI state',async()=>{const a=fixture();a.ctx.state={windowsBrowser:true};a.ctx.confirm=()=>true;a.ctx.api=async(route,body)=>{a.calls.push({route,body});throw Error('SYNTHETIC_PREVIEW_REJECTED');};await assert.doesNotReject(a.click({maintAction:'restore',transaction:'record'}));assert.deepEqual(a.calls.map(c=>c.route),['/api/maintenance/restore/preview']);assert.equal(a.el('#maintenance-result').textContent,'SYNTHETIC_PREVIEW_REJECTED');assert.equal(vm.runInContext('maintenancePending',a.ctx),false);});
+test('native cleanup and restore confirmation show full source/destination FileID/tree SHA-256',async()=>{const entries=[{from:'C:\\fixture\\source',to:'C:\\fixture\\trash',objectId:'a'.repeat(64),treeHash:'b'.repeat(64)}],a=fixture({native:true,candidates:[{id:'choice',label:'fixture',paths:['C:\\fixture\\source'],bytes:20,nativeMoves:entries}]});assert.ok(a.el('#maintenance-body').innerHTML.includes(entries[0].objectId));assert.ok(a.el('#maintenance-body').innerHTML.includes(entries[0].treeHash));let shown='';a.ctx.confirm=text=>{shown=text;return false;};a.selected.push({dataset:{maintCandidate:'choice'}});await a.click({maintAction:'apply'});assert.ok(shown.includes(entries[0].from+' → '+entries[0].to));assert.ok(shown.includes(entries[0].objectId)&&shown.includes(entries[0].treeHash));assert.equal(a.calls.length,0);a.ctx.state={windowsBrowser:true};a.ctx.api=async(route,body)=>{a.calls.push({route,body});return{token:'fresh-restore',entries,guidance:'SYNTHETIC_GUIDANCE',kept:[]};};await a.click({maintAction:'restore',transaction:'record'});assert.equal(a.calls.length,1);assert.ok(shown.includes(entries[0].objectId)&&shown.includes(entries[0].treeHash));});
+test('native cleanup refuses incomplete identity metadata instead of using legacy confirmation',async()=>{const a=fixture();a.ctx.confirm=()=>true;a.selected.push({dataset:{maintCandidate:'choice'}});vm.runInContext('maintenanceData.native=true;maintenanceData.candidates[0].nativeMoves=[{from:"x",to:"y",objectId:"short",treeHash:"short"}]',a.ctx);await a.click({maintAction:'apply'});assert.equal(a.calls.length,0);assert.match(a.el('#maintenance-result').textContent,/完整 FileID/);});
 test('cleanup candidates start unchecked, apply starts disabled and dangerous text is escaped',()=>{
  const a=fixture(),html=a.el('#maintenance-body').innerHTML;
  assert.match(html,/type="checkbox" data-maint-candidate="choice"/);assert.doesNotMatch(html,/type="checkbox"[^>]*\bchecked\b/);
@@ -80,6 +83,10 @@ test('busy state blocks apply, verification and restore before calling API',asyn
  const a=fixture({busy:true}),h=a.el('#maintenance-body').innerHTML;
  assert.match(h,/AIが作業中/);assert.match(h,/data-maint-action="verify"[^>]*disabled/);
  for(const action of ['apply','verify','test','restore','unremove'])await a.click({maintAction:action});assert.equal(a.calls.length,0);
+});
+test('Windows unknown process state is explicit and an approved host script shows its authority',async()=>{
+ const blocked=fixture({busy:true,busyReason:'背景程序狀態未知 <fixture>'});assert.match(blocked.el('#maintenance-body').innerHTML,/背景程序狀態未知 &lt;fixture&gt;/);
+ const a=fixture({hostScript:true});let prompt='';a.el('#maintenance-script').value='test';a.ctx.confirm=text=>{prompt=text;return false;};await a.click({maintAction:'test'});assert.match(prompt,/Windows 使用者權限/);assert.match(prompt,/主機檔案與網路/);assert.equal(a.calls.length,0);
 });
 test('structural verification never sends a selected app script, test does',async()=>{
  const a=fixture();a.el('#maintenance-script').value='test';a.ctx.confirm=()=>true;

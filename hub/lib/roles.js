@@ -3,15 +3,16 @@
 const fs = require('fs');
 const { parseYaml } = require('./frontmatter');
 const { MODEL_FLAG, AGY_MODEL } = require('./launch');
+const registry = require('./provider-registry');
 
 const EFFORTS = ['中', '高', '極高', 'MAX', 'Ultra'];
-const AIS = ['claude-code', 'codex', '人'];
-let discovered = { 'claude-code': [], codex: [], agy: [] };
+const AIS = Object.freeze([...registry.ownerKeys, '人']);
+let discovered = { 'claude-code': [], codex: [], agy: [], grok: [] };
 function setModelCatalog(catalog) {
-  discovered = { 'claude-code': catalog.claude?.models || [], codex: catalog.codex?.models || [], agy: (catalog.agy?.models || []).filter(x => x.id === AGY_MODEL.id) };
+  discovered = { 'claude-code': catalog.claude?.models || [], codex: catalog.codex?.models || [], agy: (catalog.agy?.models || []).filter(x => x.id === AGY_MODEL.id), grok: catalog.grok?.models || [] };
 }
 
-const cliOf = ai => (ai === 'codex' ? 'codex' : 'claude');
+const cliOf = ai => registry.cliActor(ai).id;
 const idOf = (ai, name) => MODEL_FLAG[cliOf(ai)]?.[name] || name;
 // 今の一覧での名前（古い呼び名が同じモデルを指していれば、今の名前に）
 function currentName(ai, name) {
@@ -23,7 +24,7 @@ function currentName(ai, name) {
 // 画面で使いやすい形にする
 function normalize(raw) {
   const source = raw.models || {};
-  const models = { ...source, 'claude-code': [...(source['claude-code'] || [])], codex: [...(source.codex || [])], agy: discovered.agy.map(x => x.label) };
+  const models = { ...source, 'claude-code': [...(source['claude-code'] || [])], codex: [...(source.codex || [])], agy: discovered.agy.map(x => x.label), grok: discovered.grok.length?discovered.grok.map(x=>x.label):[...(source.grok||[])] };
   for (const [ai, cli] of [['claude-code', 'claude'], ['codex', 'codex']]) {
     // CLI から今のモデル一覧が取れている時は、それだけを並べる（古い呼び名は出さない）。
     // roles.yaml の名前が同じモデルを指していれば、その名前を使う（役割の設定がそのまま通るように）
@@ -69,7 +70,9 @@ function validate(models, roles) {
     for (const k of ['main', 'backup']) {
       const s = r[k] || {};
       if (!AIS.includes(s.ai)) errors.push(`${r.name} の ${k}: AI が不正です`);
-      if (s.ai !== '人') {
+      if (s.ai !== '人' && registry.isActor(s.ai) && registry.resolveActor(s.ai).kind === 'external-chat') {
+        if (s.model || s.effort) errors.push(`${r.name} の ${k}: 網頁 Chat 不設定已驗證模型或思考`);
+      } else if (s.ai !== '人') {
         const list = models[s.ai] || [];
         if (!list.includes(s.model)) errors.push(`${r.name} の ${k}: モデル「${s.model}」は ${s.ai} で選べません`);
         if (!EFFORTS.includes(s.effort)) errors.push(`${r.name} の ${k}: 思考「${s.effort}」は選べません`);

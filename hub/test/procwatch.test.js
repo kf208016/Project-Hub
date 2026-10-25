@@ -37,6 +37,7 @@ test('parse ps rows on both platforms',()=>{
 });
 
 test('recognize AI executables only',()=>{
+ assert.equal(pw.aiOf('"C:\\Synthetic\\grok.exe" run'),'grok');assert.equal(pw.aiOf('"C:\\Synthetic\\Grok Bot.exe"'),'', 'desktop Bot is not a CLI process');assert.equal(pw.aiOf('echo grok'),'');
  const cases={'codex exec x':'codex','/opt/bin/claude -p hi':'claude','agy':'agy','node /x/claude':'claude','node --no-warnings /x/codex.js exec':'codex',
   '/Applications/Claude Code.app/Contents/Resources/bin/claude --resume':'claude','grep codex':'','vim /tmp/claude':'','/bin/zsh -c claude':'','claudex':'','node /x/cli.js':'','node /opt/lib/node_modules/@anthropic-ai/claude-code/cli.js':'claude',
   '/Applications/Claude.app/Contents/MacOS/Claude':''};
@@ -94,4 +95,44 @@ test('scan on linux reads /proc cwd',async()=>{
  assert.deepEqual(seen,['/proc/2001/cwd','/proc/2002/cwd','/proc/2003/cwd']);
  assert.deepEqual(l.map(x=>[x.pid,x.ai,x.project]),[[2001,'codex','p1'],[2002,'codex','p1'],[2003,'claude',null]]);
  assert.equal(l[2].cwd,'');
+});
+
+
+test('ps and lsof use five seconds; query and internal failures stay diagnostic while lsof failure keeps scanning',async()=>{
+  let mode='ok';const w=pw.create({platform:'darwin',selfPid:900,log:()=>{},exec:async(cmd,args,opts)=>{assert.equal(opts.timeoutMs,5000);if(mode==='spawn')throw Object.assign(Error('PRIVATE'),{code:'ENOENT'});if(mode==='rows')return 'PRIVATE_BAD_ROW';if(mode==='empty')return '';if(cmd==='lsof'&&mode==='cwd')throw Object.assign(Error('PRIVATE'),{killed:true});return cmd==='ps'?MAC:'';}});
+  await w.scan();assert.equal(w.status().state,'ok');for(const [value,code]of [['spawn','PROCWATCH_SPAWN_FAILED'],['rows','PROCWATCH_EMPTY'],['empty','PROCWATCH_EMPTY']]){mode=value;await w.scan();assert.equal(w.status().code,code);}
+  const logs=[],lw=pw.create({platform:'darwin',selfPid:900,log:m=>logs.push(m),exec:async(cmd)=>{if(cmd==='lsof')throw Object.assign(Error('PRIVATE'),{killed:true});return MAC;}});await lw.scan();assert.equal(lw.status().state,'ok');assert.ok(lw.list().length>0);assert.ok(logs.some(m=>m.includes('lsof')));
+  const internal=pw.create({platform:'linux',log:()=>{},exec:async()=>MAC,projects:()=>[{tasks:{}}],readlink:()=>'/work'});await internal.scan();assert.equal(internal.status().code,'PROCWATCH_INTERNAL');assert.equal(internal.status().detail.stage,'internal');assert.ok(internal.status().detail.message.length<=200);
+});
+
+
+
+test('default exec carries elapsed time, byte count and stderr without relaxing nonzero stdout behavior',async()=>{
+  const fs=require('node:fs'),vm=require('node:vm');let callback,options;
+  const context=vm.createContext({require:name=>name==='child_process'?{execFile:(cmd,args,opts,cb)=>{options=opts;callback=cb;}}:require('node:module').createRequire(path.join(__dirname,'../lib/procwatch.js'))(name),module:{exports:{}},process,Buffer,Date,console,setTimeout,clearTimeout,setInterval,clearInterval,structuredClone});
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../lib/procwatch.js'),'utf8')+'\nmodule.exports.testExec=defaultExec;',context);
+  const run=context.module.exports.testExec;
+  const first=run('synthetic',[],{timeoutMs:15000});assert.equal(options.timeout,15000);assert.equal(options.windowsHide,true);const original=Object.assign(Error('PRIVATE_COMMAND'),{code:'ENOENT'});callback(original,'許功','diagnostic');
+  await assert.rejects(first,e=>e===original&&e.stderr==='diagnostic'&&e.stdoutBytes===6&&e.elapsedMs>=0);
+  const partial=run('synthetic',[],{timeoutMs:5000});callback(Object.assign(Error('exit'),{code:1}),'usable','private');assert.equal(await partial,'usable');assert.equal(options.timeout,5000);
+  const failed=run('synthetic',[],{timeoutMs:5000});callback(Object.assign(Error('exit'),{code:1}),'','diagnostic');await assert.rejects(failed,e=>e.code===1&&e.stdoutBytes===0);
+});
+test('later exception has INTERNAL code, preserves last good scan, and status copies cannot rewrite evidence',async()=>{
+  let source='1 0 Sun Oct 4 11:22:33 2026 system',bad=false;const w=pw.create({platform:'linux',selfPid:900,log:()=>{},exec:async()=>source,readlink:()=>'/work',projects:()=>bad?[{tasks:{}}]:[]});await w.scan();const good=w.status().checkedAt;
+  bad=true;source='2 0 Sun Oct 4 11:22:33 2026 codex';await w.scan();const status=w.status();
+  assert.equal(status.code,'PROCWATCH_INTERNAL');assert.equal(status.checkedAt,good);assert.equal(typeof status.detail.message,'string');assert.ok(status.detail.message.length>0&&status.detail.message.length<=200&&!status.detail.message.includes('\n'));status.detail.code='changed';status.lastFailure.message='changed';assert.equal(w.status().detail.code,'PROCWATCH_INTERNAL');assert.notEqual(w.status().lastFailure.message,'changed');
+});
+
+test('listener exceptions are logged and never turn a good scan into an unknown state',async()=>{
+  const logs=[];let source='1 0 Sun Oct 4 11:22:33 2026 system';const w=pw.create({platform:'linux',selfPid:900,log:m=>logs.push(m),exec:async()=>source,readlink:()=>'/work'});
+  w.onChange(()=>{throw Error('synthetic listener failure');});await w.scan();source='2 0 Sun Oct 4 11:22:33 2026 codex';await w.scan();
+  assert.equal(w.status().state,'ok');assert.deepEqual(w.list().map(x=>x.pid),[2]);assert.ok(logs.some(m=>m.includes('synthetic listener failure')));
+});
+
+test('preview snapshot reuse does not conceal a new unknown AI from fresh prepare scan',async t=>{
+ let now=Date.now(),calls=0,unknown=false;t.mock.method(Date,'now',()=>now);
+ const w=pw.create({platform:'linux',selfPid:900,exec:async()=>{calls++;return unknown?'2 0 Sun Oct 4 11:22:33 2026 codex':'1 0 Sun Oct 4 11:22:33 2026 system';},readlink:()=>'/unknown',projects:()=>[]});
+ await w.scan();now=Date.parse(w.status().checkedAt);w.assertKnown();unknown=true;await w.scan({maxAgeMs:10000});assert.equal(calls,1);w.assertKnown();
+ await w.scan();assert.equal(calls,2);assert.throws(()=>w.assertKnown(),{code:'PROCWATCH_UNASSIGNED_AI'});
+ now=Date.parse(w.status().checkedAt)+10001;await w.scan({maxAgeMs:10000});assert.equal(calls,3);assert.throws(()=>w.scan({maxAgeMs:-1}));
 });

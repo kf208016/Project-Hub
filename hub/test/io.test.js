@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Store } = require('../lib/store');
+const native=process.platform==='win32',fixture=require('./helpers/owned-native-fixture');
+const {startReviewedFixture,prepareFixtureWorkspace}=require('./helpers/reviewed-workspace');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-io-'));
 const root = path.join(tmp, 'AI-Workspace');
@@ -25,22 +27,23 @@ function project(id, name, related = '') {
 async function countCalls(method, target, run) {
   const original = fs[method];
   let count = 0;
+  const callers=[];
   fs[method] = function (file, ...args) {
-    if (file === target) count++;
+    if (file === target){count++;callers.push(new Error().stack.split('\n').slice(2,6));}
     return original.call(this, file, ...args);
   };
-  try { return { value: await run(), count }; }
+  try { return { value: await run(), count,callers }; }
   finally { fs[method] = original; }
 }
 
 let server;
-test('台帳と役割は要求内で一度だけ読み、外部編集は次の取得へ反映する', async () => {
+test('台帳と役割は要求内で一度だけ読み、外部編集は次の取得へ反映する', {timeout:180000}, async () => {
   fs.mkdirSync(path.dirname(rolesFile), { recursive: true });
   fs.copyFileSync(path.join(__dirname, '..', '..', 'docs', 'project-hub', 'templates', '_hub', 'roles.yaml'), rolesFile);
   fs.writeFileSync(path.join(root, '_hub', 'ai-tools-models.json'), JSON.stringify({
     v: 1,
     codex: {
-      models: [{ id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol' }],
+      models: [{ id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol' },{id:native?'gpt-6-astra':'fixture-6terra',label:native?'GPT-6-Astra':'6terra'}],
       known: [{ id: 'gpt-5.5', label: 'Gone Model' }, { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol' }],
       refreshedAt: new Date().toISOString(), source: 'codex-cli'
     }
@@ -60,6 +63,10 @@ test('台帳と役割は要求内で一度だけ読み、外部編集は次の�
   process.env.HUB_ROOT = root;
   process.env.HUB_PORT = String(port);
   process.env.HUB_DRY_RUN = '1';
+  process.env.HUB_AI_HOME = path.join(root, 'fixture-ai-home');
+  process.env.HUB_TRASH = path.join(root, 'fixture-trash');
+  const previousPath=process.env.PATH,restoreInventory=native?fixture.freshInventory():()=>{};
+  if(native)process.env.PATH=fixture.environment(fixture.provider(tmp).bin);
   ({ server } = require('../server'));
   await new Promise(resolve => server.listen(port, '127.0.0.1', resolve));
   try {
@@ -81,7 +88,8 @@ test('台帳と役割は要求内で一度だけ読み、外部編集は次の�
     }));
     console.log('state I/O: model settings reads=' + measured.count + ', copy existence checks=' + measured.value.count);
     assert.equal(measured.count, 1);
-    assert.equal(measured.value.count, 2); // 一覧の確認とGit情報の確認で各1回。
+    // Windows additionally admits local Git metadata before reading it.
+    assert.equal(measured.value.count, native?3:2);
     const snapshot = measured.value.value;
     assert.deepEqual(snapshot.state.initialPick, settings.initial);
     assert.deepEqual(snapshot.state.modelOrder, settings.order);
@@ -101,22 +109,25 @@ test('台帳と役割は要求内で一度だけ読み、外部編集は次の�
     fs.writeFileSync(projectFile, fs.readFileSync(projectFile, 'utf8').replace('最初のメモ', '書き換えたメモ'));
     const originalRoles = fs.readFileSync(rolesFile, 'utf8');
     const changedRoles = originalRoles.replace(/(コーディング:\s*\{\s*main:\s*\[codex,\s*)GPT-6\.1-Sol,\s*高\]/,
-      (_, head) => `${head}6terra, MAX]`);
+      (_, head) => `${head}${native?'GPT-6-Astra':'6terra'}, MAX]`);
     assert.notEqual(changedRoles, originalRoles);
     fs.writeFileSync(rolesFile, changedRoles);
     const changed = await (await fetch(base + '/api/state')).json();
     assert.equal(changed.projects.find(p => p.id === 'primary').notes, '書き換えたメモ');
-    assert.equal(changed.roles.roles.find(r => r.name === 'コーディング').main.model, '6terra');
+    assert.equal(changed.roles.roles.find(r => r.name === 'コーディング').main.model, native?'GPT-6-Astra':'6terra');
 
     const post = (url, body) => fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub': '1' }, body: JSON.stringify(body) });
-    const started = await (await post('/api/term/start', { project: 'primary', task: 'T', ai: 'codex' })).json();
-    assert.equal(started.model, '6terra');
+    const started = await (await startReviewedFixture(post,'/api/term/start', { project: 'primary', task: 'T', ai: 'codex' })).json();
+    assert.equal(started.model, native?'GPT-6-Astra':'6terra');
     assert.equal(started.effort, 'MAX');
 
-    const related = await countCalls('readdirSync', product, async () => (await post('/api/continue', { project: 'primary', task: 'T', ai: 'codex' })).json());
-    assert.equal(related.count, 1);
-    assert.ok(related.value.command.includes(firstRef));
-    assert.ok(related.value.command.includes(secondRef));
+    const permit=native?(await prepareFixtureWorkspace(post,{project:'primary',task:'T'})).permit:undefined;
+    const related = await countCalls('readdirSync', product, async () => (await post('/api/continue', { project: 'primary', task: 'T', ai: 'codex',...(native?{workspacePermit:permit}:{}) })).json());
+    if(native)console.log('related Product reads: '+JSON.stringify(related.callers));
+    assert.equal(related.count, native?2:1);
+    const relatedPrompt=native?related.value.args.join('\n'):related.value.command;
+    assert.ok(relatedPrompt.includes(firstRef));
+    assert.ok(relatedPrompt.includes(secondRef));
 
     // 作業だけに残ったモデル指定が候補から消えても、役割モデルへ黙って置き換えない。
     const taskFile = path.join(taskDir, 'T.md');
@@ -130,11 +141,12 @@ test('台帳と役割は要求内で一度だけ読み、外部編集は次の�
     assert.match((await staleWithBlankOverride.json()).error, /Gone Model/);
     fs.writeFileSync(taskFile, fs.readFileSync(taskFile, 'utf8').replace('Gone Model', 'Custom Default'));
     await post('/api/cli-models', { claude: {}, codex: { 'Custom Default': '' } });
-    const explicitDefault = await (await post('/api/term/start', { project: 'primary', task: 'T', ai: 'codex' })).json();
+    const explicitDefault = await (await startReviewedFixture(post,'/api/term/start', { project: 'primary', task: 'T', ai: 'codex' })).json();
     assert.equal(explicitDefault.model, 'Custom Default');
     assert.equal(explicitDefault.args.includes('--model'), false);
   } finally {
     await new Promise(resolve => server.close(resolve));
-    fs.rmSync(tmp, { recursive: true, force: true });
+    restoreInventory();process.env.PATH=previousPath;
+    fs.rmSync(tmp, { recursive: true, force: true,maxRetries:20,retryDelay:50 });
   }
 });

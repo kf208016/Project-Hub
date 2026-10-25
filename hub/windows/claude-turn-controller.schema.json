@@ -1,0 +1,990 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-hub.local/schemas/claude-turn-controller.schema.json",
+  "title": "Bounded Claude turn controller; admitted streams, no OS or browser authority proof",
+  "$comment": "The opaque authority objects and owned streams are internal construction capabilities, not JSON credentials. Schema cannot prove OS cleanup, stream exclusivity, actual owner approval, UTF-8 bytes or state transitions. User envelope derives from the pinned official Python SDK client.py at 615d88b9baebfe155263fbdd2ca22cecc1da3430; not live-verified.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/state"
+    },
+    {
+      "$ref": "#/$defs/decision"
+    },
+    {
+      "$ref": "#/$defs/cancelScope"
+    },
+    {
+      "$ref": "#/$defs/exitReceipt"
+    },
+    {
+      "$ref": "#/$defs/userMessage"
+    },
+    {
+      "$ref": "#/$defs/event"
+    },
+    {
+      "$ref": "claude-protocol.schema.json#/$defs/permissionResponse"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^CLAUDE_[A-Z0-9_]+$"
+        }
+      ]
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "phase",
+        "completionKind",
+        "backendId",
+        "sessionId",
+        "runId",
+        "promptSHA256",
+        "errorCode",
+        "stopRequested",
+        "ownerCancelled",
+        "protocolTerminal",
+        "responseComplete",
+        "taskSuccess",
+        "stdoutEnded",
+        "stderrEnded",
+        "rootExited",
+        "ownedTreeEmpty",
+        "cleanupVerified",
+        "exitCode",
+        "signal",
+        "pending",
+        "queuedFrames",
+        "queuedBytes",
+        "stdoutBytes",
+        "stderrBytes"
+      ],
+      "properties": {
+        "schema": {
+          "const": "claude-turn-state/v1"
+        },
+        "phase": {
+          "enum": [
+            "created",
+            "running",
+            "stopping",
+            "finished"
+          ]
+        },
+        "completionKind": {
+          "enum": [
+            null,
+            "reply-complete",
+            "incomplete",
+            "cancelled",
+            "failed",
+            "cleanup-unknown"
+          ]
+        },
+        "backendId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "runId": {
+          "$ref": "#/$defs/id"
+        },
+        "promptSHA256": {
+          "$ref": "#/$defs/hash"
+        },
+        "errorCode": {
+          "$ref": "#/$defs/error"
+        },
+        "stopRequested": {
+          "type": "boolean"
+        },
+        "ownerCancelled": {
+          "type": "boolean"
+        },
+        "protocolTerminal": {
+          "type": "boolean"
+        },
+        "responseComplete": {
+          "type": "boolean"
+        },
+        "taskSuccess": {
+          "type": "null"
+        },
+        "stdoutEnded": {
+          "type": "boolean"
+        },
+        "stderrEnded": {
+          "type": "boolean"
+        },
+        "rootExited": {
+          "type": "boolean"
+        },
+        "ownedTreeEmpty": {
+          "type": "boolean"
+        },
+        "cleanupVerified": {
+          "type": "boolean"
+        },
+        "exitCode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 4294967295
+            }
+          ]
+        },
+        "signal": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{0,31}$"
+            }
+          ]
+        },
+        "pending": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "queuedFrames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
+        },
+        "queuedBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "stdoutBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stderrBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": "finished"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "completionKind": {
+                "enum": [
+                  "reply-complete",
+                  "incomplete",
+                  "cancelled",
+                  "failed",
+                  "cleanup-unknown"
+                ]
+              },
+              "pending": {
+                "const": 0
+              },
+              "queuedFrames": {
+                "const": 0
+              },
+              "queuedBytes": {
+                "const": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "completionKind": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionKind": {
+                "enum": [
+                  "reply-complete",
+                  "incomplete",
+                  "cancelled"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "phase": {
+                "const": "finished"
+              },
+              "stdoutEnded": {
+                "const": true
+              },
+              "stderrEnded": {
+                "const": true
+              },
+              "rootExited": {
+                "const": true
+              },
+              "ownedTreeEmpty": {
+                "const": true
+              },
+              "cleanupVerified": {
+                "const": true
+              },
+              "errorCode": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionKind": {
+                "enum": [
+                  "reply-complete",
+                  "incomplete"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "protocolTerminal": {
+                "const": true
+              },
+              "exitCode": {
+                "const": 0
+              },
+              "signal": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionKind": {
+                "const": "reply-complete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "responseComplete": {
+                "const": true
+              },
+              "ownerCancelled": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionKind": {
+                "const": "incomplete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "responseComplete": {
+                "const": false
+              },
+              "ownerCancelled": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionKind": {
+                "const": "cancelled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "responseComplete": {
+                "const": false
+              },
+              "ownerCancelled": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionKind": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cleanupVerified": {
+                "const": true
+              },
+              "errorCode": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "completionKind": {
+                "const": "cleanup-unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cleanupVerified": {
+                "const": false
+              },
+              "errorCode": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "runId",
+        "requestId",
+        "requestSHA256",
+        "decision",
+        "confirm"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "runId": {
+          "$ref": "#/$defs/id"
+        },
+        "requestId": {
+          "$ref": "#/$defs/id"
+        },
+        "requestSHA256": {
+          "$ref": "#/$defs/hash"
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny"
+          ]
+        },
+        "confirm": {
+          "const": true
+        }
+      }
+    },
+    "cancelScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "runId",
+        "confirm"
+      ],
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "runId": {
+          "$ref": "#/$defs/id"
+        },
+        "confirm": {
+          "const": true
+        }
+      }
+    },
+    "exitReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backendId",
+        "sessionId",
+        "runId",
+        "rootExited",
+        "ownedTreeEmpty",
+        "cleanupVerified",
+        "exitCode",
+        "signal"
+      ],
+      "properties": {
+        "backendId": {
+          "$ref": "#/$defs/id"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "runId": {
+          "$ref": "#/$defs/id"
+        },
+        "rootExited": {
+          "const": true
+        },
+        "ownedTreeEmpty": {
+          "type": "boolean"
+        },
+        "cleanupVerified": {
+          "type": "boolean"
+        },
+        "exitCode": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer",
+              "minimum": -2147483648,
+              "maximum": 4294967295
+            }
+          ]
+        },
+        "signal": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{0,31}$"
+            }
+          ]
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "exitCode": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "properties": {
+            "signal": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "userMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "message",
+        "parent_tool_use_id",
+        "session_id"
+      ],
+      "properties": {
+        "type": {
+          "const": "user"
+        },
+        "message": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "content"
+          ],
+          "properties": {
+            "role": {
+              "const": "user"
+            },
+            "content": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 65536
+            }
+          }
+        },
+        "parent_tool_use_id": {
+          "type": "null"
+        },
+        "session_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "resultEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "terminal",
+        "ok",
+        "responseComplete",
+        "sessionId",
+        "runId",
+        "subtype",
+        "isError",
+        "terminalReason",
+        "stopReasons",
+        "lastStopReason",
+        "permissionDenied",
+        "permissionDenials",
+        "permissionCanceled",
+        "incompleteReasons"
+      ],
+      "properties": {
+        "type": {
+          "const": "result"
+        },
+        "terminal": {
+          "const": true
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "responseComplete": {
+          "type": "boolean"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/id"
+        },
+        "runId": {
+          "$ref": "#/$defs/id"
+        },
+        "subtype": {
+          "enum": [
+            "success",
+            "error_during_execution",
+            "error_max_turns",
+            "error_max_budget_usd",
+            "error_max_structured_output_retries"
+          ]
+        },
+        "isError": {
+          "type": "boolean"
+        },
+        "terminalReason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "stopReasons": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 131072
+          }
+        },
+        "lastStopReason": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "permissionDenied": {
+          "type": "boolean"
+        },
+        "permissionDenials": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 128
+        },
+        "permissionCanceled": {
+          "type": "boolean"
+        },
+        "incompleteReasons": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "provider-error",
+              "terminal-reason",
+              "errors",
+              "stop-reason",
+              "permission-denied",
+              "permission-canceled"
+            ]
+          }
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 131072
+        }
+      }
+    },
+    "event": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "sessionId",
+            "runId"
+          ],
+          "properties": {
+            "type": {
+              "const": "session"
+            },
+            "sessionId": {
+              "$ref": "#/$defs/id"
+            },
+            "runId": {
+              "$ref": "#/$defs/id"
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 131072
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "sessionId",
+            "runId",
+            "requestId",
+            "toolUseId",
+            "toolName",
+            "input",
+            "requestSHA256",
+            "expiresAt"
+          ],
+          "properties": {
+            "type": {
+              "const": "permission"
+            },
+            "sessionId": {
+              "$ref": "#/$defs/id"
+            },
+            "runId": {
+              "$ref": "#/$defs/id"
+            },
+            "requestId": {
+              "$ref": "#/$defs/id"
+            },
+            "toolUseId": {
+              "$ref": "#/$defs/id"
+            },
+            "toolName": {
+              "$ref": "#/$defs/id"
+            },
+            "input": {
+              "$ref": "claude-protocol.schema.json#/$defs/jsonObject"
+            },
+            "requestSHA256": {
+              "$ref": "#/$defs/hash"
+            },
+            "expiresAt": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "requestId"
+          ],
+          "properties": {
+            "type": {
+              "const": "permission-canceled"
+            },
+            "requestId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "messageId",
+            "model",
+            "content"
+          ],
+          "properties": {
+            "type": {
+              "const": "assistant"
+            },
+            "messageId": {
+              "$ref": "#/$defs/id"
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 131072
+            },
+            "content": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "$ref": "claude-protocol.schema.json#/$defs/block"
+              }
+            },
+            "stopReason": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "messageId"
+          ],
+          "properties": {
+            "type": {
+              "const": "stream-start"
+            },
+            "messageId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "index",
+            "kind"
+          ],
+          "properties": {
+            "type": {
+              "const": "stream-block-start"
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "kind": {
+              "enum": [
+                "text",
+                "tool_use"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ],
+          "properties": {
+            "type": {
+              "const": "text-delta"
+            },
+            "text": {
+              "type": "string",
+              "maxLength": 131072
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "toolUseId"
+          ],
+          "properties": {
+            "type": {
+              "const": "tool-input-delta"
+            },
+            "toolUseId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "index"
+          ],
+          "properties": {
+            "type": {
+              "const": "stream-block-stop"
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "usage",
+            "stopReason"
+          ],
+          "properties": {
+            "type": {
+              "const": "stream-usage"
+            },
+            "usage": {
+              "$ref": "claude-protocol.schema.json#/$defs/jsonObject"
+            },
+            "stopReason": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "messageId"
+          ],
+          "properties": {
+            "type": {
+              "const": "stream-stop"
+            },
+            "messageId": {
+              "$ref": "#/$defs/id"
+            }
+          }
+        },
+        {
+          "$ref": "#/$defs/resultEvent"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "bytes"
+          ],
+          "properties": {
+            "type": {
+              "const": "stderr-observed"
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65536
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reasonCode"
+          ],
+          "properties": {
+            "type": {
+              "const": "pending-cleared"
+            },
+            "reasonCode": {
+              "type": "string",
+              "pattern": "^CLAUDE_[A-Z0-9_]+$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "state"
+          ],
+          "properties": {
+            "type": {
+              "const": "finished"
+            },
+            "state": {
+              "$ref": "#/$defs/state"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

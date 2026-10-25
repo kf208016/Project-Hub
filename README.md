@@ -1,5 +1,15 @@
 # Project Hub
 
+Windows をお使いの方は [Windows 移植版の説明](WINDOWS-PORT.md) を参照してください。
+
+## Windows 移植分支
+
+2026-10-18 起依上游 **v4.90.0 Beta** 的功能規格接續移植，現有程式基底與安裝版仍以各自實際版本為準。差異、逐功能進度及未完成項目見 [v4.90.0 Windows 對照](docs/superpowers/specs/2026-10-18-upstream-4.90.0-windows-parity.md)。Markdown 表格為已接入原碼的第一批；不表示全套4.90.0已移植或安裝。
+
+本分支以 v4.68.2 為基礎，保留原生 Windows Codex 的 Hub 會話、終端機、審批、Git 工作區／合併、移交／整合、MCP、遠端 TLS、圖片、整理／還原及啟停流程；新增 Claude／Sonnet 與 Grok 4.6 在核准範圍內的自主 CLI 開發、原生子代理、Hub 委派及同任務對話續接。兩者已各完成本機合成三回合正式驗收，安裝狀態以交付報告為準。Windows 介面預設台灣繁體中文，可切換日文；Agy 仍延後。產品範圍為 Chat／CLI，不包含 computer use；Claude／Grok 的互動 PTY 入口尚未接線，Codex 原終端機保留。操作與資安限制見 [原生 CLI 整合](hub/windows/NATIVE-PROVIDER-INTEGRATION.md)。
+
+功能、已測邊界與操作方式見 [hub/WINDOWS.md](hub/WINDOWS.md)，版本化安裝見 [安裝文件](hub/windows/INSTALL.md)。此來源說明不表示每份 checkout 已在本機完成安裝；確切 commit、套件 SHA-256、測試結果、安裝位置與實際啟停驗證，以隨本次交付提供的報告為準。下列為上游 macOS 說明，不能套用其中略過沙箱或沒有登入驗證的描述到 Windows。
+
 **開発中の版です（v4.68.2）。** 機能・画面・保存の形は、これからも変わります。大事なデータでは使わず、試せる範囲で使ってください。使ってみた感想、不具合の報告、Pull Request を歓迎します。送り方は [CONTRIBUTING.md](CONTRIBUTING.md) を見てください。
 
 プロジェクトと作業を一覧にして、画面の中で Claude Code / Codex を動かす管理ソフトです。1人で使う Mac の中だけで使います。待ち受けるのは `127.0.0.1` だけで、利用者の認証はありません。Web サービスや共有サーバーとしては使えません。

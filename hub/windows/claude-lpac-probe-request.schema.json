@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:project-hub:claude-lpac-probe-request:1",
+  "title": "Explicitly approved synthetic LPAC W0 request",
+  "$comment": "This is the request shape, not authority to execute. Native admission also rejects duplicate keys, malformed UTF-8, non-canonical paths, reparse points, wrong owner/FileID/hash and previously consumed attempts. Raw stdin is at most 16384 bytes. No CLI, credentials, arbitrary argv, environment or network destination is accepted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "runNonce", "rootParent", "fixturePath", "fixtureSHA256"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "claude-lpac-bootstrap-gate"},
+    "runNonce": {"type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[a-f0-9]{32}$"},
+    "rootParent": {"$ref": "#/$defs/absoluteWindowsPath"},
+    "fixturePath": {
+      "allOf": [
+        {"$ref": "#/$defs/absoluteWindowsPath"},
+        {"pattern": "\\\\claude-lpac-fixture\\.exe$"}
+      ]
+    },
+    "fixtureSHA256": {"type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$"}
+  },
+  "$defs": {
+    "absoluteWindowsPath": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 29999,
+      "pattern": "^[A-Za-z]:\\\\[^\\u0000:/]*$",
+      "not": {"pattern": "[\\u0000-\\u001f]"},
+      "$comment": "Native code additionally checks normalization, each component, NTFS handles, owner, no reparse/ADS/hardlink and final path/FileID. Schema validation alone does not establish a safe path."
+    }
+  }
+}

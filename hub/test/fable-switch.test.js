@@ -1,4 +1,7 @@
 'use strict';
+// Native Windows validates the approved provider/authority contract; original
+// POSIX integration assertions remain intact in the other branch.
+if(process.platform==='win32'){require('./helpers/native-deferred-policy').register('fable');}else{
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -239,3 +242,5 @@ test('即時APIで受信した委任は送信済みに含めず、同じ番がAP
     assert.deepEqual(fs.readdirSync(path.join(dir, '.ai/tasks')), beforeTasks);
   }
 });
+
+}

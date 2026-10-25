@@ -1,0 +1,935 @@
+{
+  "notice": "Synthetic typed-output example only. It is not Linux inspection or cleanup proof.",
+  "accepted": {
+    "protocol": 1,
+    "op": "inspection-result",
+    "sequence": 1,
+    "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "uid": 1001,
+    "bootId": "11111111-1111-4111-8111-111111111111",
+    "ok": false,
+    "code": "PARTIAL",
+    "records": [
+      {
+        "name": "intent.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "runtime.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "unit.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "service-kernel.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "execution-gate.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "service-error.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "measurement.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "result.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "closed.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      },
+      {
+        "name": "active.json",
+        "status": "unread",
+        "code": "NOT_READ",
+        "sha256": null,
+        "facts": {
+          "bindingMatches": null,
+          "recordedCode": null,
+          "recordedOk": null,
+          "recordedCleanupVerified": null,
+          "completionState": null,
+          "recordedGuardPassed": null,
+          "measurementShapeValid": null,
+          "invocationId": null,
+          "pid": null,
+          "startTicks": null,
+          "cgroupPathSHA256": null
+        }
+      }
+    ],
+    "unit": {
+      "status": "unknown",
+      "code": "NOT_READ",
+      "loadState": null,
+      "activeState": null,
+      "subState": null,
+      "invocationId": null,
+      "mainPID": null,
+      "execMainCode": null,
+      "execMainStatus": null,
+      "result": null,
+      "savedIdentityMatches": false
+    },
+    "cgroup": {
+      "status": "unknown",
+      "code": "NOT_READ",
+      "identityMatches": false,
+      "populated": null,
+      "frozen": null,
+      "memoryMax": null,
+      "memorySwapMax": null,
+      "pidsMax": null,
+      "cpuQuota": null,
+      "cpuPeriod": null
+    },
+    "cleanupHistorical": "unknown",
+    "providerReady": false,
+    "snapshotAtomic": false
+  },
+  "rejected": [
+    {
+      "reason": "Historical cleanup cannot be upgraded",
+      "value": {
+        "protocol": 1,
+        "op": "inspection-result",
+        "sequence": 1,
+        "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "uid": 1001,
+        "bootId": "11111111-1111-4111-8111-111111111111",
+        "ok": false,
+        "code": "PARTIAL",
+        "records": [
+          {
+            "name": "intent.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "runtime.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "unit.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "service-kernel.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "execution-gate.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "service-error.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "measurement.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "result.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "closed.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "active.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          }
+        ],
+        "unit": {
+          "status": "unknown",
+          "code": "NOT_READ",
+          "loadState": null,
+          "activeState": null,
+          "subState": null,
+          "invocationId": null,
+          "mainPID": null,
+          "execMainCode": null,
+          "execMainStatus": null,
+          "result": null,
+          "savedIdentityMatches": false
+        },
+        "cgroup": {
+          "status": "unknown",
+          "code": "NOT_READ",
+          "identityMatches": false,
+          "populated": null,
+          "frozen": null,
+          "memoryMax": null,
+          "memorySwapMax": null,
+          "pidsMax": null,
+          "cpuQuota": null,
+          "cpuPeriod": null
+        },
+        "cleanupHistorical": "verified",
+        "providerReady": false,
+        "snapshotAtomic": false
+      }
+    },
+    {
+      "reason": "Unknown raw diagnostic text",
+      "value": {
+        "protocol": 1,
+        "op": "inspection-result",
+        "sequence": 1,
+        "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "uid": 1001,
+        "bootId": "11111111-1111-4111-8111-111111111111",
+        "ok": false,
+        "code": "PARTIAL",
+        "records": [
+          {
+            "name": "intent.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "runtime.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "unit.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "service-kernel.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "execution-gate.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "service-error.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "measurement.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "result.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "closed.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "active.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          }
+        ],
+        "unit": {
+          "status": "unknown",
+          "code": "NOT_READ",
+          "loadState": null,
+          "activeState": null,
+          "subState": null,
+          "invocationId": null,
+          "mainPID": null,
+          "execMainCode": null,
+          "execMainStatus": null,
+          "result": null,
+          "savedIdentityMatches": false
+        },
+        "cgroup": {
+          "status": "unknown",
+          "code": "NOT_READ",
+          "identityMatches": false,
+          "populated": null,
+          "frozen": null,
+          "memoryMax": null,
+          "memorySwapMax": null,
+          "pidsMax": null,
+          "cpuQuota": null,
+          "cpuPeriod": null
+        },
+        "cleanupHistorical": "unknown",
+        "providerReady": false,
+        "snapshotAtomic": false,
+        "stderr": "arbitrary"
+      }
+    },
+    {
+      "reason": "Unknown error code",
+      "value": {
+        "protocol": 1,
+        "op": "inspection-result",
+        "sequence": 1,
+        "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "uid": 1001,
+        "bootId": "11111111-1111-4111-8111-111111111111",
+        "ok": false,
+        "code": "PRIVATE_DATA",
+        "records": [
+          {
+            "name": "intent.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "runtime.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "unit.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "service-kernel.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "execution-gate.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "service-error.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "measurement.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "result.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "closed.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          },
+          {
+            "name": "active.json",
+            "status": "unread",
+            "code": "NOT_READ",
+            "sha256": null,
+            "facts": {
+              "bindingMatches": null,
+              "recordedCode": null,
+              "recordedOk": null,
+              "recordedCleanupVerified": null,
+              "completionState": null,
+              "recordedGuardPassed": null,
+              "measurementShapeValid": null,
+              "invocationId": null,
+              "pid": null,
+              "startTicks": null,
+              "cgroupPathSHA256": null
+            }
+          }
+        ],
+        "unit": {
+          "status": "unknown",
+          "code": "NOT_READ",
+          "loadState": null,
+          "activeState": null,
+          "subState": null,
+          "invocationId": null,
+          "mainPID": null,
+          "execMainCode": null,
+          "execMainStatus": null,
+          "result": null,
+          "savedIdentityMatches": false
+        },
+        "cgroup": {
+          "status": "unknown",
+          "code": "NOT_READ",
+          "identityMatches": false,
+          "populated": null,
+          "frozen": null,
+          "memoryMax": null,
+          "memorySwapMax": null,
+          "pidsMax": null,
+          "cpuQuota": null,
+          "cpuPeriod": null
+        },
+        "cleanupHistorical": "unknown",
+        "providerReady": false,
+        "snapshotAtomic": false
+      }
+    }
+  ]
+}

@@ -1,16 +1,19 @@
  'use strict';
+// Standalone UI fixtures keep the original language when the runtime is absent.
+if(typeof globalThis.L!=='function')globalThis.L=text=>text;
+if(typeof globalThis.UI!=='function')globalThis.UI=(strings,...values)=>strings.reduce((out,part,n)=>out+part+(n<values.length?String(values[n]):''),'');
 // 右クリックと、キーボードで押せる「…」は同じ操作を開く。
 function showTreeMenu(pId, tId, x, y) {
   const p = proj(pId), t = tId && taskOf(p, tId); if (!p || tId && !t) return;
   const menu = $('#menu');
   // 表示した操作の意図を保持し、定期取得後も同じ before で競合を照合する。
   const pinBefore = !t && isProjectPinned(p.id);
-  menu.innerHTML = `<button type="button" data-tree-action="rename" role="menuitem">名前の変更</button><button type="button" data-tree-action="branch" role="menuitem">同じ階層に分岐</button><button type="button" data-tree-action="child" role="menuitem">さらに子${t ? '作業' : 'プロジェクト'}を作る</button><button class="danger" type="button" data-tree-action="remove" role="menuitem">削除…</button>`;
+  menu.innerHTML = UI`<button type="button" data-tree-action="rename" role="menuitem">名前の変更</button><button type="button" data-tree-action="branch" role="menuitem">同じ階層に分岐</button><button type="button" data-tree-action="child" role="menuitem">さらに子${t ? '作業' : L('プロジェクト')}を作る</button><button class="danger" type="button" data-tree-action="remove" role="menuitem">削除…</button>`;
   if (!t && canReorderProjects()) {
     const siblings = projectSiblings(displayParent(p, state.projects)), index = siblings.findIndex(q => q.id === p.id);
     const pinned = pinBefore;
-    menu.innerHTML += `<button type="button" data-tree-action="pin" role="menuitem" ${projectOrderBusy ? 'disabled' : ''}>${pinned ? '固定を解除' : '上部に固定'}</button>`;
-    menu.innerHTML += `<button type="button" data-tree-action="up" role="menuitem" ${index <= 0 || isProjectPinned(siblings[index - 1]?.id) !== pinned || projectOrderBusy ? 'disabled' : ''}>上へ移動</button><button type="button" data-tree-action="down" role="menuitem" ${index >= siblings.length - 1 || isProjectPinned(siblings[index + 1]?.id) !== pinned || projectOrderBusy ? 'disabled' : ''}>下へ移動</button>`;
+    menu.innerHTML += `<button type="button" data-tree-action="pin" role="menuitem" ${projectOrderBusy ? 'disabled' : ''}>${pinned ? L('固定を解除') : L('上部に固定')}</button>`;
+    menu.innerHTML += UI`<button type="button" data-tree-action="up" role="menuitem" ${index <= 0 || isProjectPinned(siblings[index - 1]?.id) !== pinned || projectOrderBusy ? 'disabled' : ''}>上へ移動</button><button type="button" data-tree-action="down" role="menuitem" ${index >= siblings.length - 1 || isProjectPinned(siblings[index + 1]?.id) !== pinned || projectOrderBusy ? 'disabled' : ''}>下へ移動</button>`;
   }
   menu.hidden = false;
   menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + 'px';
@@ -30,12 +33,12 @@ function showTreeMenu(pId, tId, x, y) {
       }
       if(action==='remove') {await showRemoval(p.id,t?.id);return;}
       if (action === 'rename') {
-        const name = prompt('新しい名前（場所・作業IDは変わりません）', t ? t.title : p.name);
+        const name = prompt(L('新しい名前（場所・作業IDは変わりません）'), t ? t.title : p.name);
         if (name === null || name === (t ? t.title : p.name)) return;
         await api('/api/hierarchy/rename', { project: p.id, task: t?.id, name, expectedHash: (t || p).completionHash });
-        await load(); toast('名前を変更しました');
+        await load(); toast(L('名前を変更しました'));
       } else if (t) {
-        const title = prompt(action === 'child' ? '子作業の名前' : '派生する作業の名前', nextName(t.title, p.tasks.map(x => x.title))); if (!title?.trim()) return;
+        const title = prompt(action === 'child' ? L('子作業の名前') : L('派生する作業の名前'), nextName(t.title, p.tasks.map(x => x.title))); if (!title?.trim()) return;
         // 子作業・分岐は設定の初期AIを使い、親の役割と階層は保持する。
         const pick = initialPick();
         const initialAI = { owner: AI_KEY[pick.ai], model: pick.model, effort: pick.effort };
@@ -65,7 +68,7 @@ async function saveProjectPin(project, before) {
   projectOrderBusy = true;
   try {
     await api('/api/hierarchy/pin', { project, before, pinned: !before });
-    await load(); toast(before ? '固定を解除しました' : '上部に固定しました');
+    await load(); toast(before ? L('固定を解除しました') : L('上部に固定しました'));
   } catch (err) { toast(err.message); }
   finally { projectOrderBusy = false; }
 }
@@ -77,7 +80,7 @@ async function saveProjectOrder(parent, before, order) {
   projectOrderBusy = true;
   try {
     await api('/api/hierarchy/order', { parent, before, order });
-    await load(); toast('並び順を保存しました');
+    await load(); toast(L('並び順を保存しました'));
   } catch (err) { toast(err.message); }
   finally { projectOrderBusy = false; }
 }

@@ -1,5 +1,7 @@
 # Project Hub
 
+Windows 移植試作與限制請見 [WINDOWS.md](WINDOWS.md)。下文描述原版 macOS 行為，不能直接套用至 Windows。
+
 今の版は `package.json` の version（画面の左上にも出る）。変更の記録は [CHANGELOG.md](CHANGELOG.md)。
 
 プロジェクトと作業を一覧にして、画面の中で Claude Code / Codex を動かす管理ソフト。1人で使う Mac の中だけで使う。使う前に「使う前に知っておくこと」を読んでください。

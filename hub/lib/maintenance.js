@@ -2,12 +2,14 @@
 // 選択式の整理、ゴミ箱への退避・復元、ローカル検証。
 const fs=require('node:fs'), path=require('node:path'), os=require('node:os');
 const {createHash,randomUUID}=require('node:crypto');
-const {execFileSync,spawn}=require('node:child_process');
+const {execFileSync}=require('node:child_process');
+const {spawn}=require('./managed-process'),cli=require('./cli-platform');
 const {parseDoc}=require('./frontmatter');
 const digest=x=>createHash('sha256').update(x).digest('hex');
 const inside=(base,file)=>{base=base.normalize('NFC');file=file.normalize('NFC');return file===base || file.startsWith(base+path.sep);};
 const DAY=86400000;
 function noLinks(file) {
+ if(process.platform==='win32')require('./safe-path').localPath(file,{allowMissing:true});
  let cur=path.resolve(file);
  while(true) {try {if(fs.lstatSync(cur).isSymbolicLink())throw Error('リンクを含む場所は整理できません');}catch(e){if(e.code!=='ENOENT')throw e;}const up=path.dirname(cur);if(up===cur)break;cur=up;}
 }
@@ -54,8 +56,8 @@ class Maintenance {
   try {
    for(const base of roots) {
     noLinks(base);
-    let top='';try {top=execFileSync('git',['-C',base,'rev-parse','--show-toplevel'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch(e){/* Gitなし */}
-    if(top) {const names=execFileSync('git',['-C',top,'ls-files','-z'],{encoding:'utf8',maxBuffer:2*1024*1024});tracked.push(...names.split('\0').filter(Boolean).map(n=>path.join(top,n)));}
+    let top='';if(process.platform==='win32'){const metadata=require('./git-metadata').assertLocalMetadata(base);if(metadata.gitdir)top=require('./git-policy').run(base,['rev-parse','--show-toplevel']).trim();}else try {top=execFileSync('git',['-C',base,'rev-parse','--show-toplevel'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}catch(e){/* Gitなし */}
+    if(top) {const names=process.platform==='win32'?require('./git-policy').run(top,['ls-files','-z']):execFileSync('git',['-C',top,'ls-files','-z'],{encoding:'utf8',maxBuffer:2*1024*1024});tracked.push(...names.split('\0').filter(Boolean).map(n=>path.join(top,n)));}
     const walk=(d,depth)=>{scanPath=d;scanSize=0;
      if(depth>6)throw Error('参照の走査範囲を超えました');
      for(const ent of fs.readdirSync(d,{withFileTypes:true})) {
@@ -96,8 +98,32 @@ class Maintenance {
   for(const [k,v] of this.previews)if(Date.now()-v.at>10*60000)this.previews.delete(k);
   return {token,candidates,excluded,busy:this.busy(id)||this.locked(id),scripts:scriptsAt(this.baseOf(p)),history:this.history(id)};
  }
- save(record) {noLinks(this.records);fs.mkdirSync(this.records,{recursive:true});const file=path.join(this.records,record.id+'.json'),tmp=file+'.tmp';fs.writeFileSync(tmp,JSON.stringify(record,null,2));fs.renameSync(tmp,file);}
- history(id) {try{return fs.readdirSync(this.records).filter(n=>/^[\w-]+\.json$/.test(n)).map(n=>JSON.parse(fs.readFileSync(path.join(this.records,n),'utf8'))).filter(r=>r.project===id).sort((a,b)=>b.at.localeCompare(a.at)).slice(0,20).map(r=>({id:r.id,at:r.at,count:r.entries.length,restored:r.entries.every(e=>e.restored),error:r.error}));}catch(e){return [];}}
+ save(record) {
+  if(!/^[0-9a-f-]{36}$/.test(record.id))throw Error('整理記録の識別が不正です');
+  noLinks(this.records);fs.mkdirSync(this.records,{recursive:true});
+  const file=path.join(this.records,record.id+'.json'),tmp=file+'.'+randomUUID()+'.tmp';noLinks(file);noLinks(tmp);
+  try{fs.writeFileSync(tmp,JSON.stringify(record,null,2),{flag:'wx'});fs.renameSync(tmp,file);}finally{if(fs.existsSync(tmp))fs.unlinkSync(tmp);}
+ }
+ recover(r) {
+  if(!r||typeof r!=='object'||!/^[0-9a-f-]{36}$/.test(r.id)||typeof r.project!=='string'||!r.project||typeof r.at!=='string'||!Number.isFinite(Date.parse(r.at))||typeof r.error!=='string'||!Array.isArray(r.entries)||
+    r.entries.some(e=>!e||typeof e.src!=='string'||!e.src||typeof e.dest!=='string'||!e.dest||typeof e.fingerprint!=='string'||!/^[0-9a-f]{64}$/.test(e.fingerprint)||typeof e.restored!=='boolean'||['moved','moving','restoring'].some(k=>e[k]!==undefined&&typeof e[k]!=='boolean')))throw Error('整理記録が破損しています');
+  const p=this.project(r.project),targets=this.targets(p).map(x=>x.dir),chatdir=path.join(p.dir,'.ai/chat');let changed=false;
+  for(const e of r.entries){
+   if(!e.moving&&!e.restoring)continue;
+   if(typeof e.src!=='string'||path.resolve(e.src)!==e.src||typeof e.dest!=='string'||path.resolve(e.dest)!==e.dest||path.dirname(e.dest)!==path.resolve(this.trash))throw Error('整理記録のパスが不正です');
+   if(!targets.some(d=>inside(d,e.src)&&d!==e.src)&&!(path.dirname(e.src)===chatdir&&p.tasks.some(t=>[t.id+'.jsonl',t.id+'.json',t.id+'.queue.json'].includes(path.basename(e.src)))))throw Error('整理記録の復元先は許可されていません');
+   noLinks(e.src);noLinks(e.dest);
+   if(e.moving&&!fs.existsSync(e.src)&&fs.existsSync(e.dest)&&inventory(e.dest).fingerprint===e.fingerprint){e.moved=true;e.moving=false;changed=true;}
+   if(e.restoring&&!fs.existsSync(e.dest)&&fs.existsSync(e.src)&&inventory(e.src).fingerprint===e.fingerprint){e.restored=true;e.restoring=false;changed=true;}
+  }
+  if(changed)this.save(r);return r;
+ }
+ history(id) {
+  try {
+   noLinks(this.records);
+   return fs.readdirSync(this.records).filter(n=>/^[0-9a-f-]{36}\.json$/.test(n)).map(n=>{const file=path.join(this.records,n);noLinks(file);return JSON.parse(fs.readFileSync(file,'utf8'));}).filter(r=>r.project===id).map(r=>this.recover(r)).sort((a,b)=>b.at.localeCompare(a.at)).slice(0,20).map(r=>({id:r.id,at:r.at,count:r.entries.length,restored:r.entries.every(e=>e.restored),error:r.error}));
+  }catch(e){if(e.code==='ENOENT')return [];throw e;}
+ }
  apply(id,token,selected,confirm) {
   this.idle(id);const old=this.previews.get(token);
   if(confirm!==true || !old || old.id!==id || Date.now()-old.at>10*60000 || !Array.isArray(selected) || !selected.length || new Set(selected).size!==selected.length)throw Error('候補を確認して選び直してください');
@@ -107,13 +133,13 @@ class Maintenance {
   noLinks(this.trash);fs.mkdirSync(this.trash,{recursive:true});
   const record={id:randomUUID(),project:id,at:new Date().toISOString(),entries:picked.flatMap(c=>c.paths.map(src=>({src,dest:path.join(this.trash,`${id}-${randomUUID()}-${path.basename(src)}`),fingerprint:inventory(src).fingerprint,restored:false}))),error:''};
   this.save(record);
-  try {for(const e of record.entries) {fs.renameSync(e.src,e.dest);e.moved=true;this.save(record);}}
+  try {for(const e of record.entries) {noLinks(e.src);noLinks(e.dest);e.moving=true;this.save(record);fs.renameSync(e.src,e.dest);e.moved=true;e.moving=false;this.save(record);}}
   catch(e) {record.error='一部を移せませんでした。記録から復元できます（'+e.code+'）';this.save(record);}
   this.previews.delete(token);return {ok:!record.error,id:record.id,moved:record.entries.filter(e=>e.moved).length,error:record.error};
  }
  restore(id,transaction,confirm) {
   this.idle(id);if(confirm!==true || !/^[0-9a-f-]{36}$/.test(transaction||''))throw Error('復元する記録を確認してください');
-  const file=path.join(this.records,transaction+'.json');noLinks(file);const r=JSON.parse(fs.readFileSync(file,'utf8'));if(r.project!==id)throw Error('違うプロジェクトの記録です');
+  const file=path.join(this.records,transaction+'.json');noLinks(file);let r=JSON.parse(fs.readFileSync(file,'utf8'));if(r.project!==id)throw Error('違うプロジェクトの記録です');r=this.recover(r);
   const p=this.project(id),targets=this.targets(p).map(x=>x.dir),chatdir=path.join(p.dir,'.ai/chat');
   if(r.entries.some(e=>!e.restored && e.moved && !fs.existsSync(e.dest)))throw Error('ゴミ箱に復元用のファイルがありません');
   const entries=r.entries.filter(e=>!e.restored && fs.existsSync(e.dest));
@@ -125,7 +151,7 @@ class Maintenance {
   }
   for(const e of r.entries.filter(e=>!e.restored && !e.moved && !fs.existsSync(e.dest) && fs.existsSync(e.src)))e.restored=true;
   this.save(r);
-  for(const e of entries) {fs.mkdirSync(path.dirname(e.src),{recursive:true});fs.renameSync(e.dest,e.src);e.restored=true;this.save(r);}
+  for(const e of entries) {noLinks(e.src);noLinks(e.dest);fs.mkdirSync(path.dirname(e.src),{recursive:true});e.restoring=true;this.save(r);fs.renameSync(e.dest,e.src);e.restored=true;e.restoring=false;this.save(r);}
   return {ok:true,restored:entries.length};
  }
  async verify(id,script,expectedHash,confirm) {
@@ -154,11 +180,11 @@ class Maintenance {
    const result=await new Promise(resolve=>{
     let output='',bytes=0,settled=false,child,timer,why='';
     const finish=(code)=>{if(settled)return;settled=true;clearTimeout(timer);resolve({name:script,command:choice.command,ok:code===0&&!why,code,output,note:why});};
-    const stop=reason=>{why=reason;try {process.kill(-child.pid,'SIGKILL');}catch(e) {child.kill('SIGKILL');}};
-    try {child=spawn('npm',['--offline','--ignore-scripts','run',script],{cwd:base,env:process.env,detached:true,stdio:['ignore','pipe','pipe']});}
-    catch(e){finish(null);return;}
+    const stop=reason=>{why=reason;if(process.platform==='win32')child.kill();else try {process.kill(-child.pid,'SIGKILL');}catch(e) {child.kill('SIGKILL');}};
+    try {const cmd=cli.resolve('npm',['--offline','--ignore-scripts','run',script]);child=spawn(cmd.file,cmd.args,{cwd:base,env:process.env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});}
+    catch(e){why=e.message;finish(null);return;}
     for(const stream of [child.stdout,child.stderr])stream.on('data',d=>{bytes+=d.length;output=(output+d.toString()).slice(-20000);if(bytes>2*1024*1024)stop('出力が多いため停止しました');});
-    child.on('error',e=>{why=e.message;finish(null);});child.on('close',finish);timer=setTimeout(()=>stop('時間内に終わらなかったため停止しました'),this.timeout);
+    child.on('error',e=>{why=e.message;});child.on('close',finish);timer=setTimeout(()=>stop('時間内に終わらなかったため停止しました'),this.timeout);
    });
    return {ok:checks.every(c=>c.ok)&&result.ok,checks,result,note:'選んだ検証コマンドの結果です。画面の手動確認は別に行ってください。'};
   } finally {this.running.delete(id);}

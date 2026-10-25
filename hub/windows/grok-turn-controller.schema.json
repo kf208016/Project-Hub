@@ -1,0 +1,49 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://project-hub.local/schemas/grok-turn-controller.schema.json",
+  "title":"Bounded Grok turn controller messages; no OS or browser authority proof",
+  "$comment":"Opaque JavaScript owner/backend objects, streams and functions are trusted construction inputs, not JSON credentials. Shape validation cannot prove process identity, cleanup, permission provenance, UTF-8 byte limits or state transitions. Runtime validates those internal bindings; a real execution backend must independently enforce OS isolation and observe tree exit.",
+  "oneOf":[{"$ref":"#/$defs/state"},{"$ref":"#/$defs/decision"},{"$ref":"#/$defs/cancelScope"},{"$ref":"#/$defs/exitReceipt"},{"$ref":"#/$defs/promptRequest"},{"$ref":"#/$defs/event"}],
+  "$defs":{
+    "id":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"},
+    "rpcId":{"oneOf":[{"$ref":"#/$defs/id"},{"type":"integer","minimum":0,"maximum":9007199254740991}]},
+    "hash":{"type":"string","pattern":"^[a-f0-9]{64}$"},
+    "count":{"type":"integer","minimum":0,"maximum":9007199254740991},
+    "error":{"oneOf":[{"type":"null"},{"type":"string","pattern":"^GROK_[A-Z0-9_]+$"}]},
+    "exitCode":{"oneOf":[{"type":"null"},{"type":"integer","minimum":-2147483648,"maximum":4294967295}]},
+    "signal":{"oneOf":[{"type":"null"},{"type":"string","pattern":"^[A-Z][A-Z0-9_]{0,31}$"}]},
+    "state":{
+      "type":"object","additionalProperties":false,
+      "required":["schema","phase","completionKind","backendId","sessionId","runId","promptRequestId","promptSHA256","errorCode","stopRequested","ownerCancelled","protocolTerminal","replyComplete","taskSuccess","stdoutEnded","stderrEnded","rootExited","ownedTreeEmpty","cleanupVerified","exitCode","signal","pending","queuedFrames","queuedBytes","stdoutBytes","stderrBytes"],
+      "properties":{
+        "schema":{"const":"grok-turn-state/v1"},"phase":{"enum":["created","running","stopping","finished"]},
+        "completionKind":{"enum":[null,"reply-complete","incomplete","cancelled","failed","cleanup-unknown"]},
+        "backendId":{"$ref":"#/$defs/id"},"sessionId":{"$ref":"#/$defs/id"},"runId":{"$ref":"#/$defs/id"},"promptRequestId":{"$ref":"#/$defs/rpcId"},"promptSHA256":{"$ref":"#/$defs/hash"},"errorCode":{"$ref":"#/$defs/error"},
+        "stopRequested":{"type":"boolean"},"ownerCancelled":{"type":"boolean"},"protocolTerminal":{"type":"boolean"},"replyComplete":{"type":"boolean"},"taskSuccess":{"type":"null"},"stdoutEnded":{"type":"boolean"},"stderrEnded":{"type":"boolean"},"rootExited":{"type":"boolean"},"ownedTreeEmpty":{"type":"boolean"},"cleanupVerified":{"type":"boolean"},"exitCode":{"$ref":"#/$defs/exitCode"},"signal":{"$ref":"#/$defs/signal"},"pending":{"type":"integer","minimum":0,"maximum":16},"queuedFrames":{"type":"integer","minimum":0,"maximum":32},"queuedBytes":{"type":"integer","minimum":0,"maximum":1048576},"stdoutBytes":{"$ref":"#/$defs/count"},"stderrBytes":{"$ref":"#/$defs/count"}
+      },
+      "allOf":[
+        {"if":{"properties":{"phase":{"const":"finished"}}},"then":{"properties":{"completionKind":{"enum":["reply-complete","incomplete","cancelled","failed","cleanup-unknown"]},"pending":{"const":0},"queuedFrames":{"const":0},"queuedBytes":{"const":0}}},"else":{"properties":{"completionKind":{"type":"null"}}}},
+        {"if":{"properties":{"completionKind":{"enum":["reply-complete","incomplete"]}}},"then":{"properties":{"phase":{"const":"finished"},"protocolTerminal":{"const":true},"stdoutEnded":{"const":true},"stderrEnded":{"const":true},"rootExited":{"const":true},"ownedTreeEmpty":{"const":true},"cleanupVerified":{"const":true},"exitCode":{"const":0},"signal":{"type":"null"},"errorCode":{"type":"null"}}}},
+        {"if":{"properties":{"completionKind":{"const":"reply-complete"}}},"then":{"properties":{"replyComplete":{"const":true}}}},
+        {"if":{"properties":{"completionKind":{"const":"incomplete"}}},"then":{"properties":{"replyComplete":{"const":false}}}},
+        {"if":{"properties":{"completionKind":{"const":"cleanup-unknown"}}},"then":{"properties":{"phase":{"const":"finished"},"cleanupVerified":{"const":false},"errorCode":{"type":"string"}}}},
+        {"if":{"properties":{"completionKind":{"const":"failed"}}},"then":{"properties":{"phase":{"const":"finished"},"cleanupVerified":{"const":true},"errorCode":{"type":"string"}}}},
+        {"if":{"properties":{"completionKind":{"const":"cancelled"}}},"then":{"properties":{"phase":{"const":"finished"},"ownerCancelled":{"const":true},"cleanupVerified":{"const":true},"errorCode":{"type":"null"},"replyComplete":{"const":false}}}}
+      ]
+    },
+    "decision":{"type":"object","additionalProperties":false,"required":["sessionId","runId","requestId","requestSHA256","optionId","confirm"],"properties":{"sessionId":{"$ref":"#/$defs/id"},"runId":{"$ref":"#/$defs/id"},"requestId":{"$ref":"#/$defs/rpcId"},"requestSHA256":{"$ref":"#/$defs/hash"},"optionId":{"enum":["allow-once","reject-once"]},"confirm":{"const":true}}},
+    "cancelScope":{"type":"object","additionalProperties":false,"required":["sessionId","runId","confirm"],"properties":{"sessionId":{"$ref":"#/$defs/id"},"runId":{"$ref":"#/$defs/id"},"confirm":{"const":true}}},
+    "exitReceipt":{"type":"object","additionalProperties":false,"required":["backendId","sessionId","runId","rootExited","ownedTreeEmpty","cleanupVerified","exitCode","signal"],"properties":{"backendId":{"$ref":"#/$defs/id"},"sessionId":{"$ref":"#/$defs/id"},"runId":{"$ref":"#/$defs/id"},"rootExited":{"const":true},"ownedTreeEmpty":{"type":"boolean"},"cleanupVerified":{"type":"boolean"},"exitCode":{"$ref":"#/$defs/exitCode"},"signal":{"$ref":"#/$defs/signal"}},"anyOf":[{"properties":{"exitCode":{"type":"integer"}}},{"properties":{"signal":{"type":"string"}}}]},
+    "promptRequest":{"type":"object","additionalProperties":false,"required":["jsonrpc","id","method","params"],"properties":{"jsonrpc":{"const":"2.0"},"id":{"$ref":"#/$defs/rpcId"},"method":{"const":"session/prompt"},"params":{"type":"object","additionalProperties":false,"required":["sessionId","prompt"],"properties":{"sessionId":{"$ref":"#/$defs/id"},"prompt":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object","additionalProperties":false,"required":["type","text"],"properties":{"type":{"const":"text"},"text":{"type":"string","minLength":1,"maxLength":65536}}}}}}}},
+    "permissionEvent":{"type":"object","additionalProperties":false,"required":["type","sessionId","runId","promptRequestId","requestId","toolCallId","toolCall","options","inputSHA256","requestSHA256","expiresAt"],"properties":{"type":{"const":"permission"},"sessionId":{"$ref":"#/$defs/id"},"runId":{"$ref":"#/$defs/id"},"promptRequestId":{"$ref":"#/$defs/rpcId"},"requestId":{"$ref":"#/$defs/rpcId"},"toolCallId":{"$ref":"#/$defs/id"},"toolCall":{"allOf":[{"$ref":"grok-protocol.schema.json#/$defs/permissionTool"},{"required":["title","rawInput"]}]},"options":{"type":"array","minItems":2,"maxItems":16,"items":{"$ref":"grok-protocol.schema.json#/$defs/option"}},"inputSHA256":{"$ref":"#/$defs/hash"},"requestSHA256":{"$ref":"#/$defs/hash"},"expiresAt":{"$ref":"#/$defs/count"}}},
+    "resultEvent":{"type":"object","additionalProperties":false,"required":["type","terminal","replyComplete","taskSuccess","sessionId","runId","promptRequestId","stopReason","errorCode","permissionDenied","cancelled","toolFailureObserved"],"properties":{"type":{"const":"result"},"terminal":{"const":true},"replyComplete":{"type":"boolean"},"taskSuccess":{"type":"null"},"sessionId":{"$ref":"#/$defs/id"},"runId":{"$ref":"#/$defs/id"},"promptRequestId":{"$ref":"#/$defs/rpcId"},"stopReason":{"enum":[null,"end_turn","max_tokens","max_turn_requests","refusal","cancelled"]},"errorCode":{"enum":[null,"GROK_REMOTE_ERROR"]},"permissionDenied":{"type":"boolean"},"cancelled":{"type":"boolean"},"toolFailureObserved":{"type":"boolean"},"rpcCode":{"type":"integer","minimum":-2147483648,"maximum":2147483647},"openTools":{"$ref":"#/$defs/count"},"metadata":{"$ref":"grok-protocol.schema.json#/$defs/object"}},"oneOf":[{"required":["rpcCode"],"properties":{"errorCode":{"const":"GROK_REMOTE_ERROR"},"stopReason":{"type":"null"},"replyComplete":{"const":false}},"not":{"anyOf":[{"required":["openTools"]},{"required":["metadata"]}]}},{"required":["openTools"],"properties":{"errorCode":{"type":"null"},"stopReason":{"type":"string"}},"not":{"required":["rpcCode"]}}]},
+    "event":{"oneOf":[
+      {"type":"object","additionalProperties":false,"required":["type","text"],"properties":{"type":{"const":"text-delta"},"text":{"type":"string","maxLength":131072}}},
+      {"type":"object","additionalProperties":false,"required":["type","bytes"],"properties":{"type":{"const":"stderr-observed"},"bytes":{"type":"integer","minimum":1,"maximum":65536}}},
+      {"type":"object","additionalProperties":false,"required":["type","toolCallId","status","descriptiveOnly","approvalVerified"],"properties":{"type":{"const":"tool-state"},"toolCallId":{"$ref":"#/$defs/id"},"status":{"enum":["pending","in_progress","completed","failed"]},"descriptiveOnly":{"const":true},"approvalVerified":{"const":false}}},
+      {"$ref":"#/$defs/permissionEvent"},{"$ref":"#/$defs/resultEvent"},
+      {"type":"object","additionalProperties":false,"required":["type","reasonCode"],"properties":{"type":{"const":"pending-cleared"},"reasonCode":{"type":"string","pattern":"^GROK_[A-Z0-9_]+$"}}},
+      {"type":"object","additionalProperties":false,"required":["type","state"],"properties":{"type":{"const":"finished"},"state":{"$ref":"#/$defs/state"}}}
+    ]}
+  }
+}

@@ -42,7 +42,7 @@ test('小作業の成果を保存・通知後に管理記録だけ退避し、Pr
 });
 test('派生はparentより派生元へ渡す。プロジェクト間の派生も同一家族へ保存する',t=>{
  const f=fixture(t);f.store.updateTask('Project Hub',f.child.id,{kind:'derived',derivedFrom:'Project Hub/'+f.other.id});const d=f.preview();assert.equal(d.targetTask,f.other.id);f.apply(d);assert.equal(chat.read(f.dir,f.parent.id).length,0);assert.equal(chat.read(f.dir,f.other.id).length,1);
- const g=fixture(t),qdir=path.join(g.root,'Product','Kid');g.write(path.join(qdir,'PROJECT.md'),'---\nname: Kid\nparent: Project Hub\n---\n');const q=g.store.createTask('Kid',{title:'別プロジェクトの検証',kind:'derived',derivedFrom:'Project Hub/'+g.parent.id});const file=g.store.taskFile('Kid',q.id);g.write(file,fs.readFileSync(file,'utf8')+'\n## 手順\n- [x] 完成\n');g.write(path.join(qdir,'成果物','out.txt'),'結果');const x=g.transfer.preview('Kid',q.id);assert.deepEqual(x.blockers,[]);const out=g.transfer.apply({project:'Kid',task:q.id,token:x.token,selected:x.files.map(x=>x.id),confirm:true});assert.equal(out.parentProject,'Project Hub');assert.match(out.files[0],/Product\/Project Hub\/成果物\/受取/);
+ const g=fixture(t),qdir=path.join(g.root,'Product','Kid');g.write(path.join(qdir,'PROJECT.md'),'---\nname: Kid\nparent: Project Hub\n---\n');const q=g.store.createTask('Kid',{title:'別プロジェクトの検証',kind:'derived',derivedFrom:'Project Hub/'+g.parent.id});const file=g.store.taskFile('Kid',q.id);g.write(file,fs.readFileSync(file,'utf8')+'\n## 手順\n- [x] 完成\n');g.write(path.join(qdir,'成果物','out.txt'),'結果');const x=g.transfer.preview('Kid',q.id);assert.deepEqual(x.blockers,[]);const out=g.transfer.apply({project:'Kid',task:q.id,token:x.token,selected:x.files.map(x=>x.id),confirm:true});assert.equal(out.parentProject,'Project Hub');assert.match(out.files[0],/Product[\\/]Project Hub[\\/]成果物[\\/]受取/);
 });
 test('未完了・質問・稼働・待ち順・コピー・下の作業は成果を渡す前に止める',t=>{
  for(const kind of ['unfinished','question','busy','parentBusy','locked','queue','copy','copyRecord','child']){
@@ -59,7 +59,7 @@ test('未完了・質問・稼働・待ち順・コピー・下の作業は成�
 test('変更・隠し設定・リンク・他作業・外のパスを拒否、返事だけで渡さない',t=>{
  const f=fixture(t);const d=f.preview();fs.appendFileSync(f.artifact,'更新');assert.throws(()=>f.apply(d),/変わ/);assert.equal(chat.read(f.dir,f.parent.id).length,0);
  const g=fixture(t);for(const input of ['../outside','.ai/tasks/x.md','/etc/hosts','作業/'+g.other.id+'/out.txt'])assert.ok(g.preview([input]).blockers.length,input);
- fs.mkdirSync(path.join(g.dir,'成果物'),{recursive:true});fs.symlinkSync(g.artifact,path.join(g.dir,'成果物','link.txt'));assert.ok(g.preview().blockers.some(x=>x.includes('リンク')));
+ fs.mkdirSync(path.join(g.dir,'成果物'),{recursive:true});fs.symlinkSync(process.platform==='win32'?path.dirname(g.artifact):g.artifact,path.join(g.dir,'成果物','link.txt'),process.platform==='win32'?'junction':undefined);assert.ok(g.preview().blockers.some(x=>x.includes('リンク')));
  const h=fixture(t);fs.unlinkSync(h.artifact);const x=h.preview();assert.ok(x.blockers.some(x=>x.includes('成果ファイルがありません')));assert.throws(()=>h.apply(x));
  const i=fixture(t);const a=i.preview();assert.throws(()=>i.transfer.apply({project:'Project Hub',task:i.child.id,token:a.token,selected:[],confirm:true}),/選んで/);assert.throws(()=>i.transfer.apply({project:'Project Hub',task:i.child.id,token:a.token,selected:a.files.map(x=>x.id)}),/確認/);
 });

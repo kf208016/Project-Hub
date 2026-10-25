@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -15,36 +15,43 @@
 </head>
 <body>
 <header class="bar">
-  <button class="tb menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="list" title="プロジェクトの一覧を出す・しまう">☰</button>
+  <button class="tb menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="list" title="プロジェクトの一覧を出す・しまう" data-i18n-attrs="title">☰</button>
   <h1>Project Hub</h1>
-  <button class="ver" id="ver" type="button" title="変更の記録を見る"></button>
+  <button class="ver" id="ver" type="button" title="変更の記録を見る" data-i18n-attrs="title"></button>
   <button class="tb upd" id="upd" type="button" hidden></button>
   <span class="sp"></span>
-  <button class="tb usage-toggle" id="usage-toggle" type="button" aria-expanded="false" aria-controls="usage-drawer" title="利用枠の使用率とリセット時期を見る">利用状況</button>
-  <button class="tb turn" id="turn" type="button" aria-pressed="false">あなたの番 <span class="n" id="turn-n">返事待ち 0</span><span class="notice notice-confirm" id="turn-done-n">完了確認 0</span></button>
+  <button class="tb usage-toggle" id="usage-toggle" type="button" aria-expanded="false" aria-controls="usage-drawer" title="利用枠の使用率とリセット時期を見る" data-i18n data-i18n-attrs="title">利用状況</button>
+  <button class="tb turn" id="turn" type="button" aria-pressed="false"><span data-i18n>あなたの番</span> <span class="n" id="turn-n">返事待ち 0</span><span class="notice notice-confirm" id="turn-done-n">完了確認 0</span></button>
   <button class="tb" id="gear" type="button" aria-pressed="false">設定</button>
 </header>
+<div class="windows-notice" id="windows-notice" hidden role="status">Windows 試作版：正在查詢背景程序；完整功能仍在驗收。</div>
 
-<div class="mobile-information"><button id="mobile-info" class="mobile-strip" type="button" aria-label="情報と操作を開く" aria-expanded="false" aria-controls="mobile-work-info">▼</button><span id="mobile-badges"></span></div>
+<div class="mobile-information"><button id="mobile-info" class="mobile-strip" type="button" aria-label="情報と操作を開く" aria-expanded="false" aria-controls="mobile-work-info" data-i18n-attrs="aria-label">▼</button><span id="mobile-badges"></span></div>
 <div class="app">
-  <nav class="list" id="list" aria-label="プロジェクトと作業"></nav>
+  <nav class="list" id="list" aria-label="プロジェクトと作業" data-i18n-attrs="aria-label"></nav>
   <main class="main" id="main"></main>
 </div>
 
 <aside class="drawer usage-drawer" id="usage-drawer" hidden role="dialog" aria-labelledby="usage-title">
-  <div class="dh"><h2 id="usage-title">AIの利用状況</h2><button class="x" id="usage-close" type="button" aria-label="利用状況を閉じる">×</button></div>
-  <p class="note usage-explanation">契約の利用枠に対する使用率です。トークン数や、この会話の長さとは別です。</p>
-  <div class="row"><button class="btn plain" id="usage-refresh" type="button">今の状況を確認</button><span class="small" id="usage-status" role="status"></span></div>
+  <div class="dh"><h2 id="usage-title" data-i18n>AIの利用状況</h2><button class="x" id="usage-close" type="button" aria-label="利用状況を閉じる" data-i18n-attrs="aria-label">×</button></div>
+  <p class="note usage-explanation" data-i18n>契約の利用枠に対する使用率です。トークン数や、この会話の長さとは別です。</p>
+  <div class="row"><button class="btn plain" id="usage-refresh" type="button" data-i18n>今の状況を確認</button><span class="small" id="usage-status" role="status"></span></div>
   <div id="usage-body"></div>
-  <p class="note usage-explanation">通常は5分ごとに取得します。日時はこの端末の時刻です。取得に失敗した場合は、自動で繰り返さず［今の状況を確認］から再確認できます。</p>
+  <p class="note usage-explanation" data-i18n>通常は5分ごとに取得します。日時はこの端末の時刻です。取得に失敗した場合は、自動で繰り返さず［今の状況を確認］から再確認できます。</p>
 </aside>
-<aside class="drawer maintenance-drawer" id="maintenance-drawer" hidden role="dialog" aria-labelledby="maintenance-title"><div class="dh"><h2 id="maintenance-title">整理と確認</h2><button class="x" id="maintenance-close" type="button" aria-label="整理と検証を閉じる">×</button></div><div id="maintenance-body"></div></aside>
+<aside class="drawer maintenance-drawer" id="maintenance-drawer" hidden role="dialog" aria-labelledby="maintenance-title"><div class="dh"><h2 id="maintenance-title" data-i18n>整理と確認</h2><button class="x" id="maintenance-close" type="button" aria-label="整理と検証を閉じる" data-i18n-attrs="aria-label">×</button></div><div id="maintenance-body"></div></aside>
 <div class="menu" id="menu" hidden role="menu"></div>
-<div class="toast" id="toast" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <script src="project-order.js"></script>
 <script src="chat-scroll.js"></script>
 <script src="mobile.js"></script>
+<script src="navigation.js"></script>
 <script src="model-order.js"></script>
+<script src="local-auth.js"></script>
+<script src="i18n.js"></script>
+<script src="terminal-view.js"></script>
+<script src="native-restart-client.js"></script>
+<script src="web-chat.js"></script>
 <script src="app.js"></script>
 <script src="hierarchy.js"></script>
 <script src="remove.js"></script>

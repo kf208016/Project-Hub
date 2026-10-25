@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Windows Project Hub MCP grant scope",
+  "description": "A process-local capability issue request. Tokens are not persistent settings. Restart revokes grants. Browser credentials are never MCP credentials.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "project",
+    "runId"
+  ],
+  "properties": {
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^(?!\\.\\.?$)[^/\\\\:*?\"<>|\\u0000-\\u001f\\u007f]+(?<![. ])$"
+    },
+    "task": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^(?!\\.\\.?$)[^/\\\\:*?\"<>|\\u0000-\\u001f\\u007f]+(?<![. ])$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+    },
+    "root": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 32768,
+      "pattern": "^[A-Za-z]:[\\\\/]",
+      "description": "Private issuer field: verified task worktree or controller-held direct workspace root, never accepted from browser arguments"
+    },
+    "rootFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Native root object identity: canonical root plus NTFS volume serial/file ID"
+    },
+    "workspaceRun": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}$",
+      "description": "Private issuer field: current controller-held workspace run. Required for direct execution scope; never accepted from browser or MCP arguments and cannot be reconstructed from task metadata."
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 13,
+      "uniqueItems": true,
+      "default": [
+        "hub_list_tasks",
+        "hub_get_task",
+        "hub_get_chat"
+      ],
+      "items": {
+        "enum": [
+          "hub_list_projects",
+          "hub_list_tasks",
+          "hub_get_task",
+          "hub_get_chat",
+          "hub_read_file",
+          "hub_report",
+          "hub_ask_owner",
+          "hub_mark_step",
+          "hub_propose_task",
+          "hub_write_file",
+          "hub_request_command",
+          "hub_get_command_result",
+          "hub_delegate"
+        ]
+      }
+    },
+    "ttlMs": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 3600000,
+      "default": 600000
+    },
+    "maxCalls": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 100
+    },
+    "taskHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Private issuer field: current task completionHash bound to command requests"
+    },
+    "journalRoot": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 32768,
+      "pattern": "^[A-Za-z]:[\\\\/]",
+      "description": "Private issuer field: Hub control journal outside the task root, never accepted from browser/MCP arguments"
+    },
+    "journalRootFingerprint": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Native root object identity: canonical root plus NTFS volume serial/file ID"
+    },
+    "delegationModel": {
+      "type": "string",
+      "pattern": "^(CLI預設|[a-z0-9][a-z0-9._-]{0,99})$",
+      "description": "Explicit model ID or Claude/Grok CLI預設 authorized for one same-task delegation; defaults to Codex for legacy grants. Destination/account usage must be separately approved."
+    },
+    "delegationActor": {
+      "type": "string", "enum": ["codex", "claude", "grok"],
+      "description": "Private controller issuer field only; omitted legacy grants remain Codex. Never accepted from browser/MCP arguments."
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["delegationModel"], "properties": {"delegationModel": {"const": "CLI預設"}}},
+      "then": {"required": ["delegationActor"], "properties": {"delegationActor": {"enum": ["claude", "grok"]}}}
+    },
+    {
+      "if": {"required": ["delegationActor"]},
+      "then": {
+        "required": ["task", "tools", "root", "rootFingerprint", "delegationModel"],
+        "properties": {"tools": {"contains": {"const": "hub_delegate"}}}
+      }
+    },
+    {
+      "if": { "required": ["workspaceRun"] },
+      "then": {
+        "required": ["task", "tools"],
+        "properties": {
+          "tools": {
+            "contains": {
+              "enum": ["hub_read_file", "hub_write_file", "hub_request_command", "hub_get_command_result", "hub_delegate"]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "task"
+        ]
+      },
+      "then": {
+        "properties": {
+          "tools": {
+            "not": {
+              "contains": {
+                "const": "hub_propose_task"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "contains": {
+              "enum": [
+                "hub_read_file",
+                "hub_write_file",
+                "hub_request_command",
+                "hub_get_command_result",
+                "hub_delegate"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "task",
+          "root",
+          "rootFingerprint"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "contains": {
+              "enum": [
+                "hub_request_command",
+                "hub_get_command_result"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "taskHash"
+        ]
+      }
+    },
+    {
+      "dependentRequired": {
+        "journalRoot": [
+          "journalRootFingerprint"
+        ],
+        "journalRootFingerprint": [
+          "journalRoot"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "tools"
+        ],
+        "properties": {
+          "tools": {
+            "contains": {
+              "const": "hub_delegate"
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "task",
+          "root",
+          "rootFingerprint",
+          "delegationModel"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "moduleIssue": {
+      "$ref": "#"
+    },
+    "browserIssue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "confirm",
+        "expectedHash"
+      ],
+      "properties": {
+        "project": {
+          "$ref": "#/properties/project"
+        },
+        "task": {
+          "$ref": "#/properties/task"
+        },
+        "tools": {
+          "$ref": "#/properties/tools"
+        },
+        "confirm": {
+          "const": true
+        },
+        "expectedHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "delegationModel": {
+          "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,99}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "task"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tools": {
+                "not": {
+                  "contains": {
+                    "const": "hub_propose_task"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "tools"
+            ],
+            "properties": {
+              "tools": {
+                "contains": {
+                  "enum": [
+                    "hub_read_file",
+                    "hub_write_file",
+                    "hub_request_command",
+                    "hub_get_command_result",
+                    "hub_delegate"
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "task"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "tools"
+            ],
+            "properties": {
+              "tools": {
+                "contains": {
+                  "const": "hub_delegate"
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "task",
+              "delegationModel"
+            ]
+          }
+        }
+      ]
+    },
+    "browserRevoke": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "confirm"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$"
+        },
+        "confirm": {
+          "const": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+'use strict';
+const fs=require('node:fs'),path=require('node:path'),{randomUUID}=require('node:crypto'),{localPath}=require('./safe-path');
+function read(file,max=1024*1024){localPath(file,{allowMissing:true});try{const st=fs.statSync(file);if(!st.isFile()||st.size>max)throw Error('本機交易記錄大小或型別無效');return JSON.parse(fs.readFileSync(file,'utf8'));}catch(error){if(error.code==='ENOENT')return null;throw error;}}
+function save(file,value,max=1024*1024){localPath(file,{allowMissing:true});const data=JSON.stringify(value,null,2)+'\n';if(Buffer.byteLength(data)>max)throw Error('本機交易記錄超過大小上限');localPath(path.dirname(file),{allowMissing:true});fs.mkdirSync(path.dirname(file),{recursive:true});localPath(path.dirname(file));const temp=file+'.'+randomUUID()+'.tmp';const fd=fs.openSync(temp,'wx');try{fs.writeFileSync(fd,data);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}try{fs.renameSync(temp,file);const out=fs.openSync(file,'r+');try{fs.fsyncSync(out);}finally{fs.closeSync(out);}}catch(error){try{fs.unlinkSync(temp);}catch{}throw error;}}
+module.exports={read,save};

@@ -1,0 +1,7 @@
+{
+  "protocol": 1,
+  "nonce": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "sequence": 1,
+  "op": "hello",
+  "bundleSHA256": "de7caaced18ebc659373ec504ed2a431d105c3d70919cd30351626671d350ea2"
+}

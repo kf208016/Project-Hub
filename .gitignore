@@ -1,4 +1,5 @@
 node_modules/
+hub/.runtime/
 public-release/
 .DS_Store
 *.log
@@ -15,3 +16,5 @@ public-release/
 .ai/work/
 _hub/log*.jsonl
 Inbox/hub/
+__pycache__/
+*.py[cod]
