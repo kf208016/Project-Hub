@@ -51,9 +51,9 @@ test('並べ替え前後でfake CLIが受け取る --model と思考は同一',t
   assert.deepEqual(after,before);assert.equal(after[after.indexOf('--model')+1],'gpt-6.1-sol');assert.ok(after.includes('model_reasoning_effort=xhigh'));
 });
 
-test('初期AIは未設定でSol高、既知担当保持・不正拒否、保存/再読込と表示・順の相互保持', t => {
+test('初期AIは未設定でプラットフォーム既定、既知担当保持・不正拒否、保存/再読込と表示・順の相互保持', t => {
   const { file, view } = fixture(t), catalog = { 'claude-code': ['Opus 5.5'], codex: ['GPT-6.1-Sol'] };
-  assert.deepEqual(view.initial(), { ai: 'codex', model: 'GPT-6.1-Sol', effort: '高' });
+  assert.deepEqual(view.initial(), { ai: 'codex', model: process.platform==='win32'?'CLI預設':'GPT-6.1-Sol', effort: '高' });
   fs.writeFileSync(file, JSON.stringify({ initial: { ai: 'agy', model: 'Gemini', effort: '高' }, future: true }));
   assert.equal(view.initial().ai, 'agy','known deferred actors remain their own saved selection; readiness never replaces them with Codex');
   view.setHidden('codex', 'Sol', true); view.setOrder(mixed, defaults, models);

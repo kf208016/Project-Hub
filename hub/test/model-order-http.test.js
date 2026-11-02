@@ -23,7 +23,7 @@ test('初期AI APIの検証・状態・再読込・相互保持と既存役割�
   const { ModelView } = require('../lib/model-view');
   const initial = native?{ai:'codex',model:'GPT-6.1-Sol',effort:'中'}:{ ai: 'claude', model: 'Opus 5.5', effort: '中' }, file = path.join(root, '_hub/model-view.json');
   const before = await (await fetch(base + '/api/state')).json();
-  assert.deepEqual(before.initialPick, { ai: 'codex', model: 'GPT-6.1-Sol', effort: '高' });
+  assert.deepEqual(before.initialPick, { ai: 'codex', model: native?'CLI預設':'GPT-6.1-Sol', effort: '高' });
   assert.equal((await post('/api/models/initial', initial, {})).status, 403);
   if(native){const snapshot=fs.readFileSync(file);const deferred=await post('/api/models/initial',{ai:'claude',model:'Opus 5.5',effort:'中'});assert.equal(deferred.status,400);assert.deepEqual(fs.readFileSync(file),snapshot);}
   const r = await post('/api/models/initial', { ...initial, model: native?'gpt-6.1-sol':'claude-opus-5-5' });

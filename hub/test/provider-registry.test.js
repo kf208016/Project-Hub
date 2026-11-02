@@ -1,6 +1,21 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const registry=require('../lib/provider-registry');
+
+test('native adapter authority is an unforgeable controller reference and grants only named operations',()=>{
+  let enabled=true;
+  const authority=registry.createNativeAuthority('grok',['chat','delegate'],()=>enabled);
+  const options={platform:'win32',nativeAuthority:authority};
+  assert.equal(registry.assertCapability('grok','chat',options).id,'grok');
+  assert.equal(registry.status('grok',options).runtimeVerificationRequired,true);
+  for(const fake of [{},JSON.parse(JSON.stringify(authority)),{actor:'grok',ready:true}]){
+    assert.throws(()=>registry.assertCapability('grok','chat',{platform:'win32',nativeAuthority:fake}),{code:'PROVIDER_ADAPTER_UNVERIFIED'});
+  }
+  assert.throws(()=>registry.assertCapability('grok','terminal',options),{code:'ACTOR_CAPABILITY_UNAVAILABLE'});
+  assert.throws(()=>registry.assertCapability('claude','chat',options),{code:'WINDOWS_PROVIDER_ISOLATION_UNVERIFIED'});
+  enabled=false;assert.equal(registry.status('grok',options).ready,false);
+  assert.throws(()=>registry.createNativeAuthority('codex',['chat'],()=>true),{code:'INVALID_NATIVE_AUTHORITY'});
+});
 test('Six exact actors preserve the Claude legacy owner alias without fuzzy matching',()=>{
   assert.deepEqual(registry.actorIds,['codex','claude','agy','grok','chatgpt','claude-chat']);
   assert.strictEqual(registry.resolveActor('claude-code'),registry.resolveActor('claude'));

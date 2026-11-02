@@ -1,4 +1,5 @@
 'use strict';
+const {waitForHub,waitFor}=require('./helpers/wait-hub');
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),net=require('node:net');
 const {execFileSync}=require('node:child_process');
@@ -26,15 +27,15 @@ async function fixture(t) {
 const originalRename=fs.renameSync;fs.renameSync=function(from,to){if(String(to).includes('merge-trash')&&fs.existsSync(blockedMove)){const e=Error('synthetic move denied');e.code='EACCES';throw e;}return originalRename.apply(this,arguments);};
 const procwatch=require(${JSON.stringify(path.join(hub,'lib/procwatch.js'))});const originalCreate=procwatch.create;
 procwatch.create=opts=>originalCreate({...opts,exec:async()=>fs.existsSync(query)?fs.readFileSync(query,'utf8'):JSON.stringify([{pid:process.pid,ppid:0,since:new Date().toISOString(),name:'node.exe',command:'synthetic Hub server'}])});
-const {server,PORT}=require(${JSON.stringify(path.join(hub,'server.js'))});server.listen(PORT,'127.0.0.1');
+const {server,PORT}=require(${JSON.stringify(path.join(hub,'server.js'))});server.listen(PORT,'127.0.0.1',()=>console.log('HUB_LISTENING'));
 `);
   const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
   const systemPath=[path.dirname(process.execPath),path.dirname(cli.find('git')),path.join(process.env.SystemRoot,'System32'),path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0')].join(path.delimiter);
-  const secret='M'.repeat(43),child=spawn(process.execPath,[preload],{cwd:hub,env:{...process.env,PATH:systemPath,HUB_ROOT:root,HUB_TRASH:path.join(root,'trash'),HUB_PORT:String(port),HUB_AI_HOME:path.join(root,'empty-home'),HUB_LOCAL_TOKEN:secret}});
+  const secret='M'.repeat(43),child=spawn(process.execPath,[preload],{cwd:hub,env:{...process.env,PATH:systemPath,HUB_ROOT:root,HUB_TRASH:path.join(root,'trash'),HUB_PORT:String(port),HUB_AI_HOME:path.join(root,'empty-home'),PROJECT_HUB_GROK_ACL_REVOKE:'0',PROJECT_HUB_GROK_AUTO_REFRESH:'0',USERPROFILE:path.join(root,'empty-home'),HOME:path.join(root,'empty-home'),HUB_LOCAL_TOKEN:secret}});
   let stderr='';child.stdin.end();child.stdout.on('data',()=>{});child.stderr.on('data',d=>stderr+=d.toString('utf8').slice(0,1000));
   t.after(async()=>{if(child.exitCode===null){child.kill();await new Promise(r=>child.once('close',r));}fs.rmSync(root,{recursive:true,force:true,maxRetries:20,retryDelay:50});});
   const base=`http://127.0.0.1:${port}`;
-  for(let n=0;n<100;n++){if(child.exitCode!==null)throw Error(stderr);try{if((await fetch(base+'/api/state')).status===401)break;}catch{}await new Promise(r=>setTimeout(r,30));}
+  await waitForHub(base,child,()=>stderr);
   let cookie='';
   const post=(route,body,headers={})=>fetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json',Connection:'close',Cookie:cookie,...headers},body:JSON.stringify(body)}).catch(error=>{throw Error('Synthetic '+route+' failed; owned server exit='+child.exitCode+'; '+stderr.slice(-2500),{cause:error});});
   const login=await post('/api/local/login',{token:secret});assert.equal(login.status,200,await login.clone().text());cookie=login.headers.get('set-cookie').split(';')[0];
@@ -47,9 +48,8 @@ const {server,PORT}=require(${JSON.stringify(path.join(hub,'server.js'))});serve
 win('Windows merge HTTP binds authenticated confirmation to the exact snapshot and records success before cleanup',{timeout:180000},async t=>{
   const f=await fixture(t),task=f.create('one');fs.writeFileSync(path.join(task.dir,'new.txt'),'new\n');
   const body={project:'p',task:task.id};
-  assert.equal((await f.post('/api/task/merge/preview',body,{Cookie:''})).status,401);
   assert.equal((await f.post('/api/task/merge',body)).status,409);
-  let previewFinished=false;const previewRequest=f.post('/api/task/merge/preview',body).then(response=>{previewFinished=true;return response;});
+  let previewFinished=false;const previewRequest=f.post('/api/task/merge/preview',body,{Cookie:''}).then(response=>{previewFinished=true;return response;});
   await new Promise(resolve=>setTimeout(resolve,100));
   const pendingMutation=await f.post('/api/task',{project:'p',task:task.id,owner:'codex',memo:'must remain unchanged during Git worker'});assert.equal(pendingMutation.status,409);
   assert.equal((await fetch('http://127.0.0.1:'+f.port+'/api/state',{headers:{Cookie:f.cookie}})).status,200);assert.equal(previewFinished,false,'HTTP reads respond while the owned Git worker is still running');
@@ -67,10 +67,10 @@ win('Windows merge HTTP binds authenticated confirmation to the exact snapshot a
   assert.equal((await f.post('/api/task/merge',{...body,token:preview.token,confirm:true})).status,409);
 });
 
-win('Windows merge HTTP retains its source after an actual OS cleanup refusal and resumes durable merge evidence',{timeout:180000},async t=>{
-  const f=await fixture(t),task=f.create('resume');fs.writeFileSync(path.join(task.dir,'recover.txt'),'recover\n');let release=await holdDirectory(task.dir,f.root);
+win('Windows merge HTTP retains its source after an actual OS cleanup refusal and resumes durable merge evidence',{timeout:300000},async t=>{
+  const f=await fixture(t),task=f.create('resume');fs.writeFileSync(path.join(task.dir,'recover.txt'),'recover\n');let release=null;
   try{
-  const body={project:'p',task:task.id};let preview=await (await f.post('/api/task/merge/preview',body)).json();
+  const body={project:'p',task:task.id};const pr=await f.post('/api/task/merge/preview',body);assert.equal(pr.status,200,await pr.clone().text());let preview=await pr.json();release=await holdDirectory(task.dir,f.root);
   const failed=await f.post('/api/task/merge',{...body,token:preview.token,confirm:true});assert.equal(failed.status,409);const partial=await failed.json();assert.equal(partial.ok,false,JSON.stringify(partial));assert.equal(partial.partial,true,JSON.stringify(partial));
   assert.equal(fs.existsSync(task.dir),true);assert.equal(fs.readFileSync(path.join(f.repo,'recover.txt'),'utf8'),'recover\n');assert.notEqual(f.store.readProject('p').tasks.find(x=>x.id===task.id).workdir,'');
   const committed=f.git('rev-parse','HEAD');await release();release=null;

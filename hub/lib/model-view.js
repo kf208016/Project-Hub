@@ -1,9 +1,9 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path');
 const order = require('../public/model-order');
-const launch = require('./launch'), { EFFORTS } = require('./roles');
+const launch = require('./launch'), { CLI_DEFAULT_LABEL } = launch, { EFFORTS } = require('./roles');
 const registry = require('./provider-registry');
-const INITIAL_PICK = { ai: 'codex', model: 'GPT-6.1-Sol', effort: '高' };
+const INITIAL_PICK = { ai: 'codex', model: process.platform === 'win32' ? CLI_DEFAULT_LABEL : 'GPT-6.1-Sol', effort: '高' };
 const validPhoneKey = key => registry.webIds.some(actor=>key===actor+'|app') || order.valid([key]);
 const validPhoneName = name => typeof name === 'string' && name.length <= 24 && !/[\u0000-\u001f\u007f\u2028\u2029]/.test(name);
 class ModelView {

@@ -1,0 +1,21 @@
+# step 0 baseline (metadata only; no credential contents read) 2026-10-25T05:16:41Z
+## ~/.grok/bin
+agent.exe bytes=176011920 mtime=2026-10-24 21:53:18 sha256=1e03c16cf2bd4626a79d6b1ea1430f88c38e0c8ec75edd283a60de11296ba326
+grok.exe bytes=176011920 mtime=2026-10-24 21:53:18 sha256=1e03c16cf2bd4626a79d6b1ea1430f88c38e0c8ec75edd283a60de11296ba326
+grok.exe.old bytes=151293256 mtime=2026-09-19 01:05:50 sha256=021d8f7f6bdf9db48b6c87e799cd99130a76c463e6e6a3161510839aed016d94
+grove-credential.exe bytes=8020624 mtime=2026-10-24 21:53:20 sha256=772355911d4deee3c3b36439e850c4be6ceb3f7604086f74140f797a3a55e4c6
+grove-fsmonitor.exe bytes=8012432 mtime=2026-10-24 21:53:20 sha256=df4f522f115cf7246d9449cd905ff61e0c2e8c0c1f9939d12326209f22009480
+grove.exe bytes=37146256 mtime=2026-10-24 21:53:21 sha256=aa11dd2e214fef7f49ebe6509a3e8dd88b597344a5fc77857c7bf03ce0d8d7a7
+## ~/.grok/downloads
+grok-1.0.34-windows-x86_64 bytes=151293256 mtime=2026-09-19 01:05:50 sha256=021d8f7f6bdf9db48b6c87e799cd99130a76c463e6e6a3161510839aed016d94
+grok-1.0.70-windows-x86_64 bytes=176011920 mtime=2026-10-24 21:53:18 sha256=1e03c16cf2bd4626a79d6b1ea1430f88c38e0c8ec75edd283a60de11296ba326
+grok-windows-x86_64.exe bytes=110348800 mtime=2026-05-31 19:10:31 sha256=34375f46e539af7e9b204ee544e50b8589b1b5b4794e4154045d98321fa32f61
+## metadata only
+auth.json bytes=1752 mtime=2026-10-25 09:43:17
+auth.json.lock bytes=16 mtime=2026-10-25 09:43:17
+models_cache.json bytes=9617 mtime=2026-10-25 13:16:47
+config.toml bytes=366 mtime=2026-10-24 21:53:23
+active_sessions.json bytes=2 mtime=2026-10-25 10:29:22
+.metadata_version bytes=6 mtime=2026-10-25 13:14:54
+## version.json present: yes
+## grok.exe processes now: 1 (one is the R14 blind-test dispatch)

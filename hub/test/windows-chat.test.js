@@ -20,7 +20,7 @@ winOnly('Windows Codex chat invokes npm package JS directly with sandbox flags',
     ai: 'codex', model: 'GPT-6.1-Sol', effort: '高', text: 'A & B', basePrompt: 'fixture', perm: 'codex',
     env: { PATH: bin + path.delimiter + process.env.PATH } });
   assert.equal(await result.started, true);
-  for (let i = 0; i < 100 && runner.busy('p', 'one'); i++) await new Promise(resolve => setTimeout(resolve, 20));
+  await require('./helpers/wait-hub').waitFor(()=>!runner.busy('p','one'),{deadlineMs:30000});
   assert.equal(runner.busy('p', 'one'), null);
   const response = chat.read(dir, 'one').findLast(row => row.role === 'assistant');
   assert.equal(response.error, '');

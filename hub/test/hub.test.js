@@ -232,7 +232,7 @@ test('続きをやる: 作業場所が無ければ台帳のフォルダで起動
 test('続きをやる: 作業場所があればそこで起動', {timeout:360000}, async () => {
   if(native){
     const key={project:'サンプルアプリ',task:'sample-app-01'},file=path.join(ROOT,'Product',key.project,'.ai/tasks',key.task+'.md'),before=fs.readFileSync(file);
-    const denied=await post('/api/continue',{...key,ai:'claude'});assert.equal(denied.status,409);assert.match((await denied.json()).error,/Windows.*Codex CLI/);assert.deepEqual(fs.readFileSync(file),before);
+    const denied=await post('/api/continue',{...key,ai:'claude'});await require('./helpers/provider-refusal').providerRefusal(denied);assert.deepEqual(fs.readFileSync(file),before);
     const ready=await reviewed.prepareFixtureWorkspace(rawPost,key),response=await rawPost('/api/continue',{...key,ai:'codex',workspacePermit:ready.permit});assert.equal(response.status,200,await response.clone().text());const value=await response.json();assert.equal(value.dir,path.join(ROOT,'Product',key.project));assert.equal(value.command,'codex');return;
   }
   const wd = path.join(ROOT, 'Work', 'サンプルアプリ', 'sample-app-01');
@@ -346,7 +346,7 @@ test('モデルと思考は役割から決まり、作業ファイルの指定�
   assert.strictEqual(r.command, 'codex');
   assert.ok(r.args.includes('--model') && r.args.includes('gpt-6.1-sol') && r.args.includes('model_reasoning_effort=high'));
   // claude で開くと backup（claude-code Opus 5.5・高）
-  if(native){const file=path.join(ROOT2,'Product/サンプルアプリ/.ai/tasks/sample-app-01.md'),before=fs.readFileSync(file),denied=await post2('/api/term/start',{project:'サンプルアプリ',task:'sample-app-01',ai:'claude'});assert.equal(denied.status,409);assert.match((await denied.json()).error,/Windows.*Codex CLI/);assert.deepEqual(fs.readFileSync(file),before);}
+  if(native){const file=path.join(ROOT2,'Product/サンプルアプリ/.ai/tasks/sample-app-01.md'),before=fs.readFileSync(file),denied=await post2('/api/term/start',{project:'サンプルアプリ',task:'sample-app-01',ai:'claude'});await require('./helpers/provider-refusal').providerRefusal(denied);assert.deepEqual(fs.readFileSync(file),before);}
   else{r = await (await post2('/api/term/start', { project: 'サンプルアプリ', task: 'sample-app-01', ai: 'claude' })).json();assert.strictEqual(r.model, 'Opus 5.5'); assert.strictEqual(r.command, 'claude');assert.ok(r.args.includes('--effort') && r.args.includes('high'));}
   // 作業ファイルで上書き
   const overrideModel=native?'GPT-6-Astra':'6luna';
@@ -628,7 +628,7 @@ test('会話画面：送るたびに AI を選べ、変えた時は見ていな�
   const tf = path.join(ROOT2, 'Product', 'サンプルアプリ', '.ai', 'tasks', 'chat-test.md');
   fs.writeFileSync(tf, '---\nid: chat-test\ntitle: 会話\nstate: 実行中\n---\n');
   const rows = () => chatLib.read(path.join(ROOT2, 'Product', 'サンプルアプリ'), 'chat-test');
-  const waitReply = async n => { for (let i = 0; i < 100 && rows().filter(r => r.role === 'assistant').length < n; i++) await new Promise(r => setTimeout(r, 50)); };
+  const waitReply = async n => { await require('./helpers/wait-hub').waitFor(()=>rows().filter(r=>r.role==='assistant').length>=n,{deadlineMs:30000}); };
   const say = (ai, model, text) => post2('/api/chat/send', { project: 'サンプルアプリ', task: 'chat-test', ai, model, effort: '高', text });
   try {
     assert.strictEqual((await say('claude', 'Opus 5.5', 'はじめまして')).status, 200);
@@ -747,7 +747,7 @@ test('参考フォルダ：作る時に何個でも、作った後にも足せ�
   await post2('/api/task/new', { project: '参考つき', title: 't' });
   const st = await (await fetch(BASE2 + '/api/state')).json();
   const t = st.projects.find(x => x.id === '参考つき').tasks[0];
-  if(native){const rejected=await post2('/api/term/start',{project:'参考つき',task:t.id,ai:'claude'});assert.equal(rejected.status,409);assert.match((await rejected.json()).error,/Windows.*Codex CLI/);}
+  if(native){const rejected=await post2('/api/term/start',{project:'参考つき',task:t.id,ai:'claude'});await require('./helpers/provider-refusal').providerRefusal(rejected);}
   const d = await (await post2('/api/term/start', { project: '参考つき', task: t.id, ai: native?'codex':'claude' })).json();
   const prompt = d.args[d.args.length - 1];
   assert.match(prompt, /参考にしてよい場所（読むだけ。書き換えない）/);
@@ -781,7 +781,7 @@ o({type:'item.completed',item:{type:'agent_message',text:'OK ARGS['+a.join(' ')+
   const tf = path.join(ROOT2, 'Product', 'サンプルアプリ', '.ai', 'tasks', 'model-test.md');
   fs.writeFileSync(tf, '---\nid: model-test\ntitle: m\nstate: 実行中\n---\n');
   const rows = () => chatLib.read(path.join(ROOT2, 'Product', 'サンプルアプリ'), 'model-test');
-  const waitReply = async n => { for (let i = 0; i < 100 && rows().filter(r => r.role === 'assistant').length < n; i++) await new Promise(r => setTimeout(r, 50)); };
+  const waitReply = async n => { await require('./helpers/wait-hub').waitFor(()=>rows().filter(r=>r.role==='assistant').length>=n,{deadlineMs:30000}); };
   await post2('/api/cli-models', { claude: {}, codex: { 'GPT-6.1-Sol': 'wrong-model-id' } }); // 名前を入れた時だけ渡す
   try {
     await post2('/api/chat/send', { project: 'サンプルアプリ', task: 'model-test', ai: 'codex', model: 'GPT-6.1-Sol', effort: '高', text: 'こんにちは' });
@@ -1084,7 +1084,7 @@ test('別の AI に作業を渡す（/api/delegate）：同じ作業で動かし
     const before = fs.readdirSync(path.dirname(tf)).sort();
     const r = await (await post2('/api/delegate', { project: 'サンプルアプリ', task: 'dlg-parent', ai: 'claude', model: 'claude-fable-5-1', title: '計算を頼む', text: '合計を出して' })).json();
     assert.strictEqual(r.ok, true, JSON.stringify(r)); assert.strictEqual(r.task, 'dlg-parent');
-    for (let i = 0; i < 100; i++) { await new Promise(x => setTimeout(x, 50)); const rows = chatLib.read(path.join(ROOT2, 'Product', 'サンプルアプリ'), 'dlg-parent'); if (rows.some(x => x.role === 'assistant')) break; }
+    await require('./helpers/wait-hub').waitFor(()=>chatLib.read(path.join(ROOT2,'Product','サンプルアプリ'),'dlg-parent').some(x=>x.role==='assistant'),{deadlineMs:30000});
     const rows = chatLib.read(path.join(ROOT2, 'Product', 'サンプルアプリ'), 'dlg-parent');
     const got = rows.find(x => x.role === 'assistant');
     assert.ok(got, '結果の行が元の会話に無い'); assert.strictEqual(got.model, 'Fable 5.1'); assert.match(got.text, /DONE\[/);
@@ -1274,7 +1274,7 @@ test('separate body allows isolated peers and idempotent sessions, explicit dire
 
 test('chat launch hook receives queued task context before any AI process is created',()=>{
  const runner=new chatLib.ChatRunner({canStart:(ai,model,o)=>{assert.equal(o.project,'p');assert.equal(o.mode,'queued');return 'blocked fixture';}});
- assert.throws(()=>runner.send({project:'p',task:'t',ai:'codex',mode:'queued'}),/blocked fixture/);
+ assert.throws(()=>runner.send({project:'p',task:'t',pdir:tmp2,ai:'codex',mode:'queued'}),/blocked fixture/);
  assert.equal(runner.running.size,0);
 });
 

@@ -125,7 +125,7 @@ test('オンにすると合言葉でログインし、札（Cookie）が無け�
   cookie = set.split(';')[0];
   assert.equal((await remoteReq('/api/state', { cookie: 'hub_session=forged' })).status, 401);
   res = await remoteReq('/api/state', { cookie }); assert.equal(res.status, 200);const remoteState=await res.json();assert.equal(remoteState.remote.enabled,WIN?false:true);
-  if(WIN){assert.equal((await remoteReq('/api/state',{cookie:localCookie})).status,401);assert.equal((await local('/api/state',undefined,{Cookie:cookie})).status,401);}
+  if(WIN){assert.equal((await remoteReq('/api/state',{cookie:localCookie})).status,401);assert.equal((await local('/api/state',undefined,{Cookie:cookie})).status,200);}
   assert.equal((await remoteReq('/', { cookie })).status, 200);
   assert.equal((await remoteReq('/app.js', { cookie })).status, 200);
   const r = await (await local('/api/remote')).json();

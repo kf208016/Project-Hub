@@ -76,15 +76,36 @@ function trustedGit() {
   }
   fail('找不到標準安裝位置的 Git；不會透過 PATH 執行未知 shim');
 }
+function parserContents(dir) {
+  checked(dir);const names=fs.readdirSync(dir).sort();
+  if(JSON.stringify(names)!==JSON.stringify(['HEAD','config','empty.config','objects','owner.json','refs']))fail('隔離解析器內容已改變');
+  for(const name of names)checked(path.join(dir,name));
+  if(fs.readdirSync(path.join(dir,'objects')).length||JSON.stringify(fs.readdirSync(path.join(dir,'refs')))!=='["heads"]')fail('隔離解析器內容已改變');
+  checked(path.join(dir,'refs/heads'));if(fs.readdirSync(path.join(dir,'refs/heads')).length)fail('隔離解析器內容已改變');
+}
+function removeParser(dir) {
+  parserContents(dir);
+  for(const name of ['HEAD','config','empty.config','owner.json'])fs.unlinkSync(path.join(dir,name));
+  for(const name of ['refs/heads','refs','objects'])fs.rmdirSync(path.join(dir,name));
+  fs.rmdirSync(dir);
+}
 function isolatedParserRoot() {
-  if(parserRoot)return checked(parserRoot);
+  if(parserRoot){parserContents(parserRoot);return checked(parserRoot);}
   const runtime=checked(path.join(__dirname,'../.runtime'),{missing:true});fs.mkdirSync(runtime,{recursive:true});
-  const dir=path.join(runtime,'git-metadata-parser-'+randomUUID());fs.mkdirSync(dir);
+  // Per-process parser: no metadata result is shared or retained across Git calls.
+  // A reused PID conservatively retains the old directory; never kill its owner.
+  for(const name of fs.readdirSync(runtime))if(/^gmp-[1-9][0-9]*-[a-f0-9]{8}$/.test(name))try{
+    const dir=path.join(runtime,name),owner=JSON.parse(textLocal(path.join(dir,'owner.json'),{missing:false}));
+    if(owner.pid!==Number(name.split('-')[1]))continue;
+    try{process.kill(owner.pid,0);}catch(error){if(error.code==='ESRCH')removeParser(dir);}
+  }catch{ /* Unknown or altered directories are retained, never swept. */ }
+  const dir=path.join(runtime,'gmp-'+process.pid+'-'+randomUUID().slice(0,8));fs.mkdirSync(dir);
   fs.mkdirSync(path.join(dir,'objects'));fs.mkdirSync(path.join(dir,'refs'));fs.mkdirSync(path.join(dir,'refs','heads'));
   fs.writeFileSync(path.join(dir,'HEAD'),'ref: refs/heads/main\n',{flag:'wx'});
   fs.writeFileSync(path.join(dir,'config'),'[core]\n\tbare = true\n',{flag:'wx'});
   fs.writeFileSync(path.join(dir,'empty.config'),'',{flag:'wx'});
-  parserRoot=checked(dir);return parserRoot;
+  fs.writeFileSync(path.join(dir,'owner.json'),JSON.stringify({pid:process.pid}),{flag:'wx'});
+  parserRoot=checked(dir);process.once('exit',()=>{try{removeParser(dir);}catch{}});return parserRoot;
 }
 function parseConfig(gitExe,value) {
   const dir=isolatedParserRoot(),empty=path.join(dir,'empty.config');

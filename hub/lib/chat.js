@@ -1,10 +1,12 @@
 'use strict';
+const {MAX_WALL_MS}=require('./native-turn-limits');
 // 会話画面（Goose のような形）：1本の会話で、送るたびに答える AI とモデルを選べる
 // - Claude Code は `claude -p --output-format stream-json`、Codex は `codex exec --json` を1回ずつ動かす
 // - 同じ AI の続きは、その AI 自身の会話を再開（resume）する
 // - 別の AI に変えた時は、その AI がまだ見ていない会話（人と AI の文字だけ）を引き継ぎとして一緒に渡す
 // 会話は <台帳>/.ai/chat/<作業ID>.jsonl に1行ずつ、AI ごとの再開用の番号は <作業ID>.json、待っている指示は <作業ID>.queue.json に残す
 const fs = require('fs');
+const { replaceSync } = require('./atomic-replace');
 const path = require('path');
 const { spawn } = require('./managed-process');
 const cli = require('./cli-platform');
@@ -14,18 +16,68 @@ const providers = require('./provider-registry');
 const instructions = require('./instructions');
 const taskWrites = require('./task-write-lock');
 const { snapshot, buildHandoffCard } = require('./handoff-card');
+const stateReader = require('./chat-state-reader');
+const sessionBinding = require('./provider-session-binding');
+const { canonical } = require('./providers/claude-protocol');
+const { messageFor, messageOrFallback, toolDeclinedText } = require('./native-provider-messages');
+// These capabilities belong to the controller instance. Request JSON and turn
+// metadata cannot construct or replace an admitted endpoint factory.
+const nativeFactories = new WeakMap(), nativeTurns = new WeakMap();
+const plain = x => x !== null && typeof x === 'object' && !Array.isArray(x) && [Object.prototype, null].includes(Object.getPrototypeOf(x));
+const nativeTarget = ai => process.platform === 'win32' && ['claude', 'grok'].includes(ai);
+const nativeError = code => Object.assign(Error(`原生 CLI 的執行設定、session 或工作區綁定未通過；未送出提示詞。（代碼：${code}）`), {code, status:409, notStarted:true});
+const sameDir = (a,b) => typeof a==='string' && typeof b==='string' && path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase();
+
+function configureNative(runner, supplied) {
+  const handlers=new Map();
+  if(supplied!==undefined){
+    if(!plain(supplied)||Object.keys(supplied).some(ai=>!['claude','grok'].includes(ai)))throw nativeError('NATIVE_RUNTIME_INVALID');
+    for(const [ai,handler] of Object.entries(supplied)){
+      if(!plain(handler)||typeof handler.prepare!=='function'||typeof handler.openEndpoint!=='function')throw nativeError('NATIVE_RUNTIME_INVALID');
+      if(handler.onApprovals!==undefined&&typeof handler.onApprovals!=='function')throw nativeError('NATIVE_RUNTIME_INVALID');
+      handlers.set(ai,Object.freeze({prepare:handler.prepare.bind(handler),openEndpoint:handler.openEndpoint.bind(handler),authority:handler.authority,
+        ...(handler.onApprovals?{onApprovals:handler.onApprovals.bind(handler)}:{})}));
+    }
+  }
+  nativeFactories.set(runner,handlers);
+}
+
+function prepareNative(runner,o,meta) {
+  const handler=nativeFactories.get(runner)?.get(o.ai),pin=o.nativeRootPin;
+  if(!handler)throw nativeError('NATIVE_RUNTIME_REQUIRED');
+  if(!pin||!sameDir(pin.root,o.dir)||!/^[0-9a-f]{64}$/.test(pin.rootFingerprint||''))throw nativeError('NATIVE_ROOT_PIN_REQUIRED');
+  let plan;
+  try{
+    const raw=handler.prepare(Object.freeze({actor:o.ai,project:o.project,task:o.task,dir:o.dir,model:o.model,effort:o.effort,rootFingerprint:pin.rootFingerprint}));
+    if(raw&&typeof raw.then==='function'){Promise.resolve(raw).catch(()=>{});throw nativeError('NATIVE_RUNTIME_INVALID');}
+    const encoded=canonical(raw);if(Buffer.byteLength(encoded)>65536)throw nativeError('NATIVE_RUNTIME_INVALID');
+    plan=JSON.parse(encoded);
+  }catch{throw nativeError('NATIVE_RUNTIME_INVALID');}
+  const required=['scope','modelFlag','effortFlag',o.ai==='claude'?'validatedMcpConfig':'validatedMcpServers'];
+  const allowed=[...required,...(o.ai==='grok'?['validatedAgentProfile']:[]),'maxWallMs','runId'];
+  if(!plain(plan)||required.some(k=>!Object.hasOwn(plan,k))||Object.keys(plan).some(k=>!allowed.includes(k))||
+     typeof plan.modelFlag!=='string'||!(['claude','grok'].includes(o.ai)&&o.model===launch.CLI_DEFAULT_LABEL&&plan.modelFlag===''||/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(plan.modelFlag))||
+     !['minimal','low','medium','high','xhigh','max','ultra'].includes(plan.effortFlag))throw nativeError('NATIVE_RUNTIME_INVALID');
+  if(!plain(plan.scope)||plan.scope.actor!==o.ai||plan.scope.project!==o.project||plan.scope.task!==o.task||plan.scope.rootFingerprint!==pin.rootFingerprint)throw nativeError('NATIVE_SCOPE_MISMATCH');
+  if(o.images!==undefined&&(!Array.isArray(o.images)||o.images.length))throw nativeError('NATIVE_IMAGES_UNVERIFIED');
+  if(plan.maxWallMs!==undefined&&(!Number.isSafeInteger(plan.maxWallMs)||plan.maxWallMs<1||plan.maxWallMs>MAX_WALL_MS))throw nativeError('NATIVE_RUNTIME_INVALID');
+  if(plan.runId!==undefined&&!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(plan.runId))throw nativeError('NATIVE_RUNTIME_INVALID');
+  if(o.ai==='claude'&&(!plain(plan.validatedMcpConfig)||!plain(plan.validatedMcpConfig.mcpServers))||o.ai==='grok'&&!Array.isArray(plan.validatedMcpServers))throw nativeError('NATIVE_RUNTIME_INVALID');
+  if(Object.hasOwn(plan,'validatedAgentProfile')&&!plain(plan.validatedAgentProfile))throw nativeError('NATIVE_RUNTIME_INVALID');
+  let sessionCode;
+  try{sessionBinding.resolve(meta,plan.scope);}catch(e){if(['SESSION_SCOPE_CHANGED','SESSION_BINDING_REQUIRED'].includes(e.code))sessionCode=e.code;else throw nativeError(/^SESSION_[A-Z_]+$/.test(e.code)?e.code:'NATIVE_RUNTIME_INVALID');}
+  if(typeof o.requiredModel==='string'&&o.requiredModel!==plan.modelFlag)throw nativeError('NATIVE_MODEL_MISMATCH');
+  return {handler,plan,sessionCode};
+}
 
 const LIMIT = 60000; // 引き継ぎの文字数。モデル全体のトークン上限とは別。
 const HANDOFF_LIMIT = 12000;
 const LABEL = launch.AI_LABEL;
 
-const files = (pdir, task) => ({ log: path.join(pdir, '.ai', 'chat', `${task}.jsonl`), meta: path.join(pdir, '.ai', 'chat', `${task}.json`), queue: path.join(pdir, '.ai', 'chat', `${task}.queue.json`) });
+const {files,metaTemp,queueTemp}=require('./chat-files');
 
 function read(pdir, task) {
-  try {
-    return fs.readFileSync(files(pdir, task).log, 'utf8').split('\n').filter(Boolean)
-      .map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
-  } catch (e) { return []; }
+  return stateReader.readHistory(files(pdir, task).log);
 }
 function append(pdir, task, row) {
   const f = files(pdir, task).log;
@@ -36,13 +88,23 @@ function append(pdir, task, row) {
   return r;
 }
 function readMeta(pdir, task) {
-  try { return JSON.parse(fs.readFileSync(files(pdir, task).meta, 'utf8')); } catch (e) { return { sessions: {}, models: {} }; }
+  return stateReader.readMeta(files(pdir, task).meta);
 }
 function writeMeta(pdir, task, meta) {
   const f = files(pdir, task).meta;
   taskWrites.assertPathWritable(f);
-  fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, JSON.stringify(meta, null, 2));
+  const tmp=metaTemp(f);let fd,created=false;
+  try{
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fd=fs.openSync(tmp,'wx',0o600);created=true;
+    fs.writeFileSync(fd,JSON.stringify(meta,null,2));fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;
+    replaceSync(tmp,f,{delays:[10,20,40,80,150]});created=false;
+  }catch{
+    throw Object.assign(Error('對話 session 資料未能完整保存；保留原檔。'),{code:'CHAT_META_WRITE_FAILED',status:503,notStarted:true});
+  }finally{
+    if(fd!==undefined)try{fs.closeSync(fd);}catch{}
+    if(created)try{fs.unlinkSync(tmp);}catch{}
+  }
 }
 
 const who = r => (r.role === 'user' ? '人' : `${LABEL[r.ai] || r.ai}${r.model ? `（${r.model}）` : ''}`);
@@ -95,12 +157,15 @@ function parseAsk(text) {
 }
 
 // 1回分の起動のしかたを決める。rows は今回の依頼を足す前の会話
-function buildTurn({ ai, model, effort, meta, rows, text, basePrompt, policy, perm, noEffort, images = [], limitSwitch, task }) {
+function buildTurn({ ai, model, effort, meta, rows, text, basePrompt, policy, perm, noEffort, images = [], limitSwitch, task, nativePlan }) {
   ai = providers.cliActor(ai).id;
-  if (!['codex', 'claude', 'agy'].includes(ai)) throw Object.assign(new Error('此 CLI 的 adapter 尚未接入回合規劃；未啟動'), { code: 'PROVIDER_ADAPTER_UNVERIFIED', status: 409, notStarted: true });
-  const sid = meta.sessions && meta.sessions[ai];
+  const native=nativePlan!==undefined;
+  if(native&&(!['claude','grok'].includes(ai)||!plain(nativePlan)||nativePlan.scope?.actor!==ai))throw nativeError('NATIVE_RUNTIME_INVALID');
+  if (!['codex', 'claude', 'agy'].includes(ai)&&!native) throw Object.assign(new Error('此 CLI 的 adapter 尚未接入回合規劃；未啟動'), { code: 'PROVIDER_ADAPTER_UNVERIFIED', status: 409, notStarted: true });
+  const bound=native?sessionBinding.resolve(meta,nativePlan.scope):null;
+  const sid = native?bound.sessionId:meta.sessions && meta.sessions[ai];
   // Codex はモデルを変えたら新しい会話にする（再開の時にモデルを変えられるか確かでないため）
-  const resume = Boolean(sid) && (ai === 'claude' || (meta.models || {})[ai] === model);
+  const resume = native?bound.resume:Boolean(sid) && (ai === 'claude' || (meta.models || {})[ai] === model);
   let unseen = rows;
   if (resume) {
     let last = -1;
@@ -111,12 +176,13 @@ function buildTurn({ ai, model, effort, meta, rows, text, basePrompt, policy, pe
   // 同一セッションの固定部分は版を照合して短縮し、変わる情報は毎回つける。
   const selected = instructions.select(basePrompt, { meta, ai, sid, resume, restore: Boolean(rows.findLast(r => r.role === 'assistant')?.error) });
   const prefix = selected.rules ? selected.prefix : resume ? policy : basePrompt;
-  const m = launch.flagFor(ai, model);
+  const m = native?nativePlan.modelFlag:launch.flagFor(ai, model);
   const prompt = [prefix, launch.startupInfo(ai, model, m) + (limitSwitch ? '（Fable の利用上限による自動の引き継ぎ）' : ''), String(prefix || '').includes(launch.CONTEXT_RULE) ? '' : launch.CONTEXT_RULE, ASK_RULE, ctx, `# 今回の依頼\n${text}`].filter(Boolean).join('\n\n');
-  const base = (perm || launch.DEFAULT_CMD[ai]).trim().split(/\s+/).filter(Boolean);
-  const e = noEffort ? '' : effort && launch.EFFORT_FLAG[ai][effort];
+  const base = native?[ai]:(perm || launch.DEFAULT_CMD[ai]).trim().split(/\s+/).filter(Boolean);
+  const e = native?nativePlan.effortFlag:noEffort ? '' : effort && launch.EFFORT_FLAG[ai][effort];
   let args;
-  if (ai === 'agy') {
+  if(native){args=[];}
+  else if (ai === 'agy') {
     if (m !== launch.AGY_MODEL.id) throw new Error('Agy で承認されているモデルは Gemini 3.1 Pro (High) だけです');
     args = ['--dangerously-skip-permissions', '--output-format', 'stream-json', '--model', m, '--print=' + prompt];
     if (resume) args.push('--conversation', sid);
@@ -135,7 +201,7 @@ function buildTurn({ ai, model, effort, meta, rows, text, basePrompt, policy, pe
     for (const image of images) args.push('-i', image);
     args.push('-'); // 依頼は標準入力から渡す（長い引き継ぎでも入るように）
   }
-  return { command: base[0], args, stdin: ai === 'agy' ? '' : prompt, resume, sessionId: resume ? sid : '', images, modelFlag: m, effortFlag: e, rules: selected.rules, fixed: selected.fixed, shortRules: selected.short };
+  return { command: base[0], args, stdin: ai === 'agy' ? '' : prompt, resume, sessionId: resume ? sid : '', images, modelFlag: m, effortFlag: e, rules: selected.rules, fixed: selected.fixed, shortRules: selected.short,...(native?{native:true}:{}) };
 }
 
 // 道具の使い方を1行にする
@@ -156,6 +222,10 @@ const USAGE_LIMIT = /^\s*You've reached your [^\r\n]{1,40} limit\b/i;
 function parse(ai, o) {
   const ev = [];
   if (!o || typeof o !== 'object') return ev;
+  if (o.type==='hub.turn_stopped_after_decline') return !Array.isArray(o)&&
+    [Object.prototype,null].includes(Object.getPrototypeOf(o))&&Reflect.ownKeys(o).length===1&&Object.hasOwn(o,'type')
+    ? [{kind:'notice',code:'GROK_STOPPED_AFTER_DECLINE',text:messageFor('GROK_STOPPED_AFTER_DECLINE')}] : [];
+  if (o.type==='hub.tool_declined'&&typeof o.title==='string'&&['declined','expired','cancelled'].includes(o.reason)) return [{kind:'notice',code:'NATIVE_TOOL_DECLINED',text:toolDeclinedText(o.reason,o.title)}];
   if (ai === 'agy') {
     if (o.event === 'init') {
       if (o.init?.model !== launch.AGY_MODEL.id) return [{ kind: 'done', error: 'Agy の応答モデルが承認された Gemini 3.1 Pro (High) と一致しないため停止しました', abort: true }];
@@ -193,6 +263,7 @@ function parse(ai, o) {
     return ev;
   }
   // Codex（新しい形）
+  if (o.type === 'hub.agent_delta' && typeof o.id === 'string' && typeof o.text === 'string') ev.push({kind:'textDelta',id:o.id,text:o.text});
   if (o.type === 'hub.agent_snapshot' && typeof o.id === 'string' && typeof o.text === 'string') ev.push({kind:'textSnapshot',id:o.id,text:o.text});
   if (o.type === 'thread.started' && o.thread_id) ev.push({ kind: 'session', id: o.thread_id });
   if (o.type === 'item.completed' && o.item) {
@@ -203,7 +274,7 @@ function parse(ai, o) {
     else if (it.type === 'error' && it.message && !NOISE.test(it.message)) ev.push({ kind: 'tool', text: `注意：${it.message}` });
   }
   if (o.type === 'turn.completed') ev.push({ kind: 'done', error: '', usage: inputUsage('codex', o.usage) });
-  if (o.type === 'turn.failed' || o.type === 'error') ev.push({ kind: 'done', error: String((o.error && o.error.message) || o.message || 'エラー') });
+  if (o.type === 'turn.failed' || o.type === 'error') { const text=String((o.error && o.error.message) || o.message || 'エラー');ev.push({ kind: 'done', error: messageOrFallback(text)||text,...(/^[A-Z][A-Z0-9_]{2,63}$/.test(text)?{code:text}:{}) }); }
   // Codex（古い形）
   const m = o.msg;
   if (m && typeof m === 'object') {
@@ -226,7 +297,7 @@ function inputUsage(ai, usage) {
 // 実行中の会話（作業ごとに1つまで）
 class ChatRunner {
   // dirOf: プロジェクトID → 台帳の場所（待っている指示を保存して、再起動しても残すため）
-  constructor(opts) { this.running = new Map(); this.watchers = new Map(); this.queues = new Map(); this.base = new Map(); this.stops = new Map(); this.dirOf = (opts && opts.dirOf) || null; this.canStart = (opts && opts.canStart) || null; this.refreshQueued = (opts && opts.refreshQueued) || null; this.limitBackup = (opts && opts.limitBackup) || null; this.limitPreflight = opts?.limitPreflight || null; this.beforeQueued = opts?.beforeQueued || null; this.onLimit = opts?.onLimit || null; this.onFableSuccess = opts?.onFableSuccess || null; this.delegates = opts?.delegates; this.permFor = opts?.permFor; }
+  constructor(opts) { configureNative(this,opts?.nativeProviders);this.running = new Map(); this.watchers = new Map(); this.queues = new Map(); this.base = new Map(); this.stops = new Map(); this.dirOf = (opts && opts.dirOf) || null; this.canStart = (opts && opts.canStart) || null; this.refreshQueued = (opts && opts.refreshQueued) || null; this.limitBackup = (opts && opts.limitBackup) || null; this.limitPreflight = opts?.limitPreflight || null; this.beforeQueued = opts?.beforeQueued || null; this.onLimit = opts?.onLimit || null; this.onFableSuccess = opts?.onFableSuccess || null; this.delegates = opts?.delegates; this.permFor = opts?.permFor; this.nativeAuthRetry = opts?.nativeAuthRetry; this.nativeAuthRetryAvailable=opts?.nativeAuthRetryAvailable; }
   key(p, t) { return `${p}\u0000${t}`; }
   busy(p, t) { return this.running.get(this.key(p, t)) || null; }
   watch(p, t, fn) {
@@ -297,12 +368,20 @@ class ChatRunner {
         text: o.limitSwitch.original || o.shown || o.text, shown: o.limitSwitch.original || o.shown || o.text, limitSwitch: undefined };
     }
     ({ ai, model } = o);
-    require('./provider-registry').assertCapability(ai,'chat');
+    const actor=providers.resolveActor(ai).id;
+    ai=providers.assertCapability(actor,'chat',{nativeAuthority:nativeFactories.get(this)?.get(actor)?.authority}).id;o={...o,ai};
     taskWrites.assertPathWritable(pdir);
     const original = o.shown || o.text;
-    const repeated = o.request && read(pdir, task).findLast(r => r.role === 'user' && r.request === o.request &&
-      (r.text === original || r.limitSwitch?.original === original));
-    const completed = repeated && read(pdir, task).findLast(r => r.role === 'assistant' && (r.request === o.request || r.request === `limit-${o.request}`) && !r.error);
+    const acceptedRows = o.request ? read(pdir, task) : [];
+    const acceptedIndex = o.request ? acceptedRows.findLastIndex(r => r.role === 'user' && r.request === o.request) : -1;
+    const repeated = acceptedIndex >= 0 ? acceptedRows[acceptedIndex] : null;
+    if (repeated && repeated.text !== original && repeated.limitSwitch?.original !== original) {
+      throw Object.assign(Error('同一 request 識別已用於不同指示；工作尚未重新啟動。'),
+        { code: 'CHAT_REQUEST_CONFLICT', status: 409, notStarted: true });
+    }
+    const lastReply = repeated && acceptedRows.slice(acceptedIndex + 1).findLast(r =>
+      r.role === 'assistant' && (r.request === o.request || r.request === `limit-${o.request}`));
+    const completed = lastReply && !lastReply.error ? lastReply : null;
     if (completed) {
       const ai = completed.ai || repeated.to, model = completed.model || repeated.model;
       const completedUser = read(pdir, task).findLast(r => r.role === 'user' && r.request === completed.request);
@@ -310,15 +389,22 @@ class ChatRunner {
         limitSwitch: ai === 'codex' && launch.flagFor(ai, model) === 'gpt-6-astra' ? completedUser?.limitSwitch : undefined,
         resume: false, started: Promise.resolve(true) };
     }
+    if (repeated) {
+      // A crashed/failed endpoint may already have performed tools. Reconnects
+      // cannot safely replay that accepted instruction; a new owner request is
+      // required to continue, preserving the existing native session/history.
+      throw Object.assign(Error('此 request 已接受，執行結果尚未確認或已中斷；保留原對話，請以新的指示續接。'),
+        { code: 'CHAT_REQUEST_ALREADY_ACCEPTED', status: 409, notStarted: true });
+    }
     const modelFlag = launch.flagFor(ai, model);
-    if (o.requireModel && !modelFlag) throw new Error(`指定モデル「${model}」の CLI 名が使えないため、委任を開始できません。モデル指定なしでは起動しません`);
-    if (o.requiredModel && o.requiredModel !== modelFlag) throw new Error(`指定モデル「${model}」の CLI 名が依頼時から変更されたため、委任を開始できません。別のモデルへは切り替えません`);
+    if (!nativeTarget(ai)&&o.requireModel && !modelFlag && !(ai==='codex'&&model===launch.CLI_DEFAULT_LABEL)) throw new Error(`指定モデル「${model}」の CLI 名が使えないため、委任を開始できません。モデル指定なしでは起動しません`);
+    if (!nativeTarget(ai)&&o.requiredModel && o.requiredModel !== modelFlag) throw new Error(`指定モデル「${model}」の CLI 名が依頼時から変更されたため、委任を開始できません。別のモデルへは切り替えません`);
     const unavailable = this.canStart && this.canStart(ai, model, o);
     if (unavailable) throw new Error(unavailable);
     // 自動の順番待ちは前の番の prompt を引き継ぐため、起動前に表示情報を更新する。
     if (o.mode === 'queued' && this.refreshQueued) o = { ...o, ...this.refreshQueued(o) };
     let preflight = null;
-    if (ai === 'claude' && modelFlag === 'claude-fable-5-1' && !o.limitSwitch && this.limitBackup && this.limitPreflight) {
+    if (!nativeTarget(ai)&&ai === 'claude' && modelFlag === 'claude-fable-5-1' && !o.limitSwitch && this.limitBackup && this.limitPreflight) {
       const backup = this.limitBackup(o);
       const evidence = backup && this.limitPreflight(o);
       if (evidence && backup.ai === 'codex' && backup.requiredModel === 'gpt-6-astra') {
@@ -338,8 +424,18 @@ class ChatRunner {
     ({ ai, model } = o);
     const { effort, text } = o;
     const rows = read(pdir, task);
-    const meta = readMeta(pdir, task);
-    const turn = buildTurn({ ...o, meta, rows });
+    let meta = readMeta(pdir, task);
+    const admitted=nativeTarget(ai)?prepareNative(this,o,meta):null;
+    let freshSession;
+    if(admitted?.sessionCode){
+      const code=admitted.sessionCode;
+      meta=sessionBinding.retire(meta,ai,{code,at:new Date().toISOString()});writeMeta(pdir,task,meta);
+      if(sessionBinding.resolve(meta,admitted.plan.scope).resume)throw nativeError('SESSION_REPLACEMENT_REQUIRED');
+      freshSession={code};
+      this.emit(project,task,{type:'row',row:append(pdir,task,{role:'event',ai,code,freshSession:true,text:messageFor(code)})});
+    }
+    const turn = buildTurn({ ...o, meta, rows,nativePlan:admitted?.plan });
+    if(admitted)nativeTurns.set(turn,{...admitted,runId:admitted.plan.runId||randomUUID(),project,task,dir:o.dir});
     this.base.set(this.key(project, task), o); // 追加の指示を送る時に使う
     const existing = repeated || o.request && rows.findLast(r => r.role === 'user' && r.request === o.request && r.text === (o.shown || text));
     const userRow = existing || append(pdir, task, { role: 'user', text: o.shown || text, to: ai, model, effort, turn: randomUUID(), startedAt: new Date().toISOString(), ...snapshot(o.dir), ...(o.limitSwitch ? { limitSwitch: o.limitSwitch, handoff: o.text } : {}), ...(o.request ? { request: o.request } : {}), ...(o.mode ? { mode: o.mode } : {}) });
@@ -349,20 +445,42 @@ class ChatRunner {
     }
     o = { ...o, userRow };
     const running = this.run(o, turn, meta, rows);
-    return { userRow, ai, model, effort, limitSwitch: o.limitSwitch, resume: turn.resume, started: running.startedP };
+    return { userRow, ai, model, effort, limitSwitch: o.limitSwitch, resume: turn.resume, started: running.startedP,...(freshSession?{freshSession}:{}) };
   }
 
   run(o, turn, meta, rows) {
     const { project, task, pdir, dir, ai, model, effort, env, onEnd } = o;
     const childEnv = launch.childEnv(ai, { ...process.env, ...(env || {}) });
-    let child;
-    if (process.platform === 'win32' && ai === 'codex') {
+    let child,boundSession=null,nativeOwner=null;
+    if(turn.native){
+      const admitted=nativeTurns.get(turn);nativeTurns.delete(turn);
+      if(!admitted||admitted.project!==project||admitted.task!==task||!sameDir(admitted.dir,dir))throw nativeError('NATIVE_RUNTIME_REQUIRED');
+      const {plan,handler,runId}=admitted;
+      nativeOwner={handler,context:Object.freeze({actor:ai,project,task,runId,dir,modelFlag:plan.modelFlag})};
+      child=require(ai==='claude'?'./claude-native-bridge':'./grok-native-bridge').start({
+        project,task,runId,cwd:dir,model:turn.modelFlag,effort:turn.effortFlag,resume:turn.resume,
+        sessionId:turn.resume?turn.sessionId:ai==='claude'?randomUUID():null,
+        ...(ai==='claude'?{validatedMcpConfig:plan.validatedMcpConfig}:{validatedMcpServers:plan.validatedMcpServers,...(plan.validatedAgentProfile?{validatedAgentProfile:plan.validatedAgentProfile}:{})}),
+        ...(plan.maxWallMs?{maxWallMs:plan.maxWallMs}:{}),
+        openEndpoint:args=>handler.openEndpoint(Object.freeze({actor:ai,project,task,runId,dir,scope:Object.freeze({...plan.scope}),args:Object.freeze([...args])})),
+        onSession:record=>{
+          if(boundSession!==null||record.project!==project||record.task!==task||record.runId!==runId)throw nativeError('NATIVE_SCOPE_MISMATCH');
+          const next=sessionBinding.bind(readMeta(pdir,task),plan.scope,record.sessionId);
+          writeMeta(pdir,task,next);meta=next;boundSession=record.sessionId;
+        }
+      });
+    } else if (nativeTarget(ai)) {
+      throw nativeError('NATIVE_RUNTIME_REQUIRED');
+    } else if (process.platform === 'win32' && ai === 'codex') {
       child = require('./codex-bridge').start({ command: turn.command, cwd: dir, env: childEnv, model: turn.modelFlag, effort: turn.effortFlag, sessionId: turn.sessionId, images: turn.images, ...(o.nativeRootPin?{dirPin:o.nativeRootPin}:{}) });
     } else {
       const command = cli.resolve(turn.command, turn.args, childEnv.PATH);
       child = spawn(command.file, command.args, { cwd: dir, env: childEnv, stdio: ['pipe', 'pipe', 'pipe'] });
     }
-    child.on('approvals', approvals => this.emit(project, task, { type: 'approvals', approvals }));
+    child.on('approvals', approvals => {
+      nativeOwner?.handler.onApprovals?.(child,nativeOwner.context,approvals);
+      this.emit(project, task, { type: 'approvals', approvals:(child.listApprovals?.()||approvals).map(a=>({...a,ai})) });
+    });
     if (!o.started) o.started = Date.now(); // 思考の指定をやり直しても、最初に送った時から数える
     const run = { child, ai, model, effort, userRow: o.userRow, texts: [], err: '', done: null, sid: null, stopped: false, started: o.started, limitSwitch: o.limitSwitch, last: '', stopVersion: this.stops.get(this.key(project, task)) || 0 };
     const spawned = new Promise(resolve => { child.once('spawn', () => { run.spawned = true; resolve(true); }); child.once('error', () => resolve(false)); child.once('close', () => resolve(Boolean(run.spawned))); });
@@ -379,11 +497,17 @@ class ChatRunner {
     const consume = l => {
       let x; try { x = JSON.parse(l); } catch (e) { return; }
       if (run.blocked) return;
-      for (const ev of parse(ai, x)) {
-        if (ev.kind === 'session') run.sid = ev.id;
+      for (const ev of parse(child.normalizedOutput ? 'codex' : ai, x)) {
+        if (child.normalizedOutput && ai === 'claude' && ev.kind === 'done') ev.usage = inputUsage('claude', x.usage);
+        if (ev.kind === 'session') {
+          if(turn.native&&ev.id!==boundSession){run.blocked=true;run.protocolFailed=true;run.sid=null;run.done={error:'原生 session 與已保存綁定不符；本回合已停止。'};child.kill();return;}
+          run.sid = ev.id;
+        }
         else if (ev.kind === 'text') { run.texts.push(ev.text); this.emit(project, task, { type: 'partial', ai, text: run.texts.join(ai === 'agy' ? '' : '\n\n') }); }
+        else if (ev.kind === 'textDelta') { if (!textIndexes.has(ev.id)) textIndexes.set(ev.id, run.texts.length); const i=textIndexes.get(ev.id); run.texts[i]=(run.texts[i]||'')+ev.text; this.emit(project, task, {type:'partial', ai, text:run.texts.join('\n\n')}); }
         else if (ev.kind === 'textSnapshot') { if (!textIndexes.has(ev.id)) textIndexes.set(ev.id, run.texts.length); run.texts[textIndexes.get(ev.id)] = ev.text; this.emit(project, task, {type:'partial', ai, text:run.texts.join('\n\n')}); }
         else if (ev.kind === 'tool') { run.last = ev.text; this.emit(project, task, { type: 'row', row: append(pdir, task, { role: 'event', ai, tool: true, text: ev.text }) }); }
+        else if (ev.kind === 'notice') { this.emit(project, task, { type: 'row', row: append(pdir, task, { role: 'event', ai, notice: true, code: ev.code, text: ev.text }) }); }
         else if (ev.kind === 'ask') run.asks = [...(run.asks || []), ...ev.asks];
         else if (ev.kind === 'limit') run.limit = ev.error;
         else if (ev.kind === 'compact') run.compact = true;
@@ -396,39 +520,82 @@ class ChatRunner {
       for (const l of ls) consume(l);
     });
     child.stderr.on('data', d => { run.err = (run.err + d.toString('utf8')).slice(-4000); });
-    const finish = (code, closed = false) => {
+    const finish = async (code, closed = false) => {
       if (run.finished) return; run.finished = true;
-      this.running.delete(this.key(project, task));
+      run.cleanupUnknown=turn.native&&child.cleanupReceipt?.cleanupVerified!==true;
+      const authRetry=turn.native&&ai==='grok'&&run.done?.code==='GROK_NATIVE_AUTH_UNAVAILABLE'&&
+        !run.cleanupUnknown&&!run.stopped&&(this.stops.get(this.key(project,task))||0)===run.stopVersion&&
+        !o.authRetried&&typeof this.nativeAuthRetry==='function'&&(typeof this.nativeAuthRetryAvailable!=='function'||this.nativeAuthRetryAvailable(o)===true);
+      if(!run.cleanupUnknown&&!authRetry)this.running.delete(this.key(project, task));
       let text = run.texts.join(ai === 'agy' ? '' : '\n\n') || (run.done && run.done.result) || '';
       let error = '';
       if (run.stopped) error = '止めました';
       else if (run.done && run.done.error) error = run.done.error;
       else if (code !== 0 && code !== null) error = (run.err.trim().split('\n').slice(-3).join(' ') || `終了コード ${code}`);
       else if (code === null && !text) error = run.err.trim() || '途中で終わりました';
-      if (ai === 'codex' && !run.stopped && !run.done) {
+      if ((ai === 'codex'||turn.native) && !run.stopped && !run.done) {
         run.protocolFailed = true;
-        error = error || 'Codex 未回傳完整的完成事件；本次作業未確認成功，請檢查 CLI 連線與版本。';
+        error = error || `${LABEL[ai]||ai} 未回傳完整的完成事件；本次作業未確認成功，請檢查 CLI 連線與版本。`;
       }
-      if (ai === 'codex' && run.done?.error) run.protocolFailed = true;
+      if ((ai === 'codex'||turn.native) && run.done?.error) run.protocolFailed = true;
+      if(run.cleanupUnknown){run.protocolFailed=true;error='原生 CLI 程序樹退出未確認；作業與佇列保留。';}
       if (!run.stopped && run.limit && !run.done && !run.err.trim()) error = run.limit;
       const modelRejected = error && !text && turn.modelFlag && !run.stopped && MODEL_REJECTED.test(error + ' ' + run.err);
       if (modelRejected) error = `指定したモデル「${turn.modelFlag}」を ${LABEL[ai]} が受け付けませんでした。設定画面の「AI の更新」と「CLI に渡すモデル名」を確認してください。${error}`;
+      if(authRetry){
+        const cancelled=()=>run.stopped||(this.stops.get(this.key(project,task))||0)!==run.stopVersion;
+        this.emit(project,task,{type:'row',row:append(pdir,task,{role:'event',ai:'grok',notice:true,
+          code:'GROK_AUTH_REFRESHING',text:'Grok 登入已過期，正在自動更新登入並重送這則訊息…'})});
+        try{
+          if(await this.nativeAuthRetry(o)===true&&!cancelled()){
+            const next={...o,authRetried:true};
+            meta=readMeta(pdir,task);
+            const admitted=prepareNative(this,next,meta);
+            if(admitted.sessionCode){
+              const code=admitted.sessionCode;
+              meta=sessionBinding.retire(meta,ai,{code,at:new Date().toISOString()});writeMeta(pdir,task,meta);
+              this.emit(project,task,{type:'row',row:append(pdir,task,{role:'event',ai,code,freshSession:true,text:messageFor(code)})});
+            }
+            const retryTurn=buildTurn({...next,meta,rows,nativePlan:admitted.plan});
+            nativeTurns.set(retryTurn,{...admitted,runId:admitted.plan.runId||randomUUID(),project,task,dir});
+            const retry=this.run(next,retryTurn,meta,rows);
+            retry.finishedP.then(run.resolveFinished,run.resolveFinished);
+            return retry;
+          }
+        }catch{ /* Keep the original auth error and manual-login hint. */ }
+        if(this.running.get(this.key(project,task))===run)this.running.delete(this.key(project,task));
+      }
       // 思考の指定を断られた：指定なしで1回だけやり直す
-      if (!modelRejected && error && !text && turn.effortFlag && !run.stopped && EFFORT_REJECTED.test(error + ' ' + run.err)) {
+      if (!turn.native&&!modelRejected && error && !text && turn.effortFlag && !run.stopped && EFFORT_REJECTED.test(error + ' ' + run.err)) {
         this.emit(project, task, { type: 'row', row: append(pdir, task, { role: 'event', ai, text: `思考「${effort}」の指定は使えなかったため、指定なしでやり直します` }) });
         const next = { ...o, noEffort: true };
         const retry = this.run(next, buildTurn({ ...next, meta, rows }), meta, rows);
         retry.finishedP.then(run.resolveFinished, run.resolveFinished);
         return retry;
       }
-      if (run.sid && !modelRejected && !run.blocked) { meta.sessions = { ...(meta.sessions || {}), [ai]: run.sid }; meta.models = { ...(meta.models || {}), [ai]: model }; writeMeta(pdir, task, meta); }
-      if (turn.rules) { meta.rulesSent = { ...(meta.rulesSent || {}), [ai]: { ...turn.rules, sid: run.sid || meta.sessions?.[ai], restore: Boolean(error || run.compact) } }; writeMeta(pdir, task, meta); }
+      try{
+        if (run.sid && !modelRejected && !run.blocked) { meta.sessions = { ...(meta.sessions || {}), [ai]: run.sid }; meta.models = { ...(meta.models || {}), [ai]: model }; writeMeta(pdir, task, meta); }
+        if (turn.rules) { meta.rulesSent = { ...(meta.rulesSent || {}), [ai]: { ...turn.rules, sid: run.sid || meta.sessions?.[ai], restore: Boolean(error || run.compact) } }; writeMeta(pdir, task, meta); }
+      }catch{run.protocolFailed=true;error='對話 session 資料保存失敗；本次結果未確認成功。';}
+      const resumeCode=run.done?.code;
+      if(turn.native&&turn.resume&&run.sid===null&&!run.stopped&&
+         (this.stops.get(this.key(project,task))||0)===run.stopVersion&&
+         ['GROK_NATIVE_RESUME_UNAVAILABLE','GROK_NATIVE_RESUME_FAILED','CLAUDE_NATIVE_RESUME_FAILED','GROK_NATIVE_SESSION_MISMATCH','CLAUDE_NATIVE_SESSION_MISMATCH'].includes(resumeCode)){
+        try{
+          meta=sessionBinding.retire(readMeta(pdir,task),ai,{code:resumeCode,at:new Date().toISOString()});writeMeta(pdir,task,meta);
+          const messageCode=resumeCode.endsWith('_SESSION_MISMATCH')?ai.toUpperCase()+'_NATIVE_RESUME_FAILED':resumeCode;
+          const text=messageFor(messageCode).replace(`（代碼：${messageCode}）`,`（代碼：${resumeCode}）`);
+          this.emit(project,task,{type:'row',row:append(pdir,task,{role:'event',ai,code:resumeCode,freshSession:true,text})});
+        }catch{run.protocolFailed=true;error='對話 session 資料保存失敗；本次結果未確認成功。（代碼：CHAT_META_WRITE_FAILED）';}
+      }
       const pa = parseAsk(text);
       const asks = [...(run.asks || []), ...pa.asks];
       if (asks.length) text = pa.text;
-      const row = append(pdir, task, { role: 'assistant', ai, model, effort, text, error, ms: Date.now() - o.started, ...(o.request ? { request: o.request } : {}), ...(run.done?.usage ? { usage: run.done.usage } : {}), ...(asks.length ? { asks } : {}) });
+      const row = append(pdir, task, { role: 'assistant', ai, model, effort, text, error, ...(turn.native && run.done?.code ? { code: run.done.code } : {}), ms: Date.now() - o.started, ...(o.request ? { request: o.request } : {}), ...(run.done?.usage ? { usage: run.done.usage } : {}), ...(asks.length ? { asks } : {}) });
       this.emit(project, task, { type: 'row', row });
       if (onEnd) onEnd(row);
+      if(turn.native)try{this.nativeTurnEnded?.(project,task,{clean:!error&&!asks.length&&!run.stopped&&(this.stops.get(this.key(project,task))||0)===run.stopVersion});}catch{}
+      if(turn.native&&child.exitWait&&(child.exitWait.forced||child.exitWait.ms>=2000))try{this.nativeExitWait?.(project,task,{ai,ms:child.exitWait.ms,forced:child.exitWait.forced});}catch{}
       run.resolveFinished();
       // 待っている指示：普通に終わったら次を始める。［止める］で止めた時は取り消す（［中断して送る］の時は残す）
       const k = this.key(project, task);
@@ -441,7 +608,7 @@ class ChatRunner {
           this.emit(project, task, { type: 'row', row: append(pdir, task, { role: 'event', ai, text: `上限の確認記録を更新できませんでした：${e.message}` }) });
         }
       }
-      if (closed && run.spawned && !cancelled() && !o.limitSwitch && ai === 'claude' &&
+      if (!turn.native&&closed && run.spawned && !cancelled() && !o.limitSwitch && ai === 'claude' &&
         turn.modelFlag === 'claude-fable-5-1' && run.limit && USAGE_LIMIT.test(error) && !modelRejected && this.limitBackup) {
         const request = String(o.request || o.started);
         // 起動前の案内は交代キューを作った証拠ではない。失敗後Fableへ戻った再送は正式上限で交代できる。
@@ -465,7 +632,7 @@ class ChatRunner {
           }
         }
       }
-      this.emit(project, task, { type: 'idle' });
+      this.emit(project, task, run.cleanupUnknown?{type:'busy',ai,model,started:run.started,cleanupRequired:true}:{ type: 'idle' });
       const q = this.queue(project, task);
       if (cancelled() && !run.interrupting) { if (q.length) this.setQueue(project, task, []); }
       // CLI を起動できなかった時は、待ち順の同じ依頼や後続を勝手に再送しない。
@@ -515,10 +682,9 @@ class ChatRunner {
   queue(p, t) {
     const k = this.key(p, t);
     if (!this.queues.has(k)) {
-      let q = [];
       const d = this.dirOf && this.dirOf(p);
-      if (d) { try { q = JSON.parse(fs.readFileSync(files(d, t).queue, 'utf8')); } catch (e) { q = []; } }
-      this.queues.set(k, Array.isArray(q) ? q : []);
+      const q = d ? stateReader.readQueue(files(d, t).queue) : [];
+      this.queues.set(k, q);
     }
     return this.queues.get(k);
   }
@@ -530,10 +696,10 @@ class ChatRunner {
       try {
         if (q.length || fs.existsSync(f)) {
           fs.mkdirSync(path.dirname(f), { recursive: true });
-          if (requireSave) { const tmp = f + `.limit-${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(q, null, 2)); fs.renameSync(tmp, f); }
+          if (requireSave) { const tmp = queueTemp(f); try { fs.writeFileSync(tmp, JSON.stringify(q, null, 2)); replaceSync(tmp, f, { delays: [10, 20, 40, 80, 150] }); } finally { try { fs.unlinkSync(tmp); } catch {} } }
           else fs.writeFileSync(f, JSON.stringify(q, null, 2));
         }
-      } catch (e) { if (requireSave) throw e; /* 通常の待ち順は今までどおり画面に残す */ }
+      } catch (e) { if (requireSave) throw Object.assign(Error('待辦指示未能完整保存；保留原檔。'),{status:503}); /* 通常の待ち順は今までどおり画面に残す */ }
     } else if (requireSave) throw Error('作業の台帳が見つかりません');
     this.queues.set(this.key(p, t), q);
     this.emit(p, t, { type: 'queue', queue: q });

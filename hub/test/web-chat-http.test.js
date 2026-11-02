@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const fixture=require('./helpers/owned-native-fixture'),{Store}=require('../lib/store');
 const win=process.platform==='win32'?test:test.skip;
 const digest=text=>crypto.createHash('sha256').update(text).digest('hex');
-win('authenticated native HTTP handoffs preserve owner and reject unauthorized, stale, replay and unsafe inputs',{timeout:300000},async t=>{
+win('local no-cookie native HTTP handoffs preserve owner and reject unauthorized, stale, replay and unsafe inputs',{timeout:300000},async t=>{
  const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'hub-web-chat-http-')),root=path.join(temporary,'workspace'),store=new Store(root),oldEnvironment={...process.env};
  const project=store.createProject({name:'合成專案'}).project,task=store.createTask(project.id,{title:'手動交接測試',owner:'codex',model:'GPT-6.1-Sol'}),scope={project:project.id,task:task.id};
  fs.copyFileSync(path.join(__dirname,'../windows/roles.yaml'),path.join(root,'_hub/roles.yaml'));
@@ -19,7 +19,7 @@ win('authenticated native HTTP handoffs preserve owner and reject unauthorized, 
    for(const key of Object.keys(process.env))if(!Object.hasOwn(oldEnvironment,key))delete process.env[key];Object.assign(process.env,oldEnvironment);
    const resolved=fs.realpathSync(temporary);assert.equal(path.dirname(resolved).toLowerCase(),fs.realpathSync(os.tmpdir()).toLowerCase());assert.ok(path.basename(resolved).startsWith('hub-web-chat-http-'));fs.rmSync(resolved,{recursive:true,force:true,maxRetries:20,retryDelay:50});
  });
- assert.equal((await request('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'synthetic',responseLanguage:'zh-TW'},{anonymous:true})).status,401);
+ assert.equal((await request('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'synthetic',responseLanguage:'zh-TW'},{anonymous:true})).status,200);
  const login=await request('/api/local/login',{token:'C'.repeat(43)},{anonymous:true});assert.equal(login.status,200);cookie=login.headers.get('set-cookie').split(';')[0];
  assert.equal((await request('/api/web-chat/preview',{...scope,actor:'chatgpt',text:'synthetic',responseLanguage:'zh-TW'},{headers:{Origin:'https://invalid.example'}})).status,403);
  await post('/api/chatgpt/prompt',{...scope,text:'legacy'},409);await post('/api/chatgpt/result',{...scope,text:'legacy'},409);

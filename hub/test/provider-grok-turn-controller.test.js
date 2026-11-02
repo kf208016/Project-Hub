@@ -43,6 +43,16 @@ test('terminal alone times out as unknown cleanup, never a completed task',async
   const f=fixture();f.controller.start();await flush();f.stdout.write(wire(result()));f.clock.advance(100);
   const done=await f.controller.completion;assert.equal(done.completionKind,'cleanup-unknown');assert.equal(done.errorCode,'GROK_TURN_STOP_TIMEOUT');assert.equal(done.ownedTreeEmpty,false);assert.equal(done.taskSuccess,null);
 });
+
+test('recovered failed tool permits only protocol completion and retains the failure event',async()=>{
+  const f=fixture();f.controller.start();await flush();
+  f.stdout.write(wire({jsonrpc:'2.0',method:'session/update',params:{sessionId:S,update:{sessionUpdate:'tool_call',toolCallId:'optional-read',title:'Optional read',status:'failed'}}}));
+  f.stdout.write(wire({jsonrpc:'2.0',method:'session/update',params:{sessionId:S,update:{sessionUpdate:'tool_call',toolCallId:'actual-read',title:'Actual read',status:'completed'}}}));
+  f.stdout.write(wire(result()));const done=await close(f);
+  assert.equal(done.replyComplete,true);assert.equal(done.completionKind,'reply-complete');assert.equal(done.taskSuccess,null);assert.equal(done.cleanupVerified,true);
+  assert.ok(f.events.some(row=>row.type==='tool-state'&&row.toolCallId==='optional-read'&&row.status==='failed'));
+  assert.equal(f.events.find(row=>row.type==='result').toolFailureObserved,true);
+});
 test('EOF without a prompt result fails even with successful process cleanup',async()=>{
   const f=fixture();f.controller.start();await flush();const done=await close(f);
   assert.equal(done.errorCode,'GROK_EOF_INCOMPLETE');assert.equal(done.completionKind,'failed');assert.equal(done.cleanupVerified,true);

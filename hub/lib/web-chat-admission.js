@@ -146,7 +146,7 @@ function ensureFormat(root,options={}){
   if(native({mode:'identity',root}).rootFingerprint!==rootFingerprint||written.sha256!==sha(Buffer.from(JSON.stringify(value,null,2)+'\n')))fail('DATA_ROOT_IDENTITY_CHANGED');return check(root,{...options,release,recoveryOnly:false});
 }
 const RECOVERY_READ_ROUTES=new Set(['/api/local/proof','/api/local/login','/api/state','/api/web-chat/status','/api/web-chat/inspection']);
-const RECOVERY_WRITE_ROUTES=new Set(['/api/local/login','/api/quit','/api/web-chat/status','/api/web-chat/recover/preview','/api/web-chat/recover']);
+const RECOVERY_WRITE_ROUTES=new Set(['/api/local/login','/api/local/browser/begin','/api/local/browser/poll','/api/local/browser/approve','/api/quit','/api/web-chat/status','/api/web-chat/recover/preview','/api/web-chat/recover']);
 function restrictRoutes(pathname,method='GET'){
   if(typeof pathname!=='string'||typeof method!=='string')return false;
   if(method==='GET'&&(pathname==='/'||pathname==='/login'||!pathname.startsWith('/api/')))return !pathname.includes('..')&&!pathname.includes('\\');

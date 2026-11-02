@@ -135,7 +135,7 @@ function reject ( message ) {
 } ;
 if ( require . main === module ) {
   try {
-    process . stdout . write ( install . json ( build ( JSON . parse ( fs . readFileSync ( 0 , 'utf8' ) ) ) ) ) ;
+    process . stdout . write ( install . json ( build ( install . parseRequest ( fs . readFileSync ( 0 ) ) ) ) ) ;
   } catch ( error ) {
     process . stderr . write ( install . json ( {
       ok : false , message : error . message

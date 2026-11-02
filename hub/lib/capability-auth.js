@@ -2,6 +2,8 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { validateArguments } = require('./chatgpt');
+const { CLI_DEFAULT_LABEL } = require('./launch');
+const delegationModelValid = (model, actor) => typeof model === 'string' && (/^[a-z0-9][a-z0-9._-]{0,99}$/.test(model) || ['claude', 'grok'].includes(actor) && model === CLI_DEFAULT_LABEL);
 
 const READ_TOOLS = Object.freeze(['hub_list_tasks', 'hub_get_task', 'hub_get_chat', ...(process.platform === 'win32' ? [] : ['hub_read_file'])]);
 const TOOL_NAMES = new Set([...READ_TOOLS, 'hub_read_file', 'hub_list_projects', 'hub_report', 'hub_ask_owner', 'hub_mark_step', 'hub_propose_task', 'hub_write_file', 'hub_run_command', 'hub_request_command', 'hub_get_command_result','hub_delegate']);
@@ -10,12 +12,12 @@ const component = value => typeof value === 'string' && value.length > 0 && valu
 const identifier = value => typeof value === 'string' && /^[A-Za-z0-9_-]{16,128}$/.test(value);
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
 const plain = value => value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
-const snapshot = record => Object.freeze({ id: record.id, project: record.project, ...(record.task ? { task: record.task } : {}), ...(record.rootFingerprint ? { rootFingerprint: record.rootFingerprint } : {}), ...(record.delegationModel?{delegationModel:record.delegationModel,remainingDelegations:record.delegationUsed?0:1}:{}), runId: record.runId, tools: Object.freeze(record.tools.slice()), expiresAt: record.expiresAt, remainingCalls: record.maxCalls - record.calls });
-const validRecord = record => record && component(record.project) && (!record.task || component(record.task)) && identifier(record.runId) && Array.isArray(record.tools) && record.tools.length && record.tools.every(tool => TOOL_NAMES.has(tool)) &&
+const snapshot = record => Object.freeze({ id: record.id, project: record.project, ...(record.actor!==undefined?{actor:record.actor}:{}), ...(record.task ? { task: record.task } : {}), ...(record.rootFingerprint ? { rootFingerprint: record.rootFingerprint } : {}), ...(record.delegationModel?{delegationModel:record.delegationModel,...(record.delegationActor?{delegationActor:record.delegationActor}:{}),remainingDelegations:record.delegationUsed?0:1}:{}), runId: record.runId, tools: Object.freeze(record.tools.slice()), expiresAt: record.expiresAt, remainingCalls: record.maxCalls - record.calls });
+const validRecord = record => record && (record.actor===undefined||['claude','grok'].includes(record.actor)) && component(record.project) && (!record.task || component(record.task)) && identifier(record.runId) && Array.isArray(record.tools) && record.tools.length && record.tools.every(tool => TOOL_NAMES.has(tool)) &&
   (record.root===undefined&&record.rootFingerprint===undefined || typeof record.root==='string'&&path.isAbsolute(record.root)&&path.resolve(record.root)===record.root&&typeof record.rootFingerprint==='string'&&/^[a-f0-9]{64}$/.test(record.rootFingerprint)) &&
   (record.taskHash===undefined||typeof record.taskHash==='string'&&/^[a-f0-9]{64}$/.test(record.taskHash)) &&
   (record.workspaceRun===undefined||identifier(record.workspaceRun)) &&
-  (record.delegationModel===undefined&&record.delegationUsed===undefined||typeof record.delegationModel==='string'&&/^[a-z0-9][a-z0-9._-]{0,99}$/.test(record.delegationModel)&&typeof record.delegationUsed==='boolean') &&
+  (record.delegationModel===undefined&&record.delegationUsed===undefined&&record.delegationActor===undefined||delegationModelValid(record.delegationModel,record.delegationActor)&&typeof record.delegationUsed==='boolean'&&(record.delegationActor===undefined||['codex','claude','grok'].includes(record.delegationActor))) &&
   (record.journalRoot===undefined&&record.journalRootFingerprint===undefined||typeof record.journalRoot==='string'&&path.isAbsolute(record.journalRoot)&&path.resolve(record.journalRoot)===record.journalRoot&&typeof record.journalRootFingerprint==='string'&&/^[a-f0-9]{64}$/.test(record.journalRootFingerprint)) &&
   Number.isSafeInteger(record.issuedAt) && Number.isSafeInteger(record.expiresAt) && record.expiresAt - record.issuedAt >= 1000 && record.expiresAt - record.issuedAt <= 3600000 &&
   Number.isSafeInteger(record.issuedMono) && Number.isSafeInteger(record.expiresMono) && record.expiresMono-record.issuedMono===record.expiresAt-record.issuedAt &&
@@ -29,9 +31,9 @@ class CapabilityAuth {
   mono() {const value=this.monotonic();if(!Number.isSafeInteger(value)||value<0)fail('MCP monotonic clock is invalid');return value;}
   prune() { const now = this.time(),mono=this.mono(); for (const [hash, record] of this.records) if (!validRecord(record) || record.issuedAt > now || record.issuedMono>mono || record.expiresAt <= now ||record.expiresMono<=mono|| record.revoked) this.records.delete(hash); }
   issue(options) {
-    if (!plain(options) || Object.keys(options).some(key => !['project', 'task', 'runId', 'tools', 'ttlMs', 'maxCalls', 'root', 'rootFingerprint', 'taskHash', 'journalRoot', 'journalRootFingerprint','delegationModel','workspaceRun'].includes(key))) fail('MCP capability scope is invalid');
-    const { project, task, runId, tools = READ_TOOLS, ttlMs = 10 * 60000, maxCalls = 100, root, rootFingerprint, taskHash, journalRoot, journalRootFingerprint,delegationModel,workspaceRun } = options;
-    if (!component(project) || (task !== undefined && !component(task)) || !identifier(runId) ||
+    if (!plain(options) || Object.keys(options).some(key => !['project', 'task', 'runId', 'tools', 'ttlMs', 'maxCalls', 'root', 'rootFingerprint', 'taskHash', 'journalRoot', 'journalRootFingerprint','delegationModel','delegationActor','workspaceRun','actor'].includes(key))) fail('MCP capability scope is invalid');
+    const { project, task, runId, tools = READ_TOOLS, ttlMs = 10 * 60000, maxCalls = 100, root, rootFingerprint, taskHash, journalRoot, journalRootFingerprint,delegationModel,delegationActor,workspaceRun,actor } = options;
+    if ((actor!==undefined&&!['claude','grok'].includes(actor)) || !component(project) || (task !== undefined && !component(task)) || !identifier(runId) ||
         !Array.isArray(tools) || !tools.length || tools.length > TOOL_NAMES.size || new Set(tools).size !== tools.length || tools.some(tool => !TOOL_NAMES.has(tool)) ||
         !Number.isSafeInteger(ttlMs) || ttlMs < 1000 || ttlMs > 3600000 || !Number.isSafeInteger(maxCalls) || maxCalls < 1 || maxCalls > 500) fail('MCP capability scope is invalid');
     if (task && tools.some(tool => ['hub_propose_task', 'hub_run_command'].includes(tool))) fail('Task MCP capability cannot create tasks or execute commands');
@@ -44,7 +46,7 @@ class CapabilityAuth {
     if(workspaceRun!==undefined&&(!fileTools||!task||!identifier(workspaceRun)))fail('Unused workspace run authority is invalid');
     if (commandTools && (!task || !/^[a-f0-9]{64}$/.test(taskHash || ''))) fail('Command request capability requires an issued task hash');
     if (taskHash!==undefined && (!commandTools || !/^[a-f0-9]{64}$/.test(taskHash))) fail('Unused task hash authority is invalid');
-    if(delegate&&(!task||!root||typeof delegationModel!=='string'||! /^[a-z0-9][a-z0-9._-]{0,99}$/.test(delegationModel))||!delegate&&delegationModel!==undefined)fail('Delegation requires an explicitly issued Codex model');
+    if(delegate&&(!task||!root||!delegationModelValid(delegationModel,delegationActor)||delegationActor!==undefined&&!['codex','claude','grok'].includes(delegationActor))||!delegate&&(delegationModel!==undefined||delegationActor!==undefined))fail('Delegation requires an explicitly issued CLI and model');
     if (journalRoot!==undefined||journalRootFingerprint!==undefined) {
       const relative=typeof root==='string'&&typeof journalRoot==='string'?path.relative(root,journalRoot):'';
       if (!tools.includes('hub_write_file')||typeof journalRoot!=='string'||!path.isAbsolute(journalRoot)||path.resolve(journalRoot)!==journalRoot||!/^[a-f0-9]{64}$/.test(journalRootFingerprint||'')||!(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))) fail('Private write journal authority is invalid');
@@ -53,7 +55,7 @@ class CapabilityAuth {
     if (this.records.size >= 128) fail('MCP capability limit reached');
     const token = crypto.randomBytes(32).toString('base64url');
     const issuedAt = this.time(),issuedMono=this.mono();
-    const record = { id: crypto.randomUUID(), project, task, runId, tools: tools.slice(), ...(root ? { root, rootFingerprint } : {}), ...(taskHash ? {taskHash} : {}), ...(journalRoot ? {journalRoot,journalRootFingerprint} : {}), ...(workspaceRun?{workspaceRun}:{}), ...(delegate?{delegationModel,delegationUsed:false}:{}), issuedAt, expiresAt: issuedAt + ttlMs,issuedMono,expiresMono:issuedMono+ttlMs, maxCalls, calls: 0, nonces: new Set() };
+    const record = { id: crypto.randomUUID(), project, task, runId, ...(actor!==undefined?{actor}:{}), tools: tools.slice(), ...(root ? { root, rootFingerprint } : {}), ...(taskHash ? {taskHash} : {}), ...(journalRoot ? {journalRoot,journalRootFingerprint} : {}), ...(workspaceRun?{workspaceRun}:{}), ...(delegate?{delegationModel,...(delegationActor?{delegationActor}:{}),delegationUsed:false}:{}), issuedAt, expiresAt: issuedAt + ttlMs,issuedMono,expiresMono:issuedMono+ttlMs, maxCalls, calls: 0, nonces: new Set() };
     this.records.set(tokenHash(token), record);
     return { token, capability: snapshot(record) };
   }

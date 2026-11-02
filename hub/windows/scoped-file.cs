@@ -78,13 +78,13 @@ class ScopedFile {
     Require(result.StartsWith("\\\\?\\")&&!result.StartsWith("\\\\?\\UNC\\",StringComparison.OrdinalIgnoreCase),"NONLOCAL_PATH",403);
     result=result.Substring(4);if(result.Length>3)result=result.TrimEnd('\\');return result;
   }
-  static void Check(IntPtr file,string expected,bool directory,string root) {
+  static void Check(IntPtr file,string expected,bool directory,string root,bool allowSourceLinks=false) {
     ATTRIBUTE_TAG tag=new ATTRIBUTE_TAG();Require(GetFileType(file)==1&&GetFileInformationByHandleEx(file,9,out tag,8),"INVALID_FILE_TYPE",415);
     Require((tag.Attributes&REPARSE)==0,"REPARSE_REJECTED",403);
     Require(((tag.Attributes&DIR_ATTR)!=0)==directory,"INVALID_FILE_TYPE",415);
     string actual=FinalName(file);Require(String.Equals(actual,expected,StringComparison.OrdinalIgnoreCase),"PATH_CHANGED",403);
     if(root!=null)Require(String.Equals(actual,root,StringComparison.OrdinalIgnoreCase)||actual.StartsWith(root.TrimEnd('\\')+"\\",StringComparison.OrdinalIgnoreCase),"OUTSIDE_ROOT",403);
-    if(!directory){FILE_INFO info;Require(GetFileInformationByHandle(file,out info)&&info.Links==1,"MULTIPLE_LINKS_REJECTED",403);}
+    if(!directory){FILE_INFO info;Require(GetFileInformationByHandle(file,out info)&&(allowSourceLinks?info.Links>=1:info.Links==1),"MULTIPLE_LINKS_REJECTED",403);}
   }
   static IntPtr OpenRelative(IntPtr parent,string name,uint access,uint disposition,uint options,out int status,bool denyWrite=false) {
     IntPtr text=Marshal.StringToHGlobalUni(name),unicode=IntPtr.Zero;IntPtr file=IntPtr.Zero;
@@ -130,7 +130,7 @@ class ScopedFile {
   static string Hash(byte[] bytes) {using(SHA256 sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-","").ToLowerInvariant();}
   static string FileFingerprint(IntPtr handle,string fullPath) {FILE_INFO info;Require(GetFileInformationByHandle(handle,out info),"FILE_ID_UNAVAILABLE");ulong index=((ulong)info.IndexHigh<<32)|info.IndexLow;return Hash(Encoding.UTF8.GetBytes(fullPath+"\n"+info.VolumeSerial.ToString(CultureInfo.InvariantCulture)+"\n"+index.ToString(CultureInfo.InvariantCulture)));}
   static bool Digest(string value){if(value==null||value.Length!=64)return false;foreach(char c in value)if("0123456789abcdef".IndexOf(c)<0)return false;return true;}
-  static IntPtr OpenFile(Chain chain,string[] parts,uint access) {Require(parts.Length>0,"FILE_REQUIRED",400);for(int i=0;i<parts.Length-1;i++)chain.Next(parts[i],false);chain.Verify();int status;IntPtr file=OpenRelative(chain.Last,parts[parts.Length-1],access,OPEN,NON_DIRECTORY,out status);Status(status);try{Check(file,chain.Current.TrimEnd('\\')+"\\"+parts[parts.Length-1],false,chain.Root);return file;}catch{CloseHandle(file);throw;}}
+  static IntPtr OpenFile(Chain chain,string[] parts,uint access,bool allowSourceLinks=false) {Require(parts.Length>0,"FILE_REQUIRED",400);for(int i=0;i<parts.Length-1;i++)chain.Next(parts[i],false);chain.Verify();int status;IntPtr file=OpenRelative(chain.Last,parts[parts.Length-1],access,OPEN,NON_DIRECTORY,out status);Status(status);try{Check(file,chain.Current.TrimEnd('\\')+"\\"+parts[parts.Length-1],false,chain.Root,allowSourceLinks);return file;}catch{CloseHandle(file);throw;}}
   static byte[] Bytes(IntPtr file,int max) {long size;Require(GetFileSizeEx(file,out size)&&size>=0&&size<=max,"FILE_SIZE_REJECTED",415);byte[] bytes=new byte[(int)size];uint read;Require(ReadFile(file,bytes,(uint)bytes.Length,out read,IntPtr.Zero)&&read==bytes.Length,"READ_INCOMPLETE");return bytes;}
   static Dictionary<string,object> Read(Chain chain,string[] parts) {
     for(int i=0;i<parts.Length-1;i++)chain.Next(parts[i],false);
@@ -179,7 +179,7 @@ class ScopedFile {
   }
   static void Exact(Dictionary<string,object> request,string[] allowed){Require(request.Count==allowed.Length,"INVALID_REQUEST",400);foreach(string key in allowed)Require(request.ContainsKey(key),"INVALID_REQUEST",400);}
   static Dictionary<string,object> Private(Dictionary<string,object> request,string mode){
-    bool artifact=mode.StartsWith("private-artifact-"),copy=mode.EndsWith("-copy"),remove=mode.EndsWith("-remove");int max=artifact?64*1024*1024:8*1024*1024;
+    bool artifact=mode.StartsWith("private-artifact-"),binary=mode.StartsWith("private-binary-"),copy=mode.EndsWith("-copy"),remove=mode.EndsWith("-remove");int max=binary?512*1024*1024:artifact?64*1024*1024:8*1024*1024;
     if(copy)Exact(request,request.ContainsKey("sourceFingerprint")?new string[]{"mode","root","rootFingerprint","path","sourceRoot","sourceRootFingerprint","sourcePath","sourceHash","sourceFingerprint"}:new string[]{"mode","root","rootFingerprint","path","sourceRoot","sourceRootFingerprint","sourcePath","sourceHash"});
     else if(!remove)Exact(request,new string[]{"mode","root","rootFingerprint","path"});
     else Exact(request,new string[]{"mode","root","rootFingerprint","path","expectedHash","expectedFingerprint"});
@@ -190,7 +190,7 @@ class ScopedFile {
         Require(Digest(request["sourceHash"]as string),"INVALID_HASH",400);
         using(Chain source=new Chain(request["sourceRoot"]as string,false)){
           Require(request["sourceRootFingerprint"]as string==source.Fingerprint(),"SOURCE_ROOT_CHANGED",403);
-          string[] sourceParts=Parts(request["sourcePath"]as string,false);IntPtr file=OpenFile(source,sourceParts,READ_DATA);
+          string[] sourceParts=Parts(request["sourcePath"]as string,false);IntPtr file=OpenFile(source,sourceParts,READ_DATA,binary);
           try{if(request.ContainsKey("sourceFingerprint")){Require(Digest(request["sourceFingerprint"]as string),"INVALID_BINDING",400);string sourcePath=source.Current.TrimEnd('\\')+"\\"+sourceParts[sourceParts.Length-1];Require(FileFingerprint(file,sourcePath)==request["sourceFingerprint"]as string,"SOURCE_FILE_CHANGED");}byte[] bytes=Bytes(file,max);Require(Hash(bytes)==request["sourceHash"]as string,"SOURCE_HASH_CHANGED");source.Verify();return CreateBytes(chain,parts,bytes,".key");}finally{CloseHandle(file);}
         }
       }
@@ -250,7 +250,7 @@ class ScopedFile {
       using(Chain config=new Chain(request["root"]as string,false))using(Chain journal=new Chain(request["journalRoot"]as string,false,true)){Require(config.Fingerprint()==request["rootFingerprint"]as string&&journal.Fingerprint()==request["journalRootFingerprint"]as string,"ROOT_CHANGED",403);return Create(config,configParts,request["text"]as string,"missing");}
     }
     if(mode=="private-config-write"||mode=="private-config-recover")return Overwrite(request,mode=="private-config-recover",true);
-    if(mode=="private-copy"||mode=="private-inspect"||mode=="private-remove"||mode=="private-artifact-copy"||mode=="private-artifact-inspect"||mode=="private-artifact-remove")return Private(request,mode);
+    if(mode=="private-copy"||mode=="private-inspect"||mode=="private-remove"||mode=="private-artifact-copy"||mode=="private-artifact-inspect"||mode=="private-artifact-remove"||mode=="private-binary-copy"||mode=="private-binary-inspect")return Private(request,mode);
     if(mode=="overwrite"||mode=="recover")return Overwrite(request,mode=="recover");
     foreach(string key in request.Keys)Require(key=="mode"||key=="root"||key=="path"||key=="text"||key=="expectedHash"||key=="rootFingerprint","INVALID_REQUEST",400);
     if(mode=="probe"){Require(request.Count==1,"INVALID_REQUEST",400);return new Dictionary<string,object>{{"supported",true},{"build",26200},{"architecture","native-amd64"},{"overwrite",true}};}

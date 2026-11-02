@@ -105,7 +105,9 @@ function createProtocol(options){
       keys(value,['jsonrpc','id','result']);keys(value.result,['stopReason'],['_meta']);metadata(value.result._meta);check(STOPS.includes(value.result.stopReason),'GROK_STOP_REASON_UNSUPPORTED');
       check(!cancelled||value.result.stopReason==='cancelled','GROK_CANCEL_RESULT_CONFLICT');
       const openTools=[...tools.values()].filter(t=>!['completed','failed'].includes(t.status)).length;
-      const replyComplete=value.result.stopReason==='end_turn'&&!permissionDenied&&!cancelled&&!toolFailureObserved&&openTools===0;
+      // A recoverable tool failure remains observable; it is not an open tool
+      // or an owner denial, and protocol completion is never task success.
+      const replyComplete=value.result.stopReason==='end_turn'&&!permissionDenied&&!cancelled&&openTools===0;
       terminal={terminal:true,replyComplete,taskSuccess:null,sessionId,runId,promptRequestId,stopReason:value.result.stopReason,errorCode:null,permissionDenied,cancelled,toolFailureObserved,openTools,...(value.result._meta===undefined?{}:{metadata:copy(value.result._meta)})};phase=replyComplete?'result-complete':'result-incomplete';
     }
     return {type:'result',...copy(terminal)};

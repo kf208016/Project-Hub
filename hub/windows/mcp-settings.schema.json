@@ -101,11 +101,26 @@
     },
     "delegationModel": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9._-]{0,99}$",
-      "description": "Explicit Codex model ID authorized for one same-task delegation; may send task/chat context to OpenAI and consume account usage"
+      "pattern": "^(CLI預設|[a-z0-9][a-z0-9._-]{0,99})$",
+      "description": "Explicit model ID or Claude/Grok CLI預設 authorized for one same-task delegation; defaults to Codex for legacy grants. Destination/account usage must be separately approved."
+    },
+    "delegationActor": {
+      "type": "string", "enum": ["codex", "claude", "grok"],
+      "description": "Private controller issuer field only; omitted legacy grants remain Codex. Never accepted from browser/MCP arguments."
     }
   },
   "allOf": [
+    {
+      "if": {"required": ["delegationModel"], "properties": {"delegationModel": {"const": "CLI預設"}}},
+      "then": {"required": ["delegationActor"], "properties": {"delegationActor": {"enum": ["claude", "grok"]}}}
+    },
+    {
+      "if": {"required": ["delegationActor"]},
+      "then": {
+        "required": ["task", "tools", "root", "rootFingerprint", "delegationModel"],
+        "properties": {"tools": {"contains": {"const": "hub_delegate"}}}
+      }
+    },
     {
       "if": { "required": ["workspaceRun"] },
       "then": {
@@ -249,7 +264,7 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "delegationModel": {
-          "$ref": "#/properties/delegationModel"
+          "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,99}$"
         }
       },
       "allOf": [

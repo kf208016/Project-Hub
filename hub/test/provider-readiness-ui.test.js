@@ -16,6 +16,12 @@ function fixture({platform='win32',language='zh-TW'}={}){
 }
 const tag=(html,attribute,value)=>html.match(new RegExp('<(?:option|button)[^>]*'+attribute+'="'+value+'"[^>]*>'))?.[0];
 
+test('native Chat authority does not advertise an unimplemented raw PTY start',async()=>{
+ const f=fixture();f.run('state.providers=state.providers.map(p=>["claude","grok"].includes(p.id)?{...p,readiness:{...p.readiness,ready:true}}:p)');
+ for(const actor of ['claude','grok']){assert.equal(f.run('cliReady("'+actor+'")'),true);assert.equal(f.run('cliTerminalReady("'+actor+'")'),false);await assert.rejects(()=>f.context.startAI('p','t',actor),/對話畫面/);}
+ assert.equal(f.run('cliTerminalReady("codex")'),true);
+});
+
 test('all platforms use exact registry readiness; missing state never grants a CLI start',async()=>{
  for(const platform of ['win32','darwin']){
   const f=fixture({platform}),html=f.run('quickControls(proj("p"))');
@@ -98,4 +104,16 @@ test('quick web submit preserves the exact request in its manual dialog, refuses
  const textarea={value:'合成 quick request',disabled:false},form={id:'quickform',dataset:{p:'p'},classList:{contains:()=>false},elements:{namedItem:()=>textarea}},event={target:form,preventDefault(){}};
  await f.events.submit.find(fn=>fn.toString().includes("'projform'"))(event);const started=f.calls[0];assert.equal(started.route,'/api/start');assert.equal(started.body.model,'');assert.equal(started.body.effort,'');assert.equal(started.body.ai,'claude-chat');assert.deepEqual(started.body.images,[]);assert.equal(f.handoffs[0].text,'合成 quick request');assert.match(f.messages[0],/預覽.*手動交接/);assert.equal(textarea.disabled,false);
  f.run('quickDraft(proj("p")).images=[{id:"existing-image"}]');await f.events.submit.find(fn=>fn.toString().includes("'projform'"))(event);assert.equal(f.calls.length,1);assert.equal(f.handoffs.length,1);assert.match(f.messages.at(-1),/移除已附加/);
+});
+
+test('Grok status and login hints render in cards, chat and failed rows with safe text',()=>{
+ const f=fixture();f.context.sample={runtime:{version:'1.0.70',slotPresent:false,override:null,overrideInvalid:false},auth:{present:false,mtime:null,lockPresent:false}};f.run('state.grokStatus=sample');
+ assert.equal(f.run('grokStatusHtml(null)'), '');let html=f.run('grokStatusHtml(sample)');assert.match(html,/class="grok-status small"/);assert.match(html,/第一次送出時建立 Hub 私有副本/);assert.match(html,/data-copy="grok login"/);
+ f.run('sample.runtime.slotPresent=true;sample.runtime.override="1.0.70";sample.auth={present:true,mtime:"2026-10-25T01:02:00Z",lockPresent:true,lockMtime:"2026-10-25T01:03:00Z"}');html=f.run('grokStatusHtml(sample)');assert.match(html,/Hub 私有副本已建立；由 PROJECT_HUB_GROK_VERSION 指定/);assert.match(html,/Hub 不讀取內容，無法判斷是否仍有效/);assert.doesNotMatch(html,/登入檔鎖存在|未正常結束/);
+ f.run('sample.runtime.overrideInvalid=true');assert.match(f.run('grokStatusHtml(sample)'),/Grok 將無法啟動/);f.run('sample.runtime.overrideInvalid=false;sample.runtime.version="<img>"');assert.match(f.run('grokStatusHtml(sample)'),/&lt;img&gt;/);
+ f.run('aiTools=Object.fromEntries(AIS.map(ai=>[ai,{installed:true}]));drawAiTools()');html=f.element('#ai-tools').innerHTML;assert.equal((html.match(/class="grok-status small"/g)||[]).length,1);assert.match(html,/data-ai="grok"[\s\S]*class="grok-status small"/);
+ f.p.tasks[0].owner='grok';assert.match(f.context.chatHtml(f.p,f.p.tasks[0]),/id="grok-status"><div class="grok-status small"/);f.p.tasks[0].owner='codex';assert.match(f.context.chatHtml(f.p,f.p.tasks[0]),/id="grok-status"><\/div>/);
+ for(const code of ['GROK_NATIVE_AUTH_UNAVAILABLE','GROK_NATIVE_IDLE_TIMEOUT']){f.context.row={role:'assistant',ai:'grok',error:'failure（代碼：'+code+'）',at:'2026-10-25T00:00:00Z'};html=f.run('grokLoginHintHtml(row,sample)');assert.match(html,/data-copy="grok login --device-auth"/);assert.match(html,/登入檔已在這則訊息之後更新/);assert.match(f.run('msgHtml(row)'),/grok-login-hint/);f.context.row.at='2026-10-26T00:00:00Z';assert.match(f.run('grokLoginHintHtml(row,sample)'),/登入完成後回到 Hub 重新送出/);}
+ for(const row of [null,{ai:'claude',error:'（代碼：GROK_NATIVE_AUTH_UNAVAILABLE）'},{ai:'grok',error:'GROK_NATIVE_AUTH_UNAVAILABLE'},{ai:'grok',error:42}]){f.context.row=row;assert.equal(f.run('grokLoginHintHtml(row,sample)'),'');}
+ f.run('state.backgroundStatus={state:"ok",unassigned:1,unassignedProcesses:[{ai:"grok",pid:101}]};render()');assert.match(f.element('#windows-notice').textContent,/grok PID 101/);
 });

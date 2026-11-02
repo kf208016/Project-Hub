@@ -24,7 +24,7 @@ function fixture(t) {
   const dependencies = {
     'node:fs': { readFileSync: () => Buffer.from('fixture source'), mkdirSync() {}, existsSync: () => true },
     'node:path': path.win32,
-    'node:net': { createServer: () => server },
+    'node:net': { createServer: listener => { server.connectionListener=listener;return server; } },
     'node:child_process': {
       spawn(_file, _args, options) {
         nonce = JSON.parse(options.env.HUB_PROCESS_SPEC).nonce;
@@ -52,6 +52,13 @@ function fixture(t) {
   t.after(close);
   return {
     child,
+    connect() {
+      const socket=new EventEmitter();socket.destroyed=false;socket.writes=[];
+      socket.setTimeout=()=>{};socket.write=value=>socket.writes.push(value);
+      socket.destroy=()=>{socket.destroyed=true;socket.emit('close');};
+      server.connectionListener(socket);
+      return {socket,hello:nonce+'\n',receipt:JSON.stringify({nonce,rootExited:true,ownedTreeEmpty:true,cleanupVerified:true,exitCode:0})+'\n'};
+    },
     marker: 'HUB_JOB_READY:' + nonce + ':6001\n',
     write(value) { runner.stderr.write(value); },
     output: () => output,
@@ -77,6 +84,27 @@ test('fixture managed stderr delivers ready-chunk partial tail before later chun
   run.close();
   assert.equal(run.output(), expected);
   run.verifyClosed();
+});
+
+test('cleanup receipt is accepted only after complete authenticated channel EOF', t=>{
+  const run=fixture(t);run.write(run.marker);
+  const {socket,hello,receipt}=run.connect();
+  socket.emit('data',Buffer.from(hello+receipt));
+  assert.equal(run.child.cleanupReceipt,null);
+  socket.emit('end');
+  assert.equal(run.child.cleanupReceipt?.cleanupVerified,true);
+  run.close();run.verifyClosed();
+});
+
+test('duplicate or trailing cleanup channel data never verifies cleanup', t=>{
+  for(const tail of ['extra', '\n']) {
+    const run=fixture(t);run.write(run.marker);
+    const {socket,hello,receipt}=run.connect();
+    socket.emit('data',Buffer.from(hello));socket.emit('data',Buffer.from(receipt));
+    socket.emit('data',Buffer.from(tail));socket.emit('end');
+    assert.equal(run.child.cleanupReceipt,null);
+    run.close();run.verifyClosed();
+  }
 });
 
 test('fixture managed stderr preserves diagnostics around a split ready marker', t => {

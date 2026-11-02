@@ -26,8 +26,10 @@ function ensureHelper() {
     const systemRoot=process.env.SystemRoot||'C:\\Windows';
     const compiler=ownedPath(path.join(systemRoot,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'));
     const temp=path.join(runtime,'local-drives-'+randomUUID()+'.exe');
-    try{execFileSync(compiler,['/nologo','/target:exe','/optimize+','/reference:System.Web.Extensions.dll','/out:'+temp,source],{windowsHide:true,timeout:30000,stdio:'pipe'});fs.renameSync(temp,file);}
-    catch{try{fs.unlinkSync(temp);}catch{}throw Error('Local drive classification helper is unavailable');}
+    // A concurrent process may already have published (and be running) the same digest.
+    try{execFileSync(compiler,['/nologo','/target:exe','/optimize+','/reference:System.Web.Extensions.dll','/out:'+temp,source],{windowsHide:true,timeout:30000,stdio:'pipe'});try{fs.renameSync(temp,file);}catch(error){if(!fs.existsSync(file))throw error;}}
+    catch(error){if(!fs.existsSync(file))throw Error('Local drive classification helper is unavailable ('+String(error?.code||error?.status||'compile failed')+')');}
+    finally{try{fs.unlinkSync(temp);}catch{}}
   }
   return(binary=file);
 }
@@ -38,7 +40,7 @@ function parseTypes(raw) {
 }
 function queryTypes() {
   const systemRoot=process.env.SystemRoot||'C:\\Windows';
-  let raw;try{raw=execFileSync(ensureHelper(),[],{encoding:'utf8',windowsHide:true,timeout:3000,maxBuffer:4096,env:{SystemRoot:systemRoot,WINDIR:systemRoot}});}catch{throw Error('Local drive classification is unavailable');}
+  let raw;try{raw=execFileSync(ensureHelper(),[],{encoding:'utf8',windowsHide:true,timeout:15000,maxBuffer:4096,env:{SystemRoot:systemRoot,WINDIR:systemRoot}});}catch(error){const tail=String(error.stderr||error.message||'').replace(/[\x00-\x1f\x7f-\x9f]/g,' ').slice(-300);throw Error('Local drive classification is unavailable (exit='+String(error.status??error.code??'unknown')+', signal='+String(error.signal??'none')+'): '+tail);}
   return parseTypes(raw);
 }
 function createChecker({query=queryTypes,now=()=>Date.now(),platform=process.platform}={}) {
@@ -47,9 +49,9 @@ function createChecker({query=queryTypes,now=()=>Date.now(),platform=process.pla
     if(platform!=='win32')return;
     if(typeof value!=='string'||!/^([a-z]):[\\/]/i.test(value)||value.slice(2).includes(':')||/[\0\r\n]/.test(value))throw Error('Local drive path is invalid');
     const time=now();if(!Number.isSafeInteger(time)||time<0)throw Error('Local drive classification time is invalid');
-    // A short OS snapshot avoids a helper per lstat. This does not attest that
+    // A 5-second OS snapshot avoids a helper per lstat. This does not attest that
     // an administrator cannot remount a volume or alter the package itself.
-    if(!cached||time-at>=1000||time<at){cached=parseTypes(query());at=time;}
+    if(!cached||time-at>=5000||time<at||![2,3,5,6].includes(cached[value[0].toUpperCase()])){cached=parseTypes(query());at=time;}
     const type=cached[value[0].toUpperCase()];
     if(![2,3,5,6].includes(type))throw Error('Unknown, absent or remote drives are not accepted');
   };

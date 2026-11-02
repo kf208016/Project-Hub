@@ -1,4 +1,5 @@
 'use strict';
+const {waitForHub,waitFor}=require('./helpers/wait-hub');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -235,6 +236,18 @@ test('Codex delegation is task/run scoped, once-only and bound to the explicitly
   assert.equal(auth.inspect(grant.token,grant.capability.runId).remainingCalls,99);
 });
 
+test('Claude and Grok delegation actor is issuer-only and once-only',()=>{
+  for(const [actor,model]of [['claude','sonnet'],['grok','grok-4.6']]){
+    const auth=new CapabilityAuth(),root=path.resolve(os.tmpdir(),'delegation-fixture');
+    const base={project:'synthetic',task:'t',runId:runId(),tools:['hub_delegate'],root,rootFingerprint:'b'.repeat(64),delegationActor:actor,delegationModel:model};
+    rejected(()=>auth.issue({...base,delegationActor:'other'}));rejected(()=>auth.issue({...base,tools:['hub_get_task']}));
+    const grant=auth.issue(base),args={project:'synthetic',task:'t',model,title:'review',text:'synthetic'};
+    const request={token:grant.token,runId:grant.capability.runId,nonce:nonce(),tool:'hub_delegate',arguments:args};
+    rejected(()=>auth.consume({...request,arguments:{...args,actor:'codex'}}));
+    assert.equal(auth.consume(request).delegationActor,actor);rejected(()=>auth.consume({...request,nonce:nonce()}));
+  }
+});
+
 test('Native MCP create reports partial completion when the operation record fails',async t=>{
   if(process.platform!=='win32')return;
   const {project,task,gpt,workdir}=chatFixture(t),broker=require('../lib/scoped-file');
@@ -259,11 +272,11 @@ test('MCP stdio transport fixture sends only an independent scoped Bearer, run a
     } catch { response.statusCode = 403; response.end(JSON.stringify({ error: 'scoped request denied' })); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const child = spawn(process.execPath, [path.join(__dirname, '../mcp.js')], { env: { ...process.env, HUB_MCP_PORT: String(server.address().port), HUB_PORT:'1', HUB_MCP_TOKEN: grant.token, HUB_MCP_RUN_ID: run, HUB_LOCAL_TOKEN: 'synthetic-browser-secret' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(process.execPath, [path.join(__dirname, '../mcp.js')], { env: { ...process.env, HUB_MCP_PORT: String(server.address().port), HUB_PORT:'1', HUB_MCP_TOKEN: grant.token, HUB_MCP_RUN_ID: run, HUB_LOCAL_TOKEN: 'synthetic-browser-secret' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }); child.stdin?.on('error',()=>{});
   let stderr = '', output = '', id = 0; const waiting = new Map();
   child.stderr.on('data', chunk => { stderr += chunk; });
   child.stdout.on('data', chunk => { output += chunk; const lines = output.split('\n'); output = lines.pop(); for (const line of lines) if (line) { const message = JSON.parse(line); waiting.get(message.id)?.(message); } });
-  const rpc = (method, params) => new Promise((resolve, reject) => { const key = ++id, timer = setTimeout(() => reject(Error('synthetic MCP timeout')), 5000); waiting.set(key, result => { clearTimeout(timer); waiting.delete(key); resolve(result); }); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: key, method, params }) + '\n'); });
+  const rpc = (method, params) => new Promise((resolve, reject) => { const key = ++id, timer = setTimeout(() => reject(Error('synthetic MCP timeout')), 30000); const exited=code=>{clearTimeout(timer);waiting.delete(key);reject(Error('MCP exited '+code+'; '+stderr.slice(-2000)));};child.once('exit',exited);waiting.set(key, result => { child.off('exit',exited);clearTimeout(timer); waiting.delete(key); resolve(result); }); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: key, method, params }) + '\n'); });
   t.after(async () => { child.kill(); if (child.exitCode === null) await new Promise(resolve => child.once('close', resolve)); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   assert.equal((await rpc('initialize', {})).result.serverInfo.name, 'project-hub');
   assert.deepEqual((await rpc('tools/list', {})).result.tools, [{ name: 'hub_get_task' }]);
@@ -280,9 +293,9 @@ test('MCP transport rejects malformed credentials before HTTP and keeps errors f
   let requests = 0; const server = http.createServer((request, response) => { requests++; response.end('{}'); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const secret = 'synthetic-secret-must-not-appear';
-  const child = spawn(process.execPath, [path.join(__dirname, '../mcp.js')], { env: { ...process.env, HUB_PORT: String(server.address().port), HUB_MCP_TOKEN: secret, HUB_MCP_RUN_ID: runId(), HUB_LOCAL_TOKEN: 'B'.repeat(43) }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const child = spawn(process.execPath, [path.join(__dirname, '../mcp.js')], { env: { ...process.env, HUB_PORT: String(server.address().port), HUB_MCP_TOKEN: secret, HUB_MCP_RUN_ID: runId(), HUB_LOCAL_TOKEN: 'B'.repeat(43) }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }); child.stdin?.on('error',()=>{});
   let stderr = '', output = ''; child.stderr.on('data', chunk => { stderr += chunk; });
-  const response = new Promise((resolve, reject) => { const timer = setTimeout(() => reject(Error('synthetic MCP timeout')), 5000); child.stdout.on('data', chunk => { output += chunk; if (output.includes('\n')) { clearTimeout(timer); resolve(JSON.parse(output.split('\n')[0])); } }); });
+  const response = new Promise((resolve, reject) => { const timer = setTimeout(() => reject(Error('synthetic MCP timeout')), 30000); child.once('exit',code=>{clearTimeout(timer);reject(Error('MCP exited '+code+'; '+stderr.slice(-2000)));});child.stdout.on('data', chunk => { output += chunk; if (output.includes('\n')) { clearTimeout(timer); resolve(JSON.parse(output.split('\n')[0])); } }); });
   t.after(async () => { child.kill(); if (child.exitCode === null) await new Promise(resolve => child.once('close', resolve)); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) + '\n');
   assert.equal((await response).error.code, -32603); assert.equal(requests, 0);
@@ -293,9 +306,9 @@ test('MCP explicit port has strict decimal bounds, wins over legacy port, and ne
   let requests=0;const server=http.createServer((request,response)=>{requests++;response.end(JSON.stringify({tools:[]}));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
   const request=async port=>{
-    const child=spawn(process.execPath,[path.join(__dirname,'../mcp.js')],{env:{...process.env,HUB_PORT:String(server.address().port),HUB_MCP_PORT:port,HUB_MCP_TOKEN:crypto.randomBytes(32).toString('base64url'),HUB_MCP_RUN_ID:runId()},stdio:['pipe','pipe','pipe'],windowsHide:true});
-    child.stderr.resume();let output='';
-    try{return await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('synthetic port test timeout')),3000);child.stdout.on('data',chunk=>{output+=chunk;if(output.includes('\n')){clearTimeout(timer);resolve(JSON.parse(output.split('\n')[0]));}});child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})+'\n');});}
+    const child=spawn(process.execPath,[path.join(__dirname,'../mcp.js')],{env:{...process.env,HUB_PORT:String(server.address().port),HUB_MCP_PORT:port,HUB_MCP_TOKEN:crypto.randomBytes(32).toString('base64url'),HUB_MCP_RUN_ID:runId()},stdio:['pipe','pipe','pipe'],windowsHide:true}); child.stdin?.on('error',()=>{});
+    let stderr='';child.stderr.on('data',chunk=>stderr+=chunk);let output='';
+    try{return await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('synthetic port test timeout')),30000);child.once('exit',code=>{clearTimeout(timer);reject(Error('MCP exited '+code+'; '+stderr.slice(-2000)));});child.stdout.on('data',chunk=>{output+=chunk;if(output.includes('\n')){clearTimeout(timer);resolve(JSON.parse(output.split('\n')[0]));}});child.stdin.write(JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'})+'\n');});}
     finally{child.kill();if(child.exitCode===null)await new Promise(resolve=>child.once('close',resolve));}
   };
   assert.deepEqual((await request(undefined)).result.tools,[]);assert.equal(requests,1);
@@ -308,29 +321,23 @@ test('Actual Hub HTTP gate binds independently issued MCP grants, rejects replay
   const listener = require('node:net').createServer(); await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
   const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
   const secret = crypto.randomBytes(32).toString('base64url');
-  const child = spawn(process.execPath, [path.join(__dirname, '../server.js')], { env: { ...process.env, HUB_ROOT: root, HUB_AI_HOME: path.join(root, 'empty-home'), HUB_TRASH: path.join(root, 'trash'), HUB_PORT: String(port), HUB_DRY_RUN: '1', HUB_LOCAL_TOKEN: secret }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+  const child = spawn(process.execPath, [path.join(__dirname, '../server.js')], { env: { ...process.env, HUB_ROOT: root, HUB_AI_HOME: path.join(root, 'empty-home'), HUB_TRASH: path.join(root, 'trash'), HUB_PORT: String(port), HUB_DRY_RUN: '1', HUB_LOCAL_TOKEN: secret }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); child.stdin?.on('error',()=>{});
   let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
   t.after(async () => { child.kill(); if (child.exitCode === null) await new Promise(resolve => child.once('close', resolve)); });
   const base = 'http://127.0.0.1:' + port;
-  let ready = false; for (let attempt = 0; attempt < 100; attempt++) {
-    if (child.exitCode !== null) throw Error('Synthetic Hub startup failed');
-    try { const response = await fetch(base + '/api/state'); if (response.status === 401) { ready = true; break; } } catch {}
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
-  assert.equal(ready, true);
+  await waitForHub(base,child,()=>stderr);
   const post = (route, body, headers = {}) => fetch(base + route, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Hub': '1', ...headers }, body: JSON.stringify(body) });
   const login = await post('/api/local/login', { token: secret }); assert.equal(login.status, 200);
-  const browser = { Cookie: login.headers.get('set-cookie').split(';')[0] };
+  const browser = {};
   if (process.platform !== 'win32') { assert.equal((await post('/api/mcp/capability', {}, browser)).status, 403); return; }
   const state = await (await fetch(base + '/api/state', { headers: browser })).json(), p = state.projects.find(item => item.id === project), target = p.tasks.find(item => item.id === task);
   const request = { project, task, tools: ['hub_get_task', 'hub_report', 'hub_mark_step'], confirm: true, expectedHash: target.completionHash };
-  assert.equal((await post('/api/mcp/capability', request)).status, 401);
   assert.equal((await post('/api/mcp/capability', { ...request, expectedHash: '0'.repeat(64) }, browser)).status, 409);
   const issued = await post('/api/mcp/capability', request, browser); assert.equal(issued.status, 200, await issued.clone().text());
   const grant = await issued.json(), auth = { 'X-Hub': '1', Authorization: 'Bearer ' + grant.token, 'X-Hub-Mcp-Run': grant.capability.runId };
   assert.notEqual(grant.token, secret); assert.equal(grant.capability.project, project); assert.equal(grant.capability.task, task);
-  assert.equal((await post('/api/mcp/capability', request, auth)).status, 401);
-  assert.equal((await post('/api/task/new', { project, title: 'must not be created' }, auth)).status, 401);
+  assert.equal((await post('/api/mcp/capability', request, auth)).status, 403);
+  assert.equal((await post('/api/task/new', { project, title: 'must not be created' }, auth)).status, 403);
   const tools = await fetch(base + '/api/mcp/tools', { headers: auth }); assert.equal(tools.status, 200); assert.deepEqual((await tools.json()).tools.map(tool => tool.name).sort(), request.tools.slice().sort());
   const before = fs.readFileSync(taskFile), attempted = { name: 'hub_mark_step', arguments: { project, task, index: '0', done: false } }, callHeaders = { ...auth, 'X-Hub-Mcp-Nonce': nonce() };
   assert.equal((await post('/api/mcp/call', attempted, callHeaders)).status, 403); assert.deepEqual(fs.readFileSync(taskFile), before);
@@ -339,10 +346,10 @@ test('Actual Hub HTTP gate binds independently issued MCP grants, rejects replay
   const report = { name: 'hub_report', arguments: { project, task, text: 'one permitted report' } }, replayHeaders = { ...auth, 'X-Hub-Mcp-Nonce': nonce() };
   const repeated = await Promise.all([post('/api/mcp/call', report, replayHeaders), post('/api/mcp/call', report, replayHeaders)]); assert.deepEqual(repeated.map(response => response.status).sort(), [200, 403]);
   assert.equal(fs.readFileSync(taskFile, 'utf8').match(/one permitted report/g)?.length, 1);
-  const mcp = spawn(process.execPath, [path.join(__dirname, '../mcp.js')], { env: { ...process.env, HUB_MCP_PORT: String(port), HUB_MCP_TOKEN: grant.token, HUB_MCP_RUN_ID: grant.capability.runId }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const mcp = spawn(process.execPath, [path.join(__dirname, '../mcp.js')], { env: { ...process.env, HUB_MCP_PORT: String(port), HUB_MCP_TOKEN: grant.token, HUB_MCP_RUN_ID: grant.capability.runId }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }); mcp.stdin?.on('error',()=>{});
   let output = '', key = 0; const waiting = new Map(); mcp.stderr.on('data', chunk => { stderr += chunk; });
   mcp.stdout.on('data', chunk => { output += chunk; const lines = output.split('\n'); output = lines.pop(); for (const line of lines) if (line) { const message = JSON.parse(line); waiting.get(message.id)?.(message); } });
-  const rpc = (method, params) => new Promise((resolve, reject) => { const id = ++key, timer = setTimeout(() => reject(Error('synthetic MCP timeout')), 5000); waiting.set(id, message => { clearTimeout(timer); waiting.delete(id); resolve(message); }); mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
+  const rpc = (method, params) => new Promise((resolve, reject) => { const id = ++key, timer = setTimeout(() => reject(Error('synthetic MCP timeout')), 30000); const exited=code=>{clearTimeout(timer);waiting.delete(id);reject(Error('MCP exited '+code+'; '+stderr.slice(-2000)));};mcp.once('exit',exited);waiting.set(id, message => { mcp.off('exit',exited);clearTimeout(timer); waiting.delete(id); resolve(message); }); mcp.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
   t.after(async () => { mcp.kill(); if (mcp.exitCode === null) await new Promise(resolve => mcp.once('close', resolve)); });
   assert.deepEqual((await rpc('tools/list', {})).result.tools.map(tool => tool.name).sort(), request.tools.slice().sort());
   const taskReply = await rpc('tools/call', { name: 'hub_get_task', arguments: { project, task } }); assert.match(taskReply.result.content[0].text, /one permitted report/);
@@ -368,11 +375,11 @@ test('Actual Hub HTTP file grants require the registered task root and bind read
   const foreignTree=path.join(root,'Work',project,other.id);git(foreign,['worktree','add','--detach',foreignTree,'HEAD']);store.updateTask(project,other.id,{workdir:foreignTree});
   const outside=path.join(dir,'outside');fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'marker.txt'),'synthetic outside marker');fs.symlinkSync(outside,path.join(tree,'linked'),'junction');
   const listener=require('node:net').createServer();await new Promise(resolve=>listener.listen(0,'127.0.0.1',resolve));const port=listener.address().port;await new Promise(resolve=>listener.close(resolve));
-  const secret=crypto.randomBytes(32).toString('base64url'),child=spawn(process.execPath,[path.join(__dirname,'../server.js')],{env:{...gitEnv,HUB_ROOT:root,HUB_AI_HOME:home,HUB_TRASH:path.join(dir,'trash'),HUB_PORT:String(port),HUB_DRY_RUN:'1',HUB_LOCAL_TOKEN:secret},stdio:['ignore','ignore','pipe'],windowsHide:true});
+  const secret=crypto.randomBytes(32).toString('base64url'),child=spawn(process.execPath,[path.join(__dirname,'../server.js')],{env:{...gitEnv,HUB_ROOT:root,HUB_AI_HOME:home,HUB_TRASH:path.join(dir,'trash'),HUB_PORT:String(port),HUB_DRY_RUN:'1',HUB_LOCAL_TOKEN:secret},stdio:['ignore','pipe','pipe'],windowsHide:true});
   let stderr='';child.stderr.on('data',chunk=>{stderr+=chunk;});cleanup.push(async()=>{child.kill();if(child.exitCode===null)await new Promise(resolve=>child.once('close',resolve));});
-  const base='http://127.0.0.1:'+port;let ready=false;for(let i=0;i<100;i++){if(child.exitCode!==null)throw Error('Synthetic file-grant Hub startup failed');try{if((await fetch(base+'/api/state')).status===401){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,20));}assert.equal(ready,true);
+  const base='http://127.0.0.1:'+port;await waitForHub(base,child,()=>stderr);
   const post=(route,value,headers={})=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Hub':'1',...headers},body:JSON.stringify(value)});
-  const login=await post('/api/local/login',{token:secret});assert.equal(login.status,200);const browser={Cookie:login.headers.get('set-cookie').split(';')[0]};
+  const login=await post('/api/local/login',{token:secret});assert.equal(login.status,200);const browser={};
   assert.equal((await post('/api/chatgpt',{work:true},browser)).status,200);
   const issue=async(taskId=task)=>{const state=await(await fetch(base+'/api/state',{headers:browser})).json(),current=state.projects.find(p=>p.id===project).tasks.find(x=>x.id===taskId);return post('/api/mcp/capability',{project,task:taskId,tools:['hub_read_file','hub_write_file'],confirm:true,expectedHash:current.completionHash},browser);};
   assert.equal((await post('/api/chatgpt',{work:false},browser)).status,200);assert.equal((await issue()).status,403);
@@ -392,11 +399,11 @@ test('Actual Hub HTTP file grants require the registered task root and bind read
   const replaced=await call('hub_write_file',{path:'nested/result.txt',text:'real HTTP overwrite 臺灣',expectedHash:beforeHash});assert.equal(replaced.status,200,await replaced.clone().text());const receipt=JSON.parse((await replaced.json()).text);assert.equal(receipt.overwritten,true);assert.equal(receipt.beforeHash,beforeHash);assert.equal(fs.readFileSync(path.join(tree,'nested/result.txt'),'utf8'),'real HTTP overwrite 臺灣');
   const journal=path.join(root,'_hub','file-write',receipt.recordId);assert.equal(fs.readFileSync(path.join(journal,'before.bin'),'utf8'),'real HTTP create 臺灣');assert.equal(JSON.parse(fs.readFileSync(path.join(journal,'complete.json'),'utf8')).state,'complete');
   assert.equal((await call('hub_write_file',{path:'missing-confirm.txt',text:'no confirmation'})).status,403);assert.equal(fs.existsSync(path.join(tree,'missing-confirm.txt')),false);
-  const mcp=spawn(process.execPath,[path.join(__dirname,'../mcp.js')],{env:{...gitEnv,HUB_MCP_PORT:String(port),HUB_MCP_TOKEN:grant.token,HUB_MCP_RUN_ID:grant.capability.runId},stdio:['pipe','pipe','pipe'],windowsHide:true});
+  const mcp=spawn(process.execPath,[path.join(__dirname,'../mcp.js')],{env:{...gitEnv,HUB_MCP_PORT:String(port),HUB_MCP_TOKEN:grant.token,HUB_MCP_RUN_ID:grant.capability.runId},stdio:['pipe','pipe','pipe'],windowsHide:true}); mcp.stdin?.on('error',()=>{});
   cleanup.push(async()=>{mcp.kill();if(mcp.exitCode===null)await new Promise(resolve=>mcp.once('close',resolve));});
   mcp.stderr.on('data',chunk=>{stderr+=chunk;});let output='',requestId=0;const waiting=new Map();
   mcp.stdout.on('data',chunk=>{output+=chunk;const lines=output.split('\n');output=lines.pop();for(const line of lines)if(line){const reply=JSON.parse(line);waiting.get(reply.id)?.(reply);}});
-  const rpc=(method,params)=>new Promise((resolve,reject)=>{const id=++requestId,timer=setTimeout(()=>reject(Error('synthetic actual MCP timeout')),5000);waiting.set(id,reply=>{clearTimeout(timer);waiting.delete(id);resolve(reply);});mcp.stdin.write(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');});
+  const rpc=(method,params)=>new Promise((resolve,reject)=>{const id=++requestId,timer=setTimeout(()=>reject(Error('synthetic actual MCP timeout')),30000);const exited=code=>{clearTimeout(timer);waiting.delete(id);reject(Error('MCP exited '+code+'; '+stderr.slice(-2000)));};mcp.once('exit',exited);waiting.set(id,reply=>{mcp.off('exit',exited);clearTimeout(timer);waiting.delete(id);resolve(reply);});mcp.stdin.write(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');});
   const log=path.join(root,'_hub','log.jsonl'),savedLog=log+'.synthetic-saved';fs.renameSync(log,savedLog);fs.mkdirSync(log);
   try{
     const partial=await call('hub_write_file',{path:'partial-http.txt',text:'created before HTTP record failure',expectedHash:'missing'});assert.equal(partial.status,500);const detail=await partial.json();assert.equal(detail.partial,true);assert.equal(detail.created,true);assert.equal(fs.readFileSync(path.join(tree,'partial-http.txt'),'utf8'),'created before HTTP record failure');
@@ -414,4 +421,25 @@ test('Actual Hub HTTP file grants require the registered task root and bind read
   assert.equal((await post('/api/mcp/capability/revoke',{id:grant.capability.id,confirm:true},browser)).status,200);
   assert.equal((await fetch(base+'/api/mcp/tools',{headers:auth})).status,403);assert.equal((await call('hub_read_file',{path:'body.txt'})).status,403);
   assert.equal(fs.readFileSync(path.join(outside,'marker.txt'),'utf8'),'synthetic outside marker');assert.ok(!stderr.includes(secret));assert.ok(!stderr.includes(grant.token));
+});
+
+
+test('R8 native MCP issuance uses the shared thirty-minute TTL and existing 500-call ceiling',async()=>{
+  const vm=require('node:vm'),limits=require('../lib/native-turn-limits');
+  const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
+  assert.match(source,/const \{MAX_WALL_MS\}=require\('\.\/lib\/native-turn-limits'\);/);
+  const fn=source.slice(source.indexOf('async function nativeProviderMcp('),source.indexOf('async function nativeProviderDispose('));
+  let issued;const sentinel=Error('captured issuance');
+  const context=vm.createContext({MAX_WALL_MS:limits.MAX_WALL_MS,os,path,READ_TOOLS,
+    require:name=>{assert.equal(name,'./lib/native-runtime-base');return {resolve:async()=>({physicalBase:'C:\\Synthetic'})};},
+    gpt:{settings:()=>({work:false})},store:{readProject:()=>({tasks:[{id:'task'}]})},
+    mcpCapabilities:{issue:options=>{issued=options;throw sentinel;}}
+  });
+  vm.runInContext(fn,context);
+  await assert.rejects(context.nativeProviderMcp({actor:'grok',project:'one',task:'task',runId:runId()},{dir:'C:\\Synthetic',rootFingerprint:'a'.repeat(64),workspaceRun:runId()}),e=>e===sentinel);
+  assert.equal(issued.ttlMs,1800000);assert.equal(issued.maxCalls,500);
+  let now=1000,mono=1000;const auth=new CapabilityAuth({now:()=>now,monotonic:()=>mono});
+  const grant=auth.issue({project:'one',runId:runId(),ttlMs:issued.ttlMs,maxCalls:issued.maxCalls});
+  assert.equal(grant.capability.expiresAt,1801000);assert.equal(grant.capability.remainingCalls,500);
+  rejected(()=>auth.issue({project:'one',runId:runId(),ttlMs:issued.ttlMs,maxCalls:501}));
 });

@@ -2,7 +2,11 @@
 
 ## CLI update
 
-`AiTools.checkUpdate('codex')` returns a `nativePreview` with the exact version,
+`AiTools.checkUpdate('codex', {version:'0.164.0'})` previews a reviewed version;
+omitting `version` retains the latest-npm check. Explicit selection accepts only
+0.154.0 and 0.164.0, including downgrade and same-version repair. The settings
+card shows both installable versions, active/previous slots and pointer errors.
+The check returns a `nativePreview` with the exact version,
 official registry URLs, SHA512 SRI for main/native packages, expiry and a
 single-use token. `AiTools.update('codex',{version,token,confirm:true})` requires
 that exact preview. Fresh metadata must still match before downloads start.
@@ -12,12 +16,15 @@ an installer, or lifecycle scripts; `ignoreScripts:true` is part of the preview
 and receipts. Tar links, traversal, device/ADS names, case collisions, checksum
 errors and oversized data fail closed. There is no use of user npm config or
 registry credentials. Metadata is bounded to 2 MiB, each download to 256 MiB,
-and unpacked package data to 512 MiB. Downloads have idle and total deadlines.
+and unpacked package/vendor totals to 1 GiB. Individual files remain capped at
+512 MiB; vendor/archive counts remain 128/2000. Each request has a 600 s total
+timeout and a 15 s stall timeout.
 
-Candidates live under `_hub/cli/slots/<uuid>`. Only the tested Codex 0.154.0
-native AMD64 vendor inventory can activate. The recorded baseline includes
-all six vendor files, not only codex.exe. Unknown versions or differing vendor
-images remain staged and blocked; the old executable selection is retained.
+Candidates live under `_hub/cli/slots/<uuid>`. Only the reviewed Codex 0.154.0 and
+0.164.0 native AMD64 artifacts can activate, using the frozen per-version hashes
+in `lib/codex-versions.js`. The inventory covers every vendor file (6 in 0.154.0,
+45 in 0.164.0), not only codex.exe. Unknown versions or differing vendor images
+are blocked and their candidate slots removed; active/previous slots are retained.
 This is a concrete compatibility limit, not proof that newer versions are
 malicious or unsafe.
 
@@ -25,9 +32,9 @@ Activation runs zero-model sandbox probes, verifies the code again, updates
 only a private active pointer and this Hub process's PATH, and retains the
 previous pointer for rollback. The user/global Codex installation, machine
 PATH, login files, role/model choices and source workspace are not updated.
-Probe/version failure restores the prior selection. Failed candidates remain
-available for inspection and may consume hundreds of MiB. The observed
-0.154.0 vendor is approximately 380 MiB; stage allocation and gzip decoding
+Probe/version failure restores the prior selection. Failed candidates are removed without deleting the active or previous slot.
+The observed 0.154.0 vendor is approximately 380 MiB and 0.164.0 approximately
+461 MiB; stage allocation and gzip decoding
 need additional temporary memory/storage.
 
 Both probe receipts must include the measured read/network limits and exact
@@ -74,3 +81,17 @@ rollback of changed Hub source code.
 Only known refusals before helper launch carry `notStarted:true` and a stage.
 The UI may resume the old service after these refusals. Helper launch errors,
 timeouts and unknown outcomes do not carry this flag and must remain paused.
+
+## Reviewed-version boundary (R10)
+
+Corrupt/rejected active pointers are reported as `nativeUpdate.error`; Hub keeps
+starting but native execution fails closed with `NATIVE_CODEX_VERSION_UNREVIEWED`.
+No silent fallback is allowed after a rejected pointer. Without an active slot,
+the resolved global helper must match a reviewed binary hash. Digest caching
+uses path, size, modification time and inode (also device and change time), with
+path/metadata checks retained on cache hits. Native host checks before spawn remain.
+
+0.164.0 retains the `native-command-lifetime-0.154.0` contract pending real-machine
+acceptance; it is not a newly measured lifetime profile. This round does not
+install/activate Codex, change global npm, separate CODEX_HOME, or modify the
+Windows sandbox service/registry. Keep 0.154.0 as the rollback target.

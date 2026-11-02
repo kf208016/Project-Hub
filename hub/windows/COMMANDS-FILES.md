@@ -1,7 +1,7 @@
 # Windows native commands and files
 
 These modules are verified on native AMD64 Windows build 26200, local NTFS,
-and Codex CLI 0.154.0. Unsupported builds, architecture, filesystems and Codex
+and reviewed Codex CLI 0.154.0 / 0.164.0 artifacts (exact per-version hashes). Unsupported builds, architecture, filesystems and Codex
 initialize versions fail closed. They are internal primitives; server and
 browser authorization must be connected and tested separately.
 
@@ -45,7 +45,7 @@ not constitute a complete network boundary. The browser must disclose both
 limits before each approval. No claim is made about all host read paths or
 all external network paths.
 
-Windows 0.154.0 rejects streaming commands and custom `outputBytesCap`, and
+The retained 0.154.0 Windows contract rejects streaming commands and custom `outputBytesCap`, and
 does not register its buffered commands for protocol `command/exec/terminate`.
 The adapter uses buffered output plus an independent 1 MiB transport bound.
 Cancellation closes the connection, then signals the owned supervisor if
@@ -150,3 +150,8 @@ grandchild processes. Cancellation and owner death removed all reported
 owned processes, preserved an unrelated fixture, and released the root pins
 after cleanup. This is specific process evidence, not proof about arbitrary
 unrelated host processes or future Codex releases.
+
+R10 accepts only allow-listed app-server userAgent versions and requires an exact
+match to the binary version selected by the controller. Both versions keep the
+5-second forced shutdown and omit outputBytesCap; 0.164.0 requires real-machine
+re-verification. A synthetic handshake is not evidence of sandbox containment.

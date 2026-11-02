@@ -1,4 +1,5 @@
 'use strict';
+const {waitForHub,waitFor}=require('./helpers/wait-hub');
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net'),https=require('node:https'),tls=require('node:tls'),crypto=require('node:crypto');
 const {execFileSync}=require('node:child_process'),{spawn}=require('../lib/managed-process'),{WindowsRemote,endpoint}=require('../lib/windows-remote');
 const win=process.platform==='win32'?test:test.skip;
@@ -25,18 +26,18 @@ win('Windows HTTPS binds an exact private endpoint, protects its key with real D
 });
 win('Actual Windows Hub HTTPS has separate remote sessions, Origin gates and local-only control APIs',{timeout:90000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hub-remote-http-')),config={host:'localhost',bindAddress:'127.0.0.1',port:await port(),...certificate(root)},cert=fs.readFileSync(config.certFile),localPort=await port(),secret=crypto.randomBytes(32).toString('base64url');
-  const child=spawn(process.execPath,[path.join(__dirname,'../server.js')],{cwd:path.join(__dirname,'..'),env:{...process.env,HUB_ROOT:root,HUB_AI_HOME:path.join(root,'empty-home'),HUB_PORT:String(localPort),HUB_LOCAL_TOKEN:secret,HUB_DRY_RUN:'1'},stdio:['ignore','ignore','pipe'],windowsHide:true});let stderr='';child.stderr.on('data',part=>{stderr+=part;});
+  const child=spawn(process.execPath,[path.join(__dirname,'../server.js')],{cwd:path.join(__dirname,'..'),env:{...process.env,HUB_ROOT:root,HUB_AI_HOME:path.join(root,'empty-home'),HUB_PORT:String(localPort),HUB_LOCAL_TOKEN:secret,HUB_DRY_RUN:'1'},stdio:['ignore','pipe','pipe'],windowsHide:true});let stderr='';child.stderr.on('data',part=>{stderr+=part;});
   t.after(async()=>{if(child.exitCode===null){child.kill();await new Promise(resolve=>child.once('close',resolve));}fs.rmSync(root,{recursive:true,force:true});});const base='http://127.0.0.1:'+localPort;
-  const post=(route,body,headers={})=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Hub':'1',...headers},body:JSON.stringify(body)});let ready=false;for(let n=0;n<100;n++){if(child.exitCode!==null)throw Error('Owned HTTPS Hub fixture startup failed');try{if((await fetch(base+'/api/state')).status===401){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,30));}assert.equal(ready,true);
-  const login=await post('/api/local/login',{token:secret}),localCookie=login.headers.get('set-cookie').split(';')[0],local={Cookie:localCookie};
+  const post=(route,body,headers={})=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Hub':'1',...headers},body:JSON.stringify(body)});await waitForHub(base,child,()=>stderr);
+  const login=await post('/api/local/login',{token:secret}),localCookie=login.headers.get('set-cookie').split(';')[0],local={};
   const previewResult=await post('/api/remote/tls/preview',config,local);assert.equal(previewResult.status,200,await previewResult.clone().text());const preview=await previewResult.json();assert.equal((await post('/api/remote/tls/configure',{token:preview.token,origin:preview.origin,certFingerprint:preview.certFingerprint,confirm:true},local)).status,200);
   assert.equal((await post('/api/remote',{passcode:'synthetic HTTPS passphrase'},local)).status,200);const enabled=await post('/api/remote',{enabled:true},local);assert.equal(enabled.status,200,await enabled.clone().text());assert.equal((await enabled.json()).tls.running,true);
   assert.equal((await secureRequest(config,cert,'/api/state',{cookie:localCookie})).status,401,'local cookie is not a remote session');assert.equal((await secureRequest(config,cert,'/api/state')).status,401);
   assert.equal((await secureRequest(config,cert,'/api/login',{body:{passcode:'wrong'}})).status,401);const remoteLogin=await secureRequest(config,cert,'/api/login',{body:{passcode:'synthetic HTTPS passphrase'}});assert.equal(remoteLogin.status,200);const cookie=remoteLogin.headers['set-cookie'][0].split(';')[0];assert.match(remoteLogin.headers['set-cookie'][0],/HttpOnly; Secure; SameSite=Lax/);
-  assert.equal((await secureRequest(config,cert,'/api/state',{cookie})).status,200);assert.equal((await fetch(base+'/api/state',{headers:{Cookie:cookie}})).status,401,'remote cookie is not a local session');
+  assert.equal((await secureRequest(config,cert,'/api/state',{cookie})).status,200);assert.equal((await fetch(base+'/api/state',{headers:{Cookie:cookie}})).status,200,'local access does not depend on cookies');
   assert.equal((await secureRequest(config,cert,'/api/project/new',{cookie,body:{name:'Synthetic TLS project'}})).status,200);
   assert.equal((await secureRequest(config,cert,'/api/project/new',{cookie,body:{name:'must refuse'},headers:{Origin:'https://evil.example'}})).status,403);
-  for(const route of ['/api/mcp/capability','/api/commands/decide','/api/remote/tls/preview'])assert.equal((await secureRequest(config,cert,route,{cookie,body:{}})).status,403);
+  for(const route of ['/api/mcp/capability','/api/mcp/capability/revoke','/api/commands/decide','/api/commands/cancel','/api/workspace-destination/preview','/api/workspace-destination/approve','/api/native-provider/preview','/api/native-provider/approve','/api/native-provider/revoke','/api/chatgpt/register/preview','/api/chatgpt/register','/api/remote/tls/preview'])assert.equal((await secureRequest(config,cert,route,{cookie,body:{}})).status,403);
   assert.equal((await secureRequest(config,cert,'/api/remote',{cookie,body:{enabled:false}})).status,403);
   assert.equal((await post('/api/remote/logout-all',{},local)).status,200);assert.equal((await secureRequest(config,cert,'/api/state',{cookie})).status,401);
   assert.equal((await post('/api/remote',{enabled:false},local)).status,200);assert.equal(stderr.includes(secret),false);assert.equal(stderr.includes('PRIVATE KEY'),false);

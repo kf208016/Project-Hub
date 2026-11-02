@@ -17,6 +17,21 @@ const actorIds=Object.freeze(entries.map(row=>row.id));
 const ownerKeys=Object.freeze(entries.map(row=>row.ownerKey));
 const cliIds=Object.freeze(entries.filter(row=>row.kind==='cli').map(row=>row.id));
 const webIds=Object.freeze(entries.filter(row=>row.kind==='external-chat').map(row=>row.id));
+// Reference authority belongs to this controller process. A serialized request,
+// constructor handler or worker's separate require() cannot forge this entry.
+const nativeAuthorities=new WeakMap();
+function createNativeAuthority(value,capabilities,check){
+  const actor=cliActor(value);
+  if(!['claude','grok'].includes(actor.id)||typeof check!=='function'||!Array.isArray(capabilities)||!capabilities.length||
+    new Set(capabilities).size!==capabilities.length||capabilities.some(c=>!CLI_CAPABILITIES.includes(c)))throw rejected('INVALID_NATIVE_AUTHORITY',400,'原生控制端能力設定無效');
+  const ref=Object.freeze(Object.create(null));nativeAuthorities.set(ref,{actor:actor.id,capabilities:Object.freeze([...capabilities]),check});return ref;
+}
+function nativeAuthority(actor,options){
+  const ref=options?.nativeAuthority||options?.nativeAuthorities?.[actor.id];
+  const record=ref&&typeof ref==='object'?nativeAuthorities.get(ref):null;
+  if(!record||record.actor!==actor.id)return null;
+  try{return record.check()===true?record:null;}catch{return null;}
+}
 function rejected(code,status,message){return Object.assign(Error(message),{code,status,notStarted:true});}
 function resolveActor(value){
   if(typeof value!=='string')throw rejected('UNKNOWN_ACTOR',400,'AI 入口格式無效');
@@ -27,10 +42,11 @@ function resolveActor(value){
 function isActor(value){try{resolveActor(value);return true;}catch{return false;}}
 function cliActor(value){const row=resolveActor(value);if(row.kind!=='cli')throw rejected('CLI_ACTOR_REQUIRED',400,'此網頁 Chat 入口不能啟動 CLI');return row;}
 function webActor(value){const row=resolveActor(value);if(row.kind!=='external-chat')throw rejected('WEB_ACTOR_REQUIRED',400,'此入口不是人工網頁 Chat');return row;}
-function status(value,{platform=process.platform}={}){
+function status(value,options={}){
+  const {platform=process.platform}=options;
   const actor=resolveActor(value);
   if(typeof platform!=='string'||!platform)throw rejected('INVALID_PLATFORM',400,'執行平台格式無效');
-  const ready=actor.kind==='external-chat'||actor.id==='codex'||platform!=='win32'&&actor.id!=='grok';
+  const ready=actor.kind==='external-chat'||actor.id==='codex'||platform!=='win32'&&actor.id!=='grok'||platform==='win32'&&Boolean(nativeAuthority(actor,options));
   return Object.freeze({ready,state:ready?'ready':'blocked',reasonCode:ready?'':actor.id==='grok'?'PROVIDER_ADAPTER_UNVERIFIED':'WINDOWS_PROVIDER_ISOLATION_UNVERIFIED',runtimeVerificationRequired:actor.kind==='cli'});
 }
 function supports(value,capability){const actor=resolveActor(value);return typeof capability==='string'&&actor.capabilities.includes(capability);}
@@ -39,6 +55,8 @@ function assertCapability(value,capability,options){
   if(!supports(actor.id,capability))throw rejected('ACTOR_CAPABILITY_UNAVAILABLE',409,'此 AI 入口不支援要求的操作');
   const readiness=status(actor.id,options);
   if(!readiness.ready)throw rejected(readiness.reasonCode,409,'此 CLI 的執行與隔離尚未驗證，未啟動');
+  const admitted=nativeAuthority(actor,options);
+  if((options?.platform||process.platform)==='win32'&&admitted&&!admitted.capabilities.includes(capability))throw rejected('ACTOR_CAPABILITY_UNAVAILABLE',409,'此原生入口尚未接入要求的操作');
   return actor;
 }
 function list(options){return entries.map(actor=>Object.freeze({...actor,readiness:status(actor.id,options)}));}
@@ -59,4 +77,4 @@ function validateSnapshot(rows,options){
   }
   return true;
 }
-module.exports={resolveActor,resolve:resolveActor,isActor,cliActor,webActor,status,supports,assertCapability,list,validateSnapshot,actorIds,ownerKeys,cliIds,webIds,CLI_CAPABILITIES,WEB_CAPABILITIES};
+module.exports={resolveActor,resolve:resolveActor,isActor,cliActor,webActor,status,supports,assertCapability,list,validateSnapshot,createNativeAuthority,actorIds,ownerKeys,cliIds,webIds,CLI_CAPABILITIES,WEB_CAPABILITIES};

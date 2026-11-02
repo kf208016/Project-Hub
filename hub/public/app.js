@@ -18,8 +18,10 @@ const webActor = value => ['chatgpt','claude-chat'].includes(value);
 const actorReady = value => (state.providers || []).find(x=>x.id===canonicalActor(value))?.readiness?.ready === true;
 const manualReady = value => webActor(value) && actorReady(value) && state.webChatAvailable === true;
 const cliReady = value => AIS.includes(canonicalActor(value)) && actorReady(value) && (canonicalActor(value) !== 'agy' || state.agyAvailable === true);
-function requireCliReady(value) {
+const cliTerminalReady=value=>cliReady(value)&&!(state.windowsBrowser&&['claude','grok'].includes(canonicalActor(value)));
+function requireCliReady(value,operation='chat') {
   if (!cliReady(value)) throw Error(L('この CLI の実行と分離は未検証です。まだ起動できません。'));
+  if(operation==='terminal'&&!cliTerminalReady(value))throw Error('此 CLI 的自主命令與委派請由對話畫面執行；原生終端機入口尚未接線。');
 }
 const AIS = ['claude', 'codex', 'agy', 'grok'];
 const AI_ICON = { claude: 'C', codex: 'X', agy: 'G', grok:'K', chatgpt: 'G', 'claude-chat':'C' };
@@ -27,7 +29,9 @@ const AI_KEY = { claude: 'claude-code', codex: 'codex', agy: 'agy', grok:'grok' 
 const AI_LABEL = { claude: 'Claude Code', codex: 'Codex', agy: 'Agy CLI', grok:'Grok CLI', chatgpt: 'ChatGPT Chat', 'claude-chat':'Claude Chat' };
 // 未保存の新規開始とツリーからの子作業に使う初期AI。役割の担当設定とは別。
 const INITIAL_PICK = { ai: 'codex', model: 'GPT-6.1-Sol', effort: '高' };
-const initialPick = () => state?.initialPick || INITIAL_PICK;
+const WINDOWS_INITIAL_PICK = { ai: 'codex', model: 'CLI預設', effort: '高' };
+const defaultInitialPick = () => state?.windowsBrowser ? WINDOWS_INITIAL_PICK : INITIAL_PICK;
+const initialPick = () => state?.initialPick || defaultInitialPick();
 const startSpec = pick => webActor(pick.ai) ? { ai:pick.ai, model:'', effort:'' } : pick;
 function openManualStart(result, project, text) {
   if (result.webManual !== true || !webActor(result.actor) || typeof result.task !== 'string') throw Error(L('手動引き継ぎの作業を確認できませんでした。'));
@@ -84,10 +88,11 @@ let panes = {}; // ai → { xterm, fit, es, ro }
 let rolesDraft = null;
 let stateLoadEpoch = 0;
 let renderedTreeKey = '', renderedMainKey = '';
+let renderedGrokStatusHtml = '';
 try { const v = JSON.parse(localStorage.getItem('hub-view') || 'null'); if (v) view = v; open = new Set(JSON.parse(localStorage.getItem('hub-open') || '[]')); } catch (e) { /* 使えない時はそのまま */ }
 
 let stateTag = ''; // 一覧の印（本体が「変わっていない」を答えるために送り返す）
-async function api(path, body, headers, workspaceRetried = false) {
+async function api(path, body, headers, workspaceRetried = false, nativeRetried=false,destinationRetried=false) {
   if(window.hubI18nReady)await window.hubI18nReady;
   if(window.HubNativeRestart?.paused&&path!=='/api/restart')throw Error('重新啟動期間已暫停介面連線，等待身分證明。');
   if (window.hubAuthReady) await window.hubAuthReady;
@@ -101,8 +106,19 @@ async function api(path, body, headers, workspaceRetried = false) {
   if (!r.ok) {
     const starts = ['/api/start','/api/chat/send','/api/term/start','/api/term/handoff','/api/continue','/api/delegate'];
     if (!workspaceRetried && r.status === 409 && j.code === 'WORKSPACE_REQUIRED' && j.workspaceRequired === true && starts.includes(path) && body && j.project === body.project && typeof j.task === 'string' && (!body.task || body.task === j.task)) {
-      const permit = await requestNativeWorkspace(j.project, j.task);
-      return api(path, {...body, task:j.task, workspacePermit:permit}, headers, true);
+      const permit = await requestNativeWorkspace(j.project, j.task,body.ai||j.actor||'codex');
+      return api(path, {...body, task:j.task, workspacePermit:permit}, headers, true,nativeRetried,destinationRetried);
+    }
+    if(!nativeRetried&&r.status===409&&j.code==='NATIVE_PROVIDER_APPROVAL_REQUIRED'&&starts.includes(path)&&body&&
+      j.project===body.project&&(!body.task||j.task===body.task)&&(j.actor===body.ai||body.fromQueue&&!body.ai)&&['claude','grok'].includes(j.actor)){
+      await requestNativeProvider({...body,task:j.task,ai:j.actor,model:body.model||j.model,effort:body.effort??j.effort});
+      return api(path,{...body,task:j.task},headers,workspaceRetried,true,destinationRetried);
+    }
+    if(!destinationRetried&&r.status===409&&j.code==='WORKSPACE_DESTINATION_REQUIRED'&&j.actor==='codex'&&starts.includes(path)&&body&&j.project===body.project&&(!body.task||body.task===j.task)){
+      const preview=await api('/api/workspace-destination/preview',{project:j.project,task:j.task,actor:j.actor});
+      await api('/api/workspace-destination/approve',{token:preview.token,confirm:true,ackDestination:true,ackReadLimits:true});
+      toast('已自動核准切換至 '+preview.destination+'。');
+      return api(path,{...body,task:j.task},headers,workspaceRetried,nativeRetried,true);
     }
     const e = new Error(j.error || L('失敗しました')); e.status = r.status; e.reason = j.reason; e.stage = j.stage; e.task = j.task; e.notStarted = j.notStarted === true;
     const webRoutes=['/api/web-chat/result','/api/web-chat/status','/api/web-chat/recover'];
@@ -110,35 +126,31 @@ async function api(path, body, headers, workspaceRetried = false) {
       e.webChatStatus=window.HubWebChat?.failureStatus(path,r.status,j,body)||null;
       e.webChatRecoveryRequired=j.partial===true&&j.recoveryRequired===true;
     }
+    if(typeof j.code==='string'&&/^[A-Z][A-Z0-9_]{2,63}$/.test(j.code)){e.code=j.code;if(!e.message.includes(j.code))e.message+=`（代碼：${j.code}）`;}
     throw e;
   }
   return j;
 }
-let workspaceDialogCancel = null;
+async function requestNativeProvider(body){
+  const p=proj(body.project),t=taskOf(p,body.task),spec=t?specOf(t,body.ai):null;
+  const model=body.model||spec?.model||'',effort=body.effort||spec?.effort||'';
+  const preview=await api('/api/native-provider/preview',{project:body.project,task:body.task,actor:body.ai,model,effort});
+  await api('/api/native-provider/approve',{token:preview.token,confirm:true,ackAuthenticationRead:true,ackCommandAccess:true,ackDestination:true,ackSessionWrite:true});
+  toast('已自動核准 '+(AI_LABEL[body.ai]||body.ai)+' 原生 CLI 執行。');
+}
 const workspaceClosePending = new Set();
 function workspaceLifecycleHtml(p,t){const lifecycle=t.workspaceLifecycle;if(!state.windowsBrowser||!lifecycle?.retryClose)return '';const pending=workspaceClosePending.has(JSON.stringify([p.id,t.id])),label=lifecycle.state==='cleanup-failed'?'工作區停止或清理未完成；檔案、紀錄與互斥鎖保留。':lifecycle.state==='verification-blocked'?'工作區驗證未通過；流程與互斥鎖保留。':lifecycle.state==='waiting'?'工作區流程仍保留；可停止待執行指示並完成清理。':'工作區正在停止或清理；完成前保持互斥鎖。';return UI`<div class="wq workspace-cleanup" role="status"><p>${esc(label)}</p><button class="btn plain" data-act="workspaceclose" data-p="${esc(p.id)}" data-t="${esc(t.id)}" type="button" ${pending?'disabled':''}>${pending?'停止／清理中…':'重試停止／清理工作區'}</button></div>`;}
 function refreshWorkspaceLifecycle(){if(view.kind!=='work')return;const p=proj(view.project),t=taskOf(p,view.task),box=$('#workspace-lifecycle');if(box&&p&&t)box.innerHTML=workspaceLifecycleHtml(p,t);}
+function refreshGrokStatus(){if(view.kind!=='work')return;const p=proj(view.project),t=taskOf(p,view.task),box=$('#grok-status');if(!box||!p||!t)return;const html=canonicalActor(t.owner)==='grok' ? grokStatusHtml(state.grokStatus) : '';if(html===renderedGrokStatusHtml||box.contains?.(document.activeElement))return;box.innerHTML=html;renderedGrokStatusHtml=html;}
 async function closeNativeWorkspace(project,task,button){const key=JSON.stringify([project,task]);if(workspaceClosePending.has(key))return;if(!confirm('停止此作業的全部 Hub owned 程序、取消待執行指示並撤銷 MCP 授權，然後重試機密清理？檔案內容或 FileID 已變更時仍會保留檔案與互斥鎖供覆核。'))return;workspaceClosePending.add(key);button.disabled=true;const label=button.textContent;button.textContent='停止／清理中…';try{const result=await api('/api/task/workspace/close',{project,task,confirm:true});if(result.ok!==true||result.partial===true||result.workspaceLifecycle!==null)throw Error('工作區停止或清理尚未完成；未顯示成功，請保留檔案與紀錄後重試');toast(result.duplicate?'目前 controller 沒有此作業的有效工作區流程；沒有執行額外清理。':'工作區程序已停止，授權已撤銷，清理已完成');await load();}finally{workspaceClosePending.delete(key);button.disabled=false;button.textContent=label;refreshWorkspaceLifecycle();}}
-function workspaceDialog(title, html, read) {
-  return new Promise((resolve,reject) => {
-    if(workspaceDialogCancel)return reject(Error('另一個工作區核准畫面仍開啟，請先確認或取消'));
-    let sheet=$('#fsheet');if(!sheet){document.body.insertAdjacentHTML('beforeend','<div class="fsheet" id="fsheet" role="dialog" aria-modal="true"></div>');sheet=$('#fsheet');}sheet.hidden=false;
-    sheet.innerHTML=UI`<section class="fs-box" role="dialog" aria-modal="true" aria-label="${esc(title)}"><header class="fs-head"><h2>${esc(title)}</h2></header><div class="fs-list">${html}<p id="ws-error" role="alert"></p></div><footer class="fs-acts"><button id="ws-cancel">取消</button><button id="ws-confirm" class="primary">確認</button></footer></section>`;
-    const close=()=>{sheet.hidden=true;sheet.innerHTML='';sheet.onclick=null;workspaceDialogCancel=null;};
-    workspaceDialogCancel=()=>{close();reject(Error('已取消此次工作區核准；指示仍保留，尚未啟動 AI'));};
-    $('#ws-cancel').onclick=workspaceDialogCancel;sheet.onclick=e=>{if(e.target===sheet)workspaceDialogCancel?.();};
-    $('#ws-confirm').onclick=()=>{try{const value=read();close();resolve(value);}catch(error){$('#ws-error').textContent=error.message;}};
-  });
-}
-async function requestNativeWorkspace(project,task) {
-  const d=await api('/api/task/workspace/discover',{project,task});
-  const files=Array.isArray(d.candidates)?d.candidates:[];
-  const selections=await workspaceDialog('本次 Codex 工作區與機密選擇',UI`<p>來源：<code>${esc(d.base)}</code><br>模式：${d.mode==='direct'?'本體直接作業（本體互斥鎖）':'指定 task 工作複本'}</p><p>請逐項選取此次允許 Codex 讀取並可能傳至 <strong>OpenAI 模型服務</strong>的已辨識機密檔案。短期供應有效 10 分鐘，到期先停止此流程再清理；來源檔和 Git 歷史仍保留。此清單依檔名辨識，未涵蓋全部機密。直接模式可讀本體全部檔案，必須核准下列完整清單。</p>${files.map((f,i)=>UI`<label class="ws-file"><input type="checkbox" id="ws-secret-${i}"> <code>${esc(f.relative)}</code>（${f.bytes} bytes）<br><small>SHA-256 ${esc(f.sha256)}</small></label>`).join('')||'<p>未依檔名辨識到機密檔案。</p>'}`,()=>files.filter((f,i)=>$('#ws-secret-'+i).checked).map(f=>f.relative));
-  const p=await api('/api/task/workspace/preview',{project,task,secrets:selections});
-  const hooks=p.execution?.hooks||[];
-  const ack=await workspaceDialog('核准本次 Codex 工作流程',UI`<p>${esc(p.action)}</p><p>原始內容 SHA-256：<code>${esc(p.original.allContent)}</code><br>Git HEAD：<code>${esc(p.original.head||'尚未建立')}</code>${p.workingOriginal?UI`<br>既有工作複本 SHA-256：<code>${esc(p.workingOriginal.snapshot.allContent)}</code>`:''}</p><p>核准傳至 OpenAI 的所選檔案：${selections.map(esc).join('、')||'無額外機密供應'}。工作區其他內容也可能由 Codex 用於模型請求。</p>${p.trackedSecrets?.length?UI`<p>Git HEAD 已追蹤：${p.trackedSecrets.map(esc).join('、')}；工作複本和 Git 歷史可讀，短期清理不會抹除來源或歷史。</p>`:''}${hooks.length?UI`<p>此次 Git hooks：${hooks.map(h=>esc(h.path||h)).join('、')}</p><label><input type="checkbox" id="ws-hooks">核准此次 Git 操作不執行上述 hooks</label>`:''}<p>原生 Codex 已測限制（包含工作複本與直接模式）：workspace-write 可阻擋工作區外寫入，但合成 sibling 檔案仍可被讀取；工作複本不保證讀取限定此 task。networkAccess=false 也不是完整斷網保證。</p><label><input type="checkbox" id="ws-read">我了解並核准上述主機讀取範圍限制</label><br><label><input type="checkbox" id="ws-network">我了解並核准上述網路限制及 OpenAI 資料目的</label>`,()=>{if(!$('#ws-read').checked||!$('#ws-network').checked)throw Error('請明確核准讀取與網路限制');if(hooks.length&&!$('#ws-hooks').checked)throw Error('請核准此次 hooks 處理');return{skipHooks:hooks.length>0,ackReadLimits:true,ackNetworkLimits:true};});
-  const prepared=await api('/api/task/workspace/prepare',{project,task,token:p.token,confirm:true,...ack});
+async function requestNativeWorkspace(project,task,actor='codex') {
+  if(!['codex','claude','grok'].includes(actor))throw Error('此工作區的 CLI 目的地無效');
+  const scope={project,task,...(actor==='codex'?{}:{actor})},label=AI_LABEL[actor]||actor;
+  await api('/api/task/workspace/discover',scope);
+  const preview=await api('/api/task/workspace/preview',{...scope,secrets:[]}),hooks=preview.execution?.hooks||[];
+  const prepared=await api('/api/task/workspace/prepare',{...scope,token:preview.token,confirm:true,skipHooks:hooks.length>0,ackReadLimits:true,ackNetworkLimits:true});
   if(prepared.ok!==true||typeof prepared.permit!=='string')throw Error(prepared.error||'工作區準備未完成，未啟動 AI');
+  toast('已自動核准本次 '+label+' 工作流程。');
   return prepared.permit;
 }
 function toast(t) { const e = $('#toast'); e.textContent = t; e.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => { e.hidden = true; }, 3000); }
@@ -183,7 +195,7 @@ async function load({ preserveMain = false } = {}) {
   const epoch = ++stateLoadEpoch;
   const next = await fetchState();
   if (epoch !== stateLoadEpoch) return;
-  if (next) state = next;
+  if (next) state = {...next,...(state.grokLoginPrompt?{grokLoginPrompt:state.grokLoginPrompt}:{})};
   if (!proj(view.project)) view.project = state.projects[0] ? state.projects[0].id : null;
   if (view.kind === 'work' && !taskOf(proj(view.project), view.task)) view.kind = 'project';
   showInTree();
@@ -366,7 +378,9 @@ function mainKey() {
   const common = [view.kind, view.project, view.task, state.root, state.terminal, state.roles, state.efforts, state.cliFlags, state.completionWarning, state.modelOrder, state.hiddenModels];
   if (view.kind === 'work') {
     const sessions = workMode() === 'term' ? state.sessions.filter(s => s.project === view.project && s.task === view.task).map(s => [s.ai, s.running]) : [];
-    return JSON.stringify([...common, p && p.name, p && p.phases, taskOf(p, view.task), sessions]);
+    const task = taskOf(p, view.task);
+    const stableTask = task && Object.fromEntries(Object.entries(task).filter(([key]) => key !== 'workspaceLifecycle'));
+    return JSON.stringify([...common, p && p.name, p && p.phases, stableTask, sessions]);
   }
   if (view.kind === 'project') return JSON.stringify([...common, p, state.github, state.projectOrder, state.projectPins, state.projects.map(x => [x.id, x.name]), state.sessions.filter(s => s.project === view.project).map(waitingKey), state.chatting]);
   if (view.kind === 'turn') return JSON.stringify([...common, state.projects, state.sessions.map(waitingKey), state.chatting]);
@@ -398,7 +412,7 @@ function render() {
     windowsNotice.hidden = !state.windowsBrowser;
     if(state.windowsBrowser) {
       const monitoring=state.backgroundStatus;
-      const status=monitoring?.state==='ok' ? (monitoring.unassigned ? UI`未割り当ての外部 AI プロセスを ${monitoring.unassigned} 件検出しました。作業場所は確認できません。` : L('バックグラウンドプロセスの照会に成功しました。')) : L('バックグラウンドの状態は不明です。作業がないとは判断できません。');
+      const status=monitoring?.state==='ok' ? (monitoring.unassigned ? UI`未割り当ての外部 AI プロセスを ${monitoring.unassigned} 件検出しました。作業場所は確認できません。`+((monitoring.unassignedProcesses||[]).length?`（${monitoring.unassignedProcesses.map(x=>`${x.ai||'AI'} PID ${x.pid}`).join('、')}）`:'') : L('バックグラウンドプロセスの照会に成功しました。')) : L('バックグラウンドの状態は不明です。作業がないとは判断できません。')+(monitoring?.code?`（代碼：${monitoring.code}）`:'');
       windowsNotice.textContent=UI`Windows 原生 Codex：作業範囲の承認、会話、ConPTY ターミナル。${status} 整理・復元の前に、実行中や未割り当ての作業がないことを確認してください。Claude／Agy／Grok CLI の実行と分離は未検証です。ChatGPT／Claude Chat は手動引き継ぎです。`;
     }
   }
@@ -929,6 +943,7 @@ function renderWork() {
   const savedScroll = window.HubChatScroll?.capture($('#msgs'),scrollKey);
   const p = proj(view.project), t = taskOf(p, view.task);
   if (!p || !t) { view.kind = 'project'; return render(); }
+  const grokStatus = canonicalActor(t.owner)==='grok' ? grokStatusHtml(state.grokStatus) : '';
   const running = AIS.filter(a => live(p.id, t.id, a));
   const main = aiOf(t.owner);
   const shown = running.length ? running : [];
@@ -938,7 +953,7 @@ function renderWork() {
       <button class="${mode === 'chat' ? 'on' : ''}" data-act="mode" data-m="chat" type="button" title="1本の会話で、答える AI を選んで話す">会話</button>
       <button class="${mode === 'term' ? 'on' : ''}" data-act="mode" data-m="term" type="button" title="AI の画面をそのまま動かす">ターミナル${running.length ? `（${running.length}）` : ''}</button></div>`;
   const startBtns = mode === 'chat' ? '' : AIS.filter(a => !running.includes(a)).map(a =>
-    UI`<button class="btn ${a}${a === main || running.length ? '' : ' sub'}" data-act="start" data-ai="${a}" ${k} type="button" ${!cliReady(a) ? 'disabled' : ''}>${running.length ? '＋ ' : ''}${AI_LABEL[a]}${running.length ? L('も並べる') : L('で始める')}</button>`).join('');
+    UI`<button class="btn ${a}${a === main || running.length ? '' : ' sub'}" data-act="start" data-ai="${a}" ${k} type="button" ${!cliTerminalReady(a) ? 'disabled' : ''}>${running.length ? '＋ ' : ''}${AI_LABEL[a]}${running.length ? L('も並べる') : L('で始める')}</button>`).join('');
   $('#main').innerHTML = UI`<div class="work">
     <div class="whead">
       <button class="back" data-go="project" data-p="${esc(p.id)}" type="button">← ${esc(p.name)}</button>
@@ -958,10 +973,10 @@ function renderWork() {
     ${bgOf(p.id, t.id).length || (!t.parent && bgOf(p.id).filter(x => !x.task).length) ? UI`<div class="wq bg-note"><b>裏で作業中：</b><span>${esc(bgText(bgOf(p.id, t.id).length ? bgOf(p.id, t.id) : bgOf(p.id).filter(x => !x.task)))}</span><span class="small">Hub を通さずに起動された AI です。終わると「新」が付きます。次からは「渡す」（Hub 経由）を使うよう AI に伝えてあります</span></div>` : ''}
     <div id="work-question" data-question="${esc(t.question || '')}">${workQuestionHtml(p,t)}</div>
     <div class="work-meta">${taskContext(p, t, isPhone())}<div class="wdone">${completionButtons(p, t)}</div></div>${kidsDoneBar(p, t)}
-    ${mode === 'chat' ? chatHtml(p, t) : UI`<div class="panes ${shown.length >= 2 ? 'two' : ''}" id="panes">
+    ${mode === 'chat' ? chatHtml(p, t, grokStatus) : UI`<div class="panes ${shown.length >= 2 ? 'two' : ''}" id="panes">
       ${shown.length ? shown.map(a => UI`<section class="pane" data-ai="${a}">
           <div class="phead"><span class="who w-${AI_KEY[a]}">${AI_LABEL[a]}</span><span class="pstat" data-ai="${a}">${statusText(sessOf(p.id, t.id, a))}</span>${specSelect(p, t, a, true)}<span class="sp"></span>
-            ${AIS.filter(other => other !== a).map(other => UI`<button class="btn plain sm" data-act="handoff" data-from="${a}" data-to="${other}" ${k} type="button" ${!cliReady(other) ? 'disabled' : ''} title="${a === 'agy' ? L('画面に残っている分だけを') : L('今までの会話を')}引き継ぎ資料にまとめて渡します">${AI_LABEL[other]}に交代 →</button>`).join('')}
+            ${AIS.filter(other => other !== a).map(other => UI`<button class="btn plain sm" data-act="handoff" data-from="${a}" data-to="${other}" ${k} type="button" ${!cliTerminalReady(other) ? 'disabled' : ''} title="${a === 'agy' ? L('画面に残っている分だけを') : L('今までの会話を')}引き継ぎ資料にまとめて渡します">${AI_LABEL[other]}に交代 →</button>`).join('')}
             ${state.windowsBrowser ? UI`<span class="small" id="view-state-${a}"></span><button class="btn plain sm" data-act="termclaim" data-ai="${a}" ${k} type="button">接管輸入</button><button class="btn plain sm" data-act="termwindow" data-ai="${a}" ${k} type="button">獨立終端機視窗（Hub）</button>` : ''}
             <button class="btn plain sm" data-act="stop" data-ai="${a}" ${k} type="button">${L('止める')}</button></div>
           <div class="pbody" id="pane-${a}"></div></section>`).join('')
@@ -991,6 +1006,7 @@ function renderWork() {
       <button class="btn plain sm" data-act="memo" ${k} type="button">メモを残す</button>
       ${t.skills.length ? UI`<details class="more"><summary>使ったスキル（${t.skills.length}）</summary><ul class="skills">${t.skills.map(s => UI`<li>${esc(s)}</li>`).join('')}</ul></details>` : ''}
     </div></details></div>`;
+  renderedGrokStatusHtml = grokStatus;
   closePanes();
   const workDetails = $('.work-details');
   workDetails?.addEventListener('toggle', () => { if (workDetails.open) workDetailsOpen.add(scrollKey); else workDetailsOpen.delete(scrollKey); });
@@ -1001,6 +1017,23 @@ function renderWork() {
 
 // ---- 会話画面（Goose のような形）：1本の会話で、送るたびに答える AI とモデルを選ぶ ----
 let chatES = null, chatDraft = {}, chatBusy = null;
+const chatRowCache = new Map();
+let chatReconnectTimer = null, chatFirstFrameTimer = null;
+function cacheChatRows(key, rows) {
+  chatRowCache.delete(key); chatRowCache.set(key, rows.slice(-2000));
+  while (chatRowCache.size > 20) chatRowCache.delete(chatRowCache.keys().next().value);
+}
+function chatRowsHtml(rows) { return rows.length ? rows.map(msgHtml).join('') : EMPTY_CHAT(); }
+function cachedChatHtml(project, task) {
+  const key = chatAttachmentKey(project, task);
+  return chatRowCache.has(key) ? chatRowsHtml(chatRowCache.get(key)) : UI`<div class="chat-loading">会話を読み込んでいます…</div>`;
+}
+function closeChatStream() {
+  clearTimeout(chatReconnectTimer); chatReconnectTimer = null;
+  clearTimeout(chatFirstFrameTimer); chatFirstFrameTimer = null;
+  const previous = chatES; chatES = null;
+  if (previous) previous.close();
+}
 const chatAttachments = new Map();
 const chatImageUploads = new Map();
 const chatSending = new Set();
@@ -1095,7 +1128,87 @@ function chatActionLabel(ai) {
 function chatRouteHint(ai) {
   return state.windowsBrowser && webActor(ai) ? L('先預覽與確認內容，再自行到網站貼上送出。') : L('選擇 AI 與模型，確認需求後送出。');
 }
-function chatHtml(p, t) {
+let grokLoginWindowState=null,grokLoginPending=false,grokLoginPoll=0,grokLoginPollUntil=0,grokLoginFeedback='';
+function grokLoginWindowText(value) {
+  if(value?.mode==='auto'){
+    if(value.running)return 'Hub 正在自動更新 Grok 登入…';
+    if(value.outcome==='refreshed')return 'Grok 登入已自動更新（'+new Date(value.login?.mtime??value.finishedAt).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false})+'）。';
+    if(value.outcome==='failed'&&value.timedOut)return '自動更新逾時；請按「更新 Grok 登入」再試，或改按「登入 Grok」。';
+    if(value.outcome==='unchanged'||value.outcome==='failed')return '自動更新沒有成功；請按「更新 Grok 登入」再試，或改按「登入 Grok」。';
+    return '';
+  }
+  if(value?.running)return 'Grok 視窗執行中…（請在跳出的視窗完成）';
+  if(value?.outcome==='refreshed')return 'Grok 登入已更新（'+new Date(value.login?.mtime??value.finishedAt).toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false})+'）。請再送一次。';
+  if(value?.outcome==='unchanged')return '登入檔沒有變化；請改按「登入 Grok」。';
+  if(value?.outcome==='failed')return 'Grok 視窗沒有完成（'+(value.timedOut?'逾時':'結束代碼 '+(value.exitCode??'未知'))+'）。';
+  return '';
+}
+function grokLoginActionsHtml(context) {
+  const disabled=grokLoginPending||grokLoginWindowState?.running;
+  return `<div class="grok-login-actions" data-grok-context="${esc(context)}">${[['refresh','更新 Grok 登入'],['login','登入 Grok'],['device','用裝置碼登入']].map(([mode,label])=>`<button type="button" class="btn plain sm" data-act="groklogin" data-grok-mode="${mode}" ${disabled?'disabled':''}>${label}</button>`).join(' ')}<div role="status" data-grok-feedback>${esc(grokLoginFeedback||grokLoginWindowText(grokLoginWindowState))}</div></div>`;
+}
+function grokLoginPromptHtml(project,task) {
+  const prompt=state.grokLoginPrompt;
+  if(!prompt||prompt.project!==project||prompt.task!==task)return '';
+  const message=prompt.code==='GROK_LOGIN_HYDRATE_FAILED'?'Hub 無法在回合前把 Grok 登入交給沙箱（灌入失敗），這則訊息沒有送出。請按「更新 Grok 登入」，若還是不行請按「登入 Grok」，完成後再送一次。':prompt.code==='GROK_LOGIN_AUTO_REFRESH_UNCHANGED'?'Grok 登入已過期，而且 Hub 自動更新時 Grok 沒有取得新的登入（更新用的憑證可能已失效），這則訊息沒有送出。請按「登入 Grok」（會開瀏覽器）或「用裝置碼登入」重新登入，完成後再送一次。':prompt.code==='GROK_LOGIN_AUTO_REFRESH_FAILED'?'Grok 登入即將到期或已過期，Hub 剛才自動更新沒有成功，這則訊息沒有送出。請按「更新 Grok 登入」再試一次；如果還是不行，請按「登入 Grok」重新登入，完成後再送一次。':prompt.code==='GROK_LOGIN_EXPIRING'?'Grok 登入即將到期，為避免回合做到一半中斷，這則訊息沒有送出。請按「更新 Grok 登入」（幾秒鐘、不需要瀏覽器），完成後再送一次。':prompt.code==='GROK_LOGIN_EXPIRED'?'Grok 登入已過期（登入檔超過約 6 小時沒有更新），這則訊息沒有送出。請按「更新 Grok 登入」，完成後再送一次。':'找不到 Grok 登入檔，這則訊息沒有送出。請按「登入 Grok」，完成後再送一次。';
+  return `<div class="grok-login-hint small" role="status">${esc(message)}（代碼：${esc(prompt.code)}）${grokLoginActionsHtml('prompt')}</div>`;
+}
+function drawGrokLoginActions() {
+  const block=$('#grok-login-prompt');
+  if(block)block.innerHTML=grokLoginPromptHtml(view.project,view.task);
+  document.querySelectorAll('[data-grok-mode]').forEach(button=>{button.disabled=Boolean(grokLoginPending||grokLoginWindowState?.running);});
+  document.querySelectorAll('[data-grok-feedback]').forEach(el=>{el.textContent=grokLoginFeedback||grokLoginWindowText(grokLoginWindowState);});
+}
+function rememberGrokLoginError(error,project,task) {
+  if(!['GROK_LOGIN_HYDRATE_FAILED','GROK_LOGIN_EXPIRED','GROK_LOGIN_EXPIRING','GROK_LOGIN_MISSING','GROK_LOGIN_AUTO_REFRESH_FAILED','GROK_LOGIN_AUTO_REFRESH_UNCHANGED'].includes(error.code))return;
+  state.grokLoginPrompt={code:error.code,project,task,at:Date.now()};drawGrokLoginActions();
+}
+function clearGrokLoginPrompt(project,task) {
+  if(state.grokLoginPrompt?.project===project&&state.grokLoginPrompt?.task===task){delete state.grokLoginPrompt;drawGrokLoginActions();}
+}
+function acceptGrokLoginWindow(value) {
+  grokLoginWindowState=value;grokLoginFeedback='';
+  if(value.outcome==='refreshed')delete state.grokLoginPrompt;
+  drawGrokLoginActions();
+  if(!value.running&&value.outcome==='refreshed')void refreshTree();
+}
+async function pollGrokLoginWindow() {
+  grokLoginPoll=0;
+  if(Date.now()>=grokLoginPollUntil){grokLoginWindowState=null;grokLoginFeedback='Grok 視窗狀態查詢逾時，請確認視窗是否已結束。';drawGrokLoginActions();return;}
+  try{
+    acceptGrokLoginWindow(await api('/api/grok/login-window'));
+    if(grokLoginWindowState.running)grokLoginPoll=setTimeout(pollGrokLoginWindow,2000);
+  }catch(error){
+    grokLoginFeedback=error.message;drawGrokLoginActions();
+    if(error.status===403){grokLoginWindowState=null;drawGrokLoginActions();}
+    else grokLoginPoll=setTimeout(pollGrokLoginWindow,2000);
+  }
+}
+async function startGrokLoginWindow(mode) {
+  if(grokLoginPending||grokLoginWindowState?.running)return;
+  clearTimeout(grokLoginPoll);grokLoginPending=true;grokLoginFeedback='Grok 視窗執行中…（請在跳出的視窗完成）';drawGrokLoginActions();
+  try{
+    const value=await api('/api/grok/login-window',{mode});acceptGrokLoginWindow(value);
+    if(value.dry)grokLoginFeedback='測試模式：未開啟 Grok 視窗。';
+    if(value.running){grokLoginPollUntil=Date.now()+16*60*1000;grokLoginPoll=setTimeout(pollGrokLoginWindow,2000);}
+  }catch(error){
+    grokLoginFeedback=error.message;toast(error.message);
+    if(['GROK_LOGIN_WINDOW_OPEN','GROK_LOGIN_AUTO_REFRESHING'].includes(error.code)){grokLoginPollUntil=Date.now()+16*60*1000;grokLoginPoll=setTimeout(pollGrokLoginWindow,2000);}
+  }finally{grokLoginPending=false;drawGrokLoginActions();}
+}
+
+function grokStatusHtml(status) {
+  if (!status) return '';
+  const runtime=status.runtime||{},auth=status.auth||{};
+  const when=mtime=>new Date(mtime).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
+  return `<div class="grok-status small"><div>${runtime.overrideInvalid?'PROJECT_HUB_GROK_VERSION 的值不在已審核清單，Grok 將無法啟動。':`Hub 使用 Grok CLI ${esc(runtime.version)}（${runtime.slotPresent?'Hub 私有副本已建立':'第一次送出時建立 Hub 私有副本'}${runtime.override?'；由 PROJECT_HUB_GROK_VERSION 指定':''}）`}</div><div>${auth.present?`Grok 登入檔最後更新：${esc(when(auth.mtime))}${Number.isFinite(status.login?.exactExpiresAt)?`（有效至 ${esc(when(status.login.exactExpiresAt))}）`:'（Hub 不讀取內容，無法判斷是否仍有效）'}`:`Grok 尚未登入：找不到登入檔。請在一般終端機執行 <code>grok login</code><button type="button" class="cp" data-copy="grok login" title="${L('コピー')}">⧉</button>`}</div>${status.login?.state==='expired'?'<div>已過期</div>':['fresh','expiring'].includes(status.login?.state)?`${status.login.state==='expiring'?'<div>即將到期</div>':''}<div>建議更新時間：${esc(when(status.login.refreshAt))}</div>`:''}${grokLoginActionsHtml('status')}</div>`;
+}
+function grokLoginHintHtml(row, status) {
+  if (!row || row.ai!=='grok' || typeof row.error!=='string' || !['（代碼：GROK_NATIVE_AUTH_UNAVAILABLE）','（代碼：GROK_NATIVE_IDLE_TIMEOUT）'].some(code=>row.error.includes(code))) return '';
+  const updated=Date.parse(status?.auth?.mtime),at=Date.parse(row.at),tail=Number.isFinite(updated)&&Number.isFinite(at)&&updated>at?'登入檔已在這則訊息之後更新，可以重新送出。':'登入完成後回到 Hub 重新送出。';
+  return `<div class="grok-login-hint small">在一般終端機執行 <code>grok login</code><button type="button" class="cp" data-copy="grok login" title="${L('コピー')}">⧉</button>；無法開瀏覽器時改用 <code>grok login --device-auth</code><button type="button" class="cp" data-copy="grok login --device-auth" title="${L('コピー')}">⧉</button>。${tail}${grokLoginActionsHtml('row')}</div>`;
+}
+function chatHtml(p, t, grokStatus = canonicalActor(t.owner)==='grok' ? grokStatusHtml(state.grokStatus) : '') {
   const pick = chatPick(p, t);
   // 名前が未設定のモデルは、CLI の既定のモデルで動く（設定画面で名前を入れられる）
   const flag = (a, m) => ((state.cliFlags || {})[a] || {})[m];
@@ -1116,8 +1229,10 @@ function chatHtml(p, t) {
   const opts = old + (state.windowsBrowser ? `<optgroup label="${esc(L('本機執行'))}">${modelOpts}</optgroup><optgroup label="${esc(L('網頁手動交接'))}">${gptOpt}</optgroup><optgroup label="${esc(L('尚未就緒'))}">${blockedOpts}</optgroup>` : modelOpts + gptOpt);
   return UI`<div class="chat" data-p="${esc(p.id)}" data-t="${esc(t.id)}">
     <section id="chat-approvals" class="chat-approvals" aria-label="待處理授權" hidden></section>
-    <div class="msgs" id="msgs">${EMPTY_CHAT()}</div>
+    <div class="msgs" id="msgs">${cachedChatHtml(p.id, t.id)}</div>
     <button class="chat-latest btn plain sm" id="chat-latest" type="button" hidden>↓ 最新へ</button>
+    <div id="grok-status">${grokStatus}</div>
+    <div id="grok-login-prompt">${grokLoginPromptHtml(p.id,t.id)}</div>
     <form class="composer" id="composer">
       <div class="queue" id="chat-queue" hidden></div>
       <div class="quick-images" id="chat-images" aria-label="添付画像" ${chatImages(p.id, t.id).length ? '' : 'hidden'}>${chatImagesHtml(p.id, t.id)}</div>
@@ -1189,14 +1304,58 @@ function richText(text) {
   let out='', plain='', code='', fence=0, lang='';
   for(const line of lines) {
     const raw=line.replace(/\r?\n$/, ''), start=raw.match(/^ {0,3}(`{3,})([^`]*)$/);
-    if(!fence && start) {out+=linkify(plain);plain='';fence=start[1].length;lang=start[2].trim().split(/\s+/)[0]||L('テキスト');code='';}
+    if(!fence && start) {out+=tables(plain);plain='';fence=start[1].length;lang=start[2].trim().split(/\s+/)[0]||L('テキスト');code='';}
     else if(fence && new RegExp('^ {0,3}`{'+fence+',}\\s*$').test(raw)) {
       out+=block(code, false);fence=0;
     } else if(fence) code+=line; else plain+=line;
   }
-  if(fence)out+=block(code,true);else out+=linkify(plain);
+  if(fence)out+=block(code,true);else out+=tables(plain);
   return out;
   function block(value,partial) {return UI`<div class="codeblock"><div class="cb-head"><span>${esc(lang)}${partial?L(' ・書きかけ'):''}</span>${partial?'': UI`<button type="button" class="cb-copy" aria-label="この囲みをコピー">⧉ コピー</button>`}</div><pre><code>${esc(value).replace(/\r/g,'&#13;')}</code></pre></div>`;}
+  function cells(line) {
+    const row=[''];let pipes=0,slashes=0;
+    for(const ch of line.replace(/\r?\n$/, '')) {
+      if(ch==='|') {
+        if(slashes%2)row[row.length-1]=row[row.length-1].slice(0,-1)+'|';
+        else {row.push('');pipes++;}
+      } else row[row.length-1]+=ch;
+      slashes=ch==='\\'?slashes+1:0;
+    }
+    if(!pipes)return null;
+    if(!row[0].trim())row.shift();
+    if(row.length && !row[row.length-1].trim())row.pop();
+    return row.map(x=>x.trim());
+  }
+  function inline(value) {
+    const tokens=/\[[^\]\n]+\]\((?:<[^>\n]+>|[^)\s]+(?:\([^)\s]*\)[^)\s]*)*)\)|`([^`\n]+)`|\*\*([^\n]+?)\*\*/g;
+    let html='',last=0,m;
+    while((m=tokens.exec(value))) {
+      html+=linkify(value.slice(last,m.index));
+      html+=m[1]!==undefined?UI`<code class="rt-inline">${linkify(m[1])}</code>`:m[2]!==undefined?UI`<strong>${inline(m[2])}</strong>`:linkify(m[0]);
+      last=tokens.lastIndex;
+    }
+    return html+linkify(value.slice(last));
+  }
+  function tables(value) {
+    const rows=value.match(/[^\n]*\n|[^\n]+$/g)||[];
+    let html='',pending='';
+    for(let i=0;i<rows.length;i++) {
+      const head=cells(rows[i]),sep=i+1<rows.length?cells(rows[i+1]):null;
+      if(!head||!head.length||!sep||head.length!==sep.length||!sep.every(x=>/^:?-{2,}:?$/.test(x))) {pending+=rows[i];continue;}
+      html+=linkify(pending);pending='';
+      const align=sep.map(x=>x.startsWith(':')&&x.endsWith(':')?'center':x.endsWith(':')?'right':'left');
+      const tr=(row,tag)=>'<tr>'+head.map((_,n)=>'<'+tag+(tag==='th'?' scope="col"':'')+' class="rt-'+align[n]+'">'+inline(row[n]??'')+'</'+tag+'>').join('')+'</tr>';
+      html+='<div class="rt-table-wrap" tabindex="0" role="region" aria-label="'+esc(L('表（横にスクロールできます）'))+'"><table class="rt-table"><thead>'+tr(head,'th')+'</thead><tbody>';
+      i++;
+      while(i+1<rows.length) {
+        const row=cells(rows[i+1]);
+        if(!row||!row.length||row.length>head.length)break;
+        html+=tr(row,'td');i++;
+      }
+      html+='</tbody></table></div>';
+    }
+    return html+linkify(pending);
+  }
 }
 document.addEventListener('click', async e=>{
   const b=e.target.closest?.('.cb-copy');if(!b || b.disabled)return;
@@ -1275,10 +1434,10 @@ const showDetail = () => { try { return localStorage.getItem('hub-detail') === '
 // Enter だけで送るか（設定。最初は ⌘ + Enter）。Shift + Enter はいつも改行
 const enterSends = () => { try { return localStorage.getItem('hub-enter') === '1'; } catch (e) { return false; } };
 const isSendKey = e => e.key === 'Enter' && !e.isComposing && ((e.metaKey || e.ctrlKey) || (enterSends() && !e.shiftKey && !e.altKey));
-const isToolRow = r => r.tool || !/やり直/.test(r.text || ''); // 前の記録には印が無いため、やり直しの知らせ以外は細かい作業とみなす
+const isToolRow = r => !r.notice && r.code!=='GROK_AUTH_REFRESHING' && (r.tool || !/やり直/.test(r.text || '')); // 前の記録には印が無いため、やり直しの知らせ以外は細かい作業とみなす
 function msgHtml(r) {
   const time = r.at ? new Date(r.at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : '';
-  if (r.role === 'event') return isToolRow(r) && !showDetail() ? '' : UI`<div class="ev">▸ ${esc(r.text)}</div>`;
+  if (r.role === 'event') return isToolRow(r) && !showDetail() ? '' : UI`<div class="ev${r.notice ? ' notice' : ''}">▸ ${esc(r.text)}</div>`;
   if (r.role === 'user' && (r.from === 'delegate' || r.from === 'child' || r.from === 'subtask')) {
     // 過去の結果通知でも、実際の成果を確認する共通引渡しへ進む。
     const childProject = proj(r.childProject || view.project);
@@ -1296,7 +1455,7 @@ function msgHtml(r) {
   }
   if (r.role === 'user') return UI`<div class="m me"><div class="mh">${r.mode === 'redo' || r.mode === 'interrupt' ? UI`<span class="tagm int">やり直し</span>` : r.mode === 'amend' ? '<span class="tagm am">追加指示</span>' : r.mode === 'queued' ? UI`<span class="tagm">順番待ちの指示</span>` : ''}<span class="small">${time}・${esc(AI_LABEL[r.to] || '')}${r.model ? L('・') + esc(r.model) : ''} へ</span></div><div class="mb">${richText(r.text)}</div></div>`;
   return UI`<div class="m ai"><div class="mh"><span class="chip k-${esc(r.ai)}"><span class="ic">${AI_ICON[r.ai] || '?'}</span>${esc(AI_LABEL[r.ai] || r.ai)}${r.model ? UI`<small>・${esc(r.model)}${r.effort ? L('・') + esc(r.effort) : ''}</small>` : ''}</span><span class="small">${time}</span>${r.webHandoff?.transport==='web-manual' ? UI`<span class="small web-unattested">ユーザー貼り付け／出所未検証</span>` : r.error ? UI`<span class="done bad">⚠ 止まりました</span>` : UI`<span class="done">✓ 完了${r.ms ? '（' + dur(r.ms) + '）' : ''}</span>`}${r.text ? UI`<button type="button" class="cp cp-msg" data-copy="${esc(r.text)}" title="この返事をコピー">⧉ コピー</button>` : ''}</div>
-    ${r.text ? UI`<div class="mb">${richText(r.text)}</div>` : ''}${r.asks && r.asks.length ? askHtml(r.asks) : ''}${r.error ? UI`<div class="merr">${esc(r.error)}</div>` : ''}</div>`;
+    ${r.text ? UI`<div class="mb">${richText(r.text)}</div>` : ''}${r.asks && r.asks.length ? askHtml(r.asks) : ''}${r.error ? UI`<div class="merr">${esc(r.error)}</div>${grokLoginHintHtml(r, state.grokStatus)}` : ''}</div>`;
 }
 // 質問ごとに選択と自由入力を保持し、最後にまとめて送る。
 const askDrafts = new Map();
@@ -1390,11 +1549,13 @@ function refreshAsks(box) {
 function dur(ms) { const t = Math.max(0, Math.round(ms / 1000)); return t < 60 ? `${t}秒` : `${Math.floor(t / 60)}分${t % 60 ? (t % 60) + '秒' : ''}`; }
 let busyTimer = null;
 function openChat(p, t, savedScroll) {
+  closeChatStream();
+  if(window.HubNativeRestart?.paused)return;
   const box = $('#msgs');
   const approvalsBox = $('#chat-approvals');
   const drawApprovals = rows => {
     approvalsBox.hidden = !rows?.length;
-    approvalsBox.innerHTML = (rows || []).map(a => UI`<div class="approval" data-approval-token="${esc(a.token)}"><b>${a.questions ? 'Codex 需要你的回答' : 'Codex 需要額外權限'}</b>
+    approvalsBox.innerHTML = (rows || []).map(a => UI`<div class="approval" data-approval-token="${esc(a.token)}"><b>${a.ai==='codex'?'Codex':a.ai==='claude'?'Claude Code':a.ai==='grok'?'Grok':'AI'} ${a.questions ? '需要你的回答' : '需要額外權限'}</b>
       <p>${esc(a.reason || '')}</p><pre>${esc(a.detail)}</pre>
       ${(a.questions || []).map(q => UI`<label>${esc(q.question)}<input data-question-id="${esc(q.id)}" type="${q.isSecret ? 'password' : 'text'}" autocomplete="off" maxlength="10000" placeholder="${esc((q.options || []).map(o => o.label).join(' / '))}"></label>`).join('')}
       <div class="approval-actions">${a.questions ? '<button type="button" class="btn" data-approval-decision="answer">送出回答</button>' : UI`<button type="button" class="btn" data-approval-decision="accept">${a.kind.includes('/permissions/') ? '允許本回合權限' : '僅允許這次'}</button><button type="button" class="btn plain" data-approval-decision="decline">拒絕</button>`}<button type="button" class="btn plain" data-approval-decision="cancel">取消作業</button></div></div>`).join('');
@@ -1445,6 +1606,8 @@ function openChat(p, t, savedScroll) {
     chatSending.add(draftKey); updateWorkAnswerControls();
     try {
       const r = await api('/api/chat/send', { project: p.id, task: t.id, ai, model, effort: $('#chat-effort').value, text, mode, answerQuestion: question });
+      clearGrokLoginPrompt(p.id,t.id);
+      if (r.freshSession?.code) toast('舊對話無法接續（代碼：' + r.freshSession.code + '），已改開新對話，並附上先前的文字紀錄。');
       if (askAttempts.get(draftKey) === attempt) askAttempts.delete(draftKey);
       await acceptedWorkAnswer(p, t, question, r, askKey);
       if (answer === undefined && chatDraft[draftKey] === original) {
@@ -1464,7 +1627,7 @@ function openChat(p, t, savedScroll) {
       if (!chatBusy) setBusy({ ai, model: r.model || model, started: Date.now(), text: '' }); // 知らせを待たずに「作業中」を出す
       if (r.note) toast(r.note);
       return true;
-    } catch (err) { toast(err.message); return false; }
+    } catch (err) { rememberGrokLoginError(err,p.id,t.id);toast(err.message); return false; }
     finally { chatSending.delete(draftKey); updateWorkAnswerControls(); }
   };
   $('#composer').addEventListener('submit', e => { e.preventDefault(); sendChat(chatBusy ? 'queue' : ''); });
@@ -1533,29 +1696,68 @@ function openChat(p, t, savedScroll) {
     else if (was && was.started !== b.started) tick();
     scroll(false,before); window.HubMobile?.badges();
   };
-  if(window.HubNativeRestart?.paused)return;
-  chatES = new EventSource(`/api/chat/stream?project=${encodeURIComponent(p.id)}&task=${encodeURIComponent(t.id)}`);
-  chatES.onmessage = m => {
-    const ev = JSON.parse(m.data);
-    const before = position();
-    if (ev.type === 'queue') { drawQueue(ev.queue); return; }
-    if (ev.type === 'approvals') { drawApprovals(ev.approvals); return; }
-    if (ev.type === 'rows') drawApprovals(ev.approvals);
-    if (ev.type === 'rows') { setBusy(null); drawQueue(ev.queue); box.innerHTML = ev.rows.length ? ev.rows.map(msgHtml).join('') : EMPTY_CHAT(); delete box.dataset.askHistoryPending; refreshAsks(box); setBusy(ev.busy); if(scroller) scroller.rows(before); else scroll(true); }
-    else if (ev.type === 'row') {
-      const e = box.querySelector('.chat-empty'); if (e) e.remove();
-      const tmp = $('#msg-partial');
-      if (tmp) tmp.insertAdjacentHTML('beforebegin', msgHtml(ev.row)); else box.insertAdjacentHTML('beforeend', msgHtml(ev.row));
-      refreshAsks(box);
-      if (ev.row.role === 'assistant' && ev.row.asks && ev.row.asks.length) toast(L('AI から質問があります。選んで答えてください'));
-      if (ev.row.role === 'event' && chatBusy) setBusy({ ...chatBusy, last: ev.row.text });
-      if (ev.row.role === 'assistant' && !(ev.row.asks && ev.row.asks.length)) toast(ev.row.error ? UI`${AI_LABEL[ev.row.ai]} が止まりました。赤い字をご覧ください` : UI`${AI_LABEL[ev.row.ai]} の返事が届きました（${dur(ev.row.ms || 0)}）`);
-      scroll(ev.row.role === 'user' && chatSending.has(draftKey),before);
-      window.HubMobile?.badges();
-    } else if (ev.type === 'busy') { setBusy({ ...(chatBusy || {}), ai: ev.ai, model: ev.model, started: ev.started, text: '' }); refreshTree(); }
-    else if (ev.type === 'partial') setBusy({ ...(chatBusy || { ai: ev.ai }), text: ev.text });
-    else if (ev.type === 'idle') { setBusy(null); refreshTree(); }
+  const url = `/api/chat/stream?project=${encodeURIComponent(p.id)}&task=${encodeURIComponent(t.id)}`;
+  const sameTask = () => !window.HubNativeRestart?.paused && view.kind === 'work' && view.project === p.id && view.task === t.id && workMode() === 'chat';
+  const connect = () => {
+    closeChatStream();
+    if(window.HubNativeRestart?.paused)return;
+    const es = new EventSource(url); chatES = es;
+    let warned = false;
+    const warn = () => { if (!warned) { warned = true; console.warn('Hub chat frame could not be rendered'); } };
+    chatFirstFrameTimer = setTimeout(() => {
+      if (chatES !== es) return;
+      if (sameTask()) connect(); else closeChatStream();
+    }, 8000);
+    es.onerror = () => {
+      if (chatES !== es) return;
+      if (!sameTask()) { closeChatStream(); return; }
+      if (es.readyState !== EventSource.CLOSED || chatReconnectTimer !== null) return;
+      clearTimeout(chatFirstFrameTimer); chatFirstFrameTimer = null;
+      chatReconnectTimer = setTimeout(() => {
+        if (chatES !== es) return;
+        if (sameTask()) connect(); else closeChatStream();
+      }, 2000);
+    };
+    es.onmessage = m => {
+      if (chatES !== es) return;
+      if(window.HubNativeRestart?.paused){closeChatStream();return;}
+      let ev;
+      try { ev = JSON.parse(m.data); } catch { warn(); return; }
+      if (ev?.type === 'rows') {
+        const previousHtml = box.innerHTML;
+        try {
+          const html = chatRowsHtml(ev.rows);
+          const before = position();
+          cacheChatRows(draftKey, ev.rows);
+          clearTimeout(chatFirstFrameTimer); chatFirstFrameTimer = null;
+          clearTimeout(chatReconnectTimer); chatReconnectTimer = null;
+          setBusy(null); drawQueue(ev.queue); box.innerHTML = html;
+          drawApprovals(ev.approvals);
+          delete box.dataset.askHistoryPending; refreshAsks(box); setBusy(ev.busy);
+          if(scroller) scroller.rows(before); else scroll(true);
+        } catch { if (box.innerHTML !== previousHtml) box.innerHTML = previousHtml; warn(); }
+        return;
+      }
+      const before = position();
+      if (ev.type === 'queue') { drawQueue(ev.queue); return; }
+      if (ev.type === 'approvals') { drawApprovals(ev.approvals); return; }
+      if (ev.type === 'row') {
+        cacheChatRows(draftKey, [...(chatRowCache.get(draftKey) || []), ev.row]);
+        const e = box.querySelector('.chat-empty, .chat-loading'); if (e) e.remove();
+        const tmp = $('#msg-partial');
+        if (tmp) tmp.insertAdjacentHTML('beforebegin', msgHtml(ev.row)); else box.insertAdjacentHTML('beforeend', msgHtml(ev.row));
+        refreshAsks(box);
+        if (ev.row.role === 'assistant' && ev.row.asks && ev.row.asks.length) toast(L('AI から質問があります。選んで答えてください'));
+        if (ev.row.role === 'event' && chatBusy) setBusy({ ...chatBusy, last: ev.row.text });
+        if (ev.row.role === 'assistant' && !(ev.row.asks && ev.row.asks.length)) toast(ev.row.error ? UI`${AI_LABEL[ev.row.ai]} が止まりました。赤い字をご覧ください` : UI`${AI_LABEL[ev.row.ai]} の返事が届きました（${dur(ev.row.ms || 0)}）`);
+        scroll(ev.row.role === 'user' && chatSending.has(draftKey),before);
+        window.HubMobile?.badges();
+      } else if (ev.type === 'busy') { setBusy({ ...(chatBusy || {}), ai: ev.ai, model: ev.model, started: ev.started, text: '' }); refreshTree(); }
+      else if (ev.type === 'partial') setBusy({ ...(chatBusy || { ai: ev.ai }), text: ev.text });
+      else if (ev.type === 'idle') { setBusy(null); refreshTree(); }
+    };
   };
+  connect();
 }
 
 // ［本体に取り込む］の横に、変更の量とぶつかりそうかを出す
@@ -1624,7 +1826,7 @@ async function attach(project, task, ai) {
   pane.es = es;
 }
 function closePanes() {
-  if (chatES) { chatES.close(); chatES = null; }
+  closeChatStream();
   clearInterval(busyTimer); busyTimer = null; chatBusy = null;
   for (const ai of Object.keys(panes)) {
     const p = panes[ai];
@@ -1637,7 +1839,7 @@ function closePanes() {
 }
 
 async function startAI(p, t, ai) {
-  requireCliReady(ai);
+  requireCliReady(ai,'terminal');
   if (!state.terminal) {
     const r = await api('/api/continue', { project: p, task: t, ai });
     if(state.windowsBrowser)openTerminalWindow(p,t,ai);
@@ -1680,6 +1882,8 @@ function drawAiTools() {
     const models = Array.isArray(tool.models) ? tool.models : [];
     return UI`<div class="ai-tool-row" data-ai="${ai}">
       <div class="ai-tool-head"><b>${esc(AI_LABEL[ai])}</b><span class="small">現在版：${esc(tool.version || L('確認できません'))}</span><span class="small">導入方法：${esc(aiToolMethod(tool.method))}</span></div>
+      ${ai==='grok'?grokStatusHtml(state.grokStatus):''}
+      ${tool.nativeUpdate ? UI`<div class="small">可安裝的已審核版本：${tool.nativeUpdate.versions.map(version=>UI`<button class="btn sm" type="button" data-ai-check="${ai}" data-ai-version="${esc(version)}" ${checking||busy?'disabled':''}>預覽 ${esc(version)}</button>`).join('')}<p>作用中槽位：${esc(tool.nativeUpdate.active?tool.nativeUpdate.active.version+' · '+tool.nativeUpdate.active.slot:'無')}；上一個槽位：${esc(tool.nativeUpdate.previous?tool.nativeUpdate.previous.version+' · '+tool.nativeUpdate.previous.slot:'無')}</p>${tool.nativeUpdate.error?UI`<p role="status">私有版本槽無法使用：${esc(tool.nativeUpdate.error)}。請檢查版本槽狀態，再安裝已審核版本。</p>`:''}</div>`:''}
       <div class="ai-tool-actions"><button class="btn sm" type="button" data-ai-check="${ai}" ${checking || tool.installed === false || !cliReady(ai) ? 'disabled' : ''}>${checking ? '確認中…' : L('更新を確認')}</button>
         ${check?.ok && check.available ? UI`<button class="btn sm" type="button" data-ai-update="${ai}" ${busy || running || !check.applicable || !cliReady(ai) ? 'disabled' : ''}>v${esc(check.latestVersion)} を適用</button>` : ''}
         <button class="btn plain sm" type="button" data-ai-model-refresh="${ai}" ${busy || !canRefresh || tool.installed === false ? 'disabled' : ''}>モデル一覧を再取得</button>
@@ -1734,7 +1938,7 @@ async function refreshAiToolCatalog() {
   const epoch = ++stateLoadEpoch;
   const next = await api('/api/state');
   if (epoch !== stateLoadEpoch) return;
-  state = next;
+  state = {...next,...(state.grokLoginPrompt?{grokLoginPrompt:state.grokLoginPrompt}:{})};
   refreshRoleModelChoices();
   if (view.kind === 'settings') await loadCliModels(true);
 }
@@ -1759,17 +1963,17 @@ function aiToolResultText(action, r) {
     : before || after ? UI`版は変わりませんでした（${after || before}）。` : L('版の変化を確認できませんでした。');
   return base + modelReport(r.models);
 }
-async function runAiTool(ai, action) {
+async function runAiTool(ai, action, version) {
   if (!cliReady(ai)) { toast(L('この CLI の実行と分離は未検証です。まだ起動できません。')); return; }
   if (action === 'check') {
-    if (!AIS.includes(ai) || aiCheckPending[ai] || aiTools?.[ai]?.checking || aiTools?.[ai]?.installed === false) return;
+    if (!AIS.includes(ai) || aiCheckPending[ai] || aiTools?.[ai]?.checking || aiTools?.[ai]?.installed === false&&!version) return;
     aiCheckPending[ai] = true; aiToolMessage[ai] = L('更新情報を確認しています…'); drawAiTools();
-    try { const r = await api('/api/ai-tools/check', { ai }); if (aiTools) aiTools[ai].updateCheck = r; aiToolMessage[ai] = r.available ? L('更新があります。適用する時は別のボタンを押してください。') : L('更新の確認が終わりました。'); }
+    try { const r = await api('/api/ai-tools/check', { ai, ...(version?{version}:{}) }); if (aiTools) aiTools[ai].updateCheck = r; aiToolMessage[ai] = r.available ? L('更新があります。適用する時は別のボタンを押してください。') : L('更新の確認が終わりました。'); }
     catch (e) { aiToolMessage[ai] = aiToolErrorText(e); }
     finally { aiCheckPending[ai] = false; await loadAiTools(); drawAiTools(); }
     return;
   }
-  if (!AIS.includes(ai) || !['update', 'models'].includes(action) || AIS.some(a => aiToolPending[a]) || aiToolsOperation || aiTools?.[ai]?.updating || aiTools?.[ai]?.installed === false || (action === 'models' && aiTools?.[ai]?.modelRefreshAvailable === false)) return;
+  if (!AIS.includes(ai) || !['update', 'models'].includes(action) || AIS.some(a => aiToolPending[a]) || aiToolsOperation || aiTools?.[ai]?.updating || aiTools?.[ai]?.installed === false && !(action==='update'&&aiTools?.[ai]?.nativeUpdate) || (action === 'models' && aiTools?.[ai]?.modelRefreshAvailable === false)) return;
   if (action === 'update' && (!aiTools?.[ai]?.updateCheck?.available || aiToolsBusyCount)) return; // 確認は［更新を確認］で済んでいるので、そのまま適用する
   let approval={};
   if(state.windowsBrowser&&action==='update'){
@@ -1790,7 +1994,7 @@ async function runAiTool(ai, action) {
 }
 document.addEventListener('click', e => {
   const ai = e.target.dataset.aiCheck || e.target.dataset.aiUpdate || e.target.dataset.aiModelRefresh;
-  if (ai) runAiTool(ai, e.target.dataset.aiCheck ? 'check' : e.target.dataset.aiUpdate ? 'update' : 'models');
+  if (ai) runAiTool(ai, e.target.dataset.aiCheck ? 'check' : e.target.dataset.aiUpdate ? 'update' : 'models', e.target.dataset.aiVersion);
 });
 // モデル一覧の並べ替え。役割や会話の選択値には触れない。
 let modelViewSaving = false, modelOrderDrag = '', modelOrderNotice = '';
@@ -1927,7 +2131,7 @@ async function saveInitialPick(next) {
 }
 document.addEventListener('click', e => {
   const button = e.target.closest('[data-initial-reset]');
-  if (button && !button.disabled) void saveInitialPick({ ...INITIAL_PICK });
+  if (button && !button.disabled) void saveInitialPick({ ...defaultInitialPick() });
 });
 let phoneLabelsSaving = false, phoneLabelsNotice = '', renderedPhoneKey = '';
 const phoneLabelDrafts = new Map(), phoneLabelQueue = [], phoneLabelErrors = new Map();
@@ -2096,7 +2300,7 @@ async function loadChatgpt() {
     const r = await api('/api/chatgpt');
     if ($('#chatgpt-box') !== box) return;
     if (state.windowsBrowser) {
-      box.innerHTML = UI`<p class="small">為指定作業建立暫時 MCP 授權。瀏覽器登入與 MCP 憑證分開；授權 10 分鐘、最多 100 次呼叫，停止 Hub 也會撤銷。</p>
+      box.innerHTML = UI`<p class="small">為指定作業建立暫時 MCP 授權。同機使用與原版 Project Hub 一樣不需登入；任何本機程式都能操作 Hub，包括核准命令與讀寫檔案。MCP 憑證仍獨立受限；授權 10 分鐘、最多 100 次呼叫，停止 Hub 也會撤銷。</p>
         <label>專案 <select id="mcp-scope-project">${state.projects.map(p=>UI`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
         <label>作業 <select id="mcp-scope-task"></select></label>
         <label class="chk"><input type="checkbox" id="chatgpt-work" ${r.work ? 'checked' : ''}> 允許 MCP 檔案寫入及命令要求（另需指定作業授權；命令逐次核准）</label>
@@ -2254,7 +2458,7 @@ async function loadCliModels(keepDraft = false) {
     if (keepDraft) document.querySelectorAll('input.cm').forEach(el => draft.set(`${el.dataset.ai}/${el.dataset.name}`, el.value));
     const table = ai => UI`<div class="tbl"><table><tr><th>${AI_LABEL[ai]}</th><th>CLI に渡す名前</th></tr>${(r[ai] || []).map(x => UI`<tr><td class="now">${esc(x.name)}</td><td><input class="cm" data-ai="${ai}" data-name="${esc(x.name)}" value="${esc(x.flag)}" list="hint-${ai}" placeholder="（空＝${AI_LABEL[ai]} の既定のモデル）" maxlength="60"></td></tr>`).join('')}</table></div>
       <datalist id="hint-${ai}">${(r.hints[ai] || []).map(h => UI`<option value="${esc(h)}">`).join('')}</datalist>`;
-    box.innerHTML = UI`${table('claude')}${table('codex')}<p>Agy CLI：Gemini 3.1 Pro (High) → <code>gemini-3.1-pro-high</code>（承認されたモデルに固定）</p>
+    box.innerHTML = UI`${table('claude')}${table('codex')}${table('grok')}<p>Agy CLI：Gemini 3.1 Pro (High) → <code>gemini-3.1-pro-high</code>（承認されたモデルに固定）</p>
       ${(r.hints.codex || []).length ? UI`<p class="small">Codex の設定で見つかった名前：${r.hints.codex.map(esc).join('、')}</p>` : ''}
       <div class="acts" style="margin-top:10px"><button class="btn" id="cm-save" type="button">保存する</button></div>`;
     if (keepDraft) document.querySelectorAll('input.cm').forEach(el => { const key = `${el.dataset.ai}/${el.dataset.name}`; if (draft.has(key)) el.value = draft.get(key); });
@@ -2262,7 +2466,7 @@ async function loadCliModels(keepDraft = false) {
 }
 document.addEventListener('click', async e => {
   if (e.target.id !== 'cm-save') return;
-  const o = { claude: {}, codex: {} };
+  const o = { claude: {}, codex: {},grok:{} };
   document.querySelectorAll('input.cm').forEach(i => { o[i.dataset.ai][i.dataset.name] = i.value.trim(); });
   try { await api('/api/cli-models', o); toast(L('モデル名を保存しました（次に送る時から使います）')); loadCliModels(); } catch (err) { toast(err.message); }
 });
@@ -2355,7 +2559,8 @@ async function emptyAct(el){const action=el.dataset.act;if(emptyPending)return;
 async function act(el) {
   const a = el.dataset.act, p = el.dataset.p || view.project, t = el.dataset.t;
   try {
-    if (a === 'start') await startAI(p, t, el.dataset.ai);
+    if (a === 'groklogin') await startGrokLoginWindow(el.dataset.grokMode);
+    else if (a === 'start') await startAI(p, t, el.dataset.ai);
     else if (a === 'workspaceclose') await closeNativeWorkspace(p,t,el);
     else if (a === 'termwindow') openTerminalWindow(p, t, el.dataset.ai);
     else if (a === 'nativerestart') await restartHub();
@@ -2367,7 +2572,7 @@ async function act(el) {
     }
     else if (a === 'stop') { await api('/api/term/stop', { project: p, task: t, ai: el.dataset.ai }); toast(L('止めました')); await load(); }
     else if (a === 'handoff') {
-      requireCliReady(el.dataset.to);
+      requireCliReady(el.dataset.to,'terminal');
       el.disabled = true;
       try {
         const r = await api('/api/term/handoff', { project: p, task: t, from: el.dataset.from, to: el.dataset.to, cols: 100, rows: 30 });
@@ -2648,7 +2853,7 @@ document.addEventListener('submit', async e => {
   } catch (err) { toast(err.message); }
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {if(workspaceDialogCancel)workspaceDialogCancel();$('#menu').hidden = true; if ($('#fsheet')) $('#fsheet').hidden = true; }
+  if (e.key === 'Escape') {$('#menu').hidden = true; if ($('#fsheet')) $('#fsheet').hidden = true; }
   if (isSendKey(e) && e.target.closest && e.target.closest('#quickform')) { e.preventDefault(); $('#quickform').requestSubmit(); }
 });
 $('#turn').addEventListener('click', () => { view = { ...view, kind: view.kind === 'turn' ? 'project' : 'turn' }; render(); });
@@ -2734,7 +2939,7 @@ $('#gear').addEventListener('click', () => { view = { ...view, kind: view.kind =
 // 左の木だけすぐ読み直す（AI が始めた・終わった時。丸の色を変えるため）
 async function refreshTree() {
   const epoch = stateLoadEpoch;
-  try { const next = await fetchState(); if (epoch !== stateLoadEpoch || initialPickSaving || phoneLabelsSaving || !next) return; state = next; syncChatPhoneLabels(); refreshWorkspaceLifecycle(); if (treeKey() !== renderedTreeKey) renderTree(); }
+  try { const next = await fetchState(); if (epoch !== stateLoadEpoch || initialPickSaving || phoneLabelsSaving || !next) return; state = {...next,...(state.grokLoginPrompt?{grokLoginPrompt:state.grokLoginPrompt}:{})}; syncChatPhoneLabels(); refreshWorkspaceLifecycle(); refreshGrokStatus(); if (treeKey() !== renderedTreeKey) renderTree(); }
   catch (e) { /* 次に */ }
 }
 const editing = () => document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
@@ -2748,8 +2953,9 @@ async function pollState() {
     if (epoch !== stateLoadEpoch || initialPickSaving || phoneLabelsSaving) return; // 保存後などの明示 load() を古い定期取得で上書きしない
     const previousModels = JSON.stringify([state.modelOrder, state.hiddenModels, state.roles?.models]);
     const previousInitial = JSON.stringify([state.initialPick, state.initialPickError]);
-    if (next) state = next;
+    if (next) state = {...next,...(state.grokLoginPrompt?{grokLoginPrompt:state.grokLoginPrompt}:{})};
     refreshWorkspaceLifecycle();
+    refreshGrokStatus();
     // 通知のrefreshTreeが先にstateを更新した時や304でも、実際のoptionを同期する。
     // 表示名はmainKeyに含めず、会話の入力欄・選択欄は作り直さない。
     syncChatPhoneLabels();

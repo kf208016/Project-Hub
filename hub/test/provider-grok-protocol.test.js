@@ -146,7 +146,16 @@ test('result errors are sanitized and abnormal stop reasons never report a compl
 test('end_turn is only protocol completion, including a provider model-block message',()=>{
  const {protocol:p}=fixture();p.push(wire(text('Synthetic model unavailable message')));p.push(wire({...result(),result:{stopReason:'end_turn',_meta:{completionKind:'response',providerFlag:'synthetic'}}}));const end=p.end();assert.equal(end.replyComplete,true);assert.equal(end.taskSuccess,null);assert.equal(end.metadata.providerFlag,'synthetic');
  const {protocol:q}=fixture();q.push(wire(update({sessionUpdate:'tool_call',toolCallId:'pending',title:'not finished'})));q.push(wire(result()));assert.equal(q.end().replyComplete,false);
- const {protocol:r}=fixture();r.push(wire(update({sessionUpdate:'tool_call',toolCallId:'failed',title:'failed',status:'failed'})));r.push(wire(result()));assert.equal(r.end().toolFailureObserved,true);
+ const {protocol:r}=fixture();r.push(wire(update({sessionUpdate:'tool_call',toolCallId:'failed',title:'failed',status:'failed'})));r.push(wire(result()));const recovered=r.end();assert.equal(recovered.toolFailureObserved,true);assert.equal(recovered.replyComplete,true);assert.equal(recovered.taskSuccess,null);
+});
+test('failed terminal tools do not hide open tools or override an owner denial',()=>{
+ const {protocol:p}=fixture();
+ p.push(wire(update({sessionUpdate:'tool_call',toolCallId:'failed',title:'Optional read',status:'failed'})));
+ p.push(wire(update({sessionUpdate:'tool_call',toolCallId:'open',title:'Unfinished operation',status:'in_progress'})));
+ p.push(wire(result()));const incomplete=p.end();assert.equal(incomplete.replyComplete,false);assert.equal(incomplete.openTools,1);assert.equal(incomplete.toolFailureObserved,true);assert.equal(incomplete.taskSuccess,null);
+ const {protocol:q,owner}=fixture();q.push(wire(request()));q.decide(owner,decision(q,'reject-once'));
+ q.push(wire(update({sessionUpdate:'tool_call_update',toolCallId:'tool-1',status:'failed'})));
+ q.push(wire(result()));const denied=q.end();assert.equal(denied.permissionDenied,true);assert.equal(denied.replyComplete,false);assert.equal(denied.toolFailureObserved,true);assert.equal(denied.taskSuccess,null);
 });
 test('UTF-8 split chunks and exact frame limit CRLF boundary are accepted',()=>{
  const {protocol:p}=fixture(),b=wire(text('繁體中文🙂'));let events=[];for(const byte of b)events.push(...p.push(Buffer.from([byte])));assert.equal(events[0].text,'繁體中文🙂');p.push(wire(result()));p.end();

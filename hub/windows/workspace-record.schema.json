@@ -8,7 +8,7 @@
     "version":{"const":1},"id":{"type":"string","format":"uuid"},"at":{"type":"string","format":"date-time"},
     "project":{"$ref":"#/$defs/id"},"task":{"$ref":"#/$defs/id"},"title":{"type":"string"},"taskHash":{"type":"string"},"base":{"type":"string","minLength":1},"workRoot":{"type":"string","minLength":1},
     "mode":{"enum":["isolated","direct"]},"kind":{"enum":["non-git","unborn","git"]},
-    "original":{"$ref":"#/$defs/snapshot"},"baseSnapshot":{"$ref":"#/$defs/snapshot"},"snapshot":{"$ref":"#/$defs/snapshot"},"workingOriginal":{"anyOf":[{"type":"null"},{"type":"object","required":["dir","rootFingerprint","snapshot"],"properties":{"dir":{"type":"string"},"rootFingerprint":{"$ref":"#/$defs/hash"},"snapshot":{"$ref":"#/$defs/snapshot"}},"additionalProperties":false}]},
+    "original":{"$ref":"#/$defs/sourceSnapshot"},"baseSnapshot":{"$ref":"#/$defs/sourceSnapshot"},"snapshot":{"$ref":"#/$defs/snapshot"},"workingOriginal":{"anyOf":[{"type":"null"},{"type":"object","required":["dir","rootFingerprint","snapshot"],"properties":{"dir":{"type":"string"},"rootFingerprint":{"$ref":"#/$defs/hash"},"snapshot":{"$ref":"#/$defs/snapshot"}},"additionalProperties":false}]},
     "execution":{"type":"object","required":["hooks","configHash","blockers"],"properties":{"hooks":{"type":"array"},"configHash":{"$ref":"#/$defs/hash"},"blockers":{"type":"array","items":{"type":"string"}}},"additionalProperties":true},
     "secrets":{"type":"object","required":["rootFingerprint","files"],"properties":{"rootFingerprint":{"$ref":"#/$defs/hash"},"files":{"type":"array","maxItems":128,"items":{"type":"object","required":["relative","bytes","sha256","fileFingerprint"],"properties":{"relative":{"$ref":"#/$defs/relative"},"bytes":{"type":"integer","minimum":0,"maximum":8388608},"sha256":{"$ref":"#/$defs/hash"},"fileFingerprint":{"$ref":"#/$defs/hash"}},"additionalProperties":false}}},"additionalProperties":false},
     "trackedSecrets":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/relative"}},"supplied":{"type":"array","items":{"type":"string","format":"uuid"}},
@@ -18,6 +18,7 @@
   "$defs": {
     "id":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^[^\\\\/\\u0000]+$"},"relative":{"type":"string","minLength":1,"pattern":"^(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$))[^\\u0000]+$"},
     "hash":{"type":"string","pattern":"^[a-f0-9]{64}$"},"commit":{"type":"string","pattern":"^[a-f0-9]{40,64}$"},
+    "sourceSnapshot":{"type":"object","required":["head","branch","index","allContent"],"properties":{"head":{"anyOf":[{"type":"null"},{"$ref":"#/$defs/commit"}]},"branch":{"type":["string","null"]},"index":{"type":"string","pattern":"^(?:[a-f0-9]{64})?$"},"allContent":{"$ref":"#/$defs/hash"},"baseContent":{"$ref":"#/$defs/hash"}},"additionalProperties":false},
     "snapshot":{"type":"object","required":["head","branch","index","allContent"],"properties":{"head":{"anyOf":[{"type":"null"},{"$ref":"#/$defs/commit"}]},"branch":{"type":["string","null"]},"index":{"type":"string","pattern":"^(?:[a-f0-9]{64})?$"},"allContent":{"$ref":"#/$defs/hash"}},"additionalProperties":false}
   },
   "additionalProperties": false

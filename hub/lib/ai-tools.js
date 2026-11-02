@@ -3,9 +3,11 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { createHash } = require('crypto');
 const { spawn } = require('./managed-process');
 
-const { AIS, AI_LABEL, AGY_MODEL, childEnv, agyAccountError } = require('./launch');
+const launch = require('./launch');
+const { AIS, AI_LABEL, CLI_DEFAULT_LABEL, AGY_MODEL, childEnv, agyAccountError } = launch;
 const { latestVersion, newer } = require('./update-check');
 const cli = require('./cli-platform');
 const { listModels: codexModelList } = require('./codex-models');
@@ -81,7 +83,8 @@ function cleanModels(rows) {
   if (!Array.isArray(rows)) throw toolError(502, 'models', 'モデル一覧の形式が正しくありません');
   const seen = new Set();
   return rows.filter(row => row && typeof row.id === 'string' && ID.test(row.id))
-    .map(row => ({ id: row.id, label: typeof row.label === 'string' && row.label.length <= 80 ? row.label : row.id }))
+    .map(row => ({ id: row.id, label: typeof row.label === 'string' && row.label.length <= 80 ? row.label : row.id,
+      ...(Array.isArray(row.efforts) ? { efforts: [...new Set(row.efforts.filter(id => typeof id === 'string' && /^[a-z][a-z0-9_-]*$/.test(id)))] } : {}) }))
     .filter(row => !seen.has(row.id) && seen.add(row.id));
 }
 
@@ -121,8 +124,27 @@ function agyModels(text) {
 function claudeModels(json) {
   const rows = JSON.parse(json)?.catalog?.config?.models;
   if (!Array.isArray(rows)) throw toolError(502, 'models', 'Claude Code のモデル一覧を読めませんでした');
-  const models = cleanModels(rows.filter(row => row && row.section === 'main').map(row => ({ id: row.id, label: row.name || row.id })));
+  const models = cleanModels(rows.filter(row => row && row.section === 'main').map(row => ({ id: row.id, label: row.name || row.id,
+    ...(Array.isArray(row.thinking?.effort_options) ? { efforts: row.thinking.effort_options.map(option => option?.id) } : {}) })));
   if (!models.length) throw toolError(502, 'models', 'Claude Code の表示対象モデルが見つかりませんでした');
+  return models;
+}
+
+// Only project allow-listed metadata. Never enumerate/copy cache siblings or
+// retain the parsed document; credentials and account metadata are not accessed.
+function grokModels(json) {
+  const rows = JSON.parse(json)?.models;
+  if (!rows || typeof rows !== 'object' || Array.isArray(rows)) throw Error('invalid model cache');
+  const projected = [];
+  for (const key of Object.keys(rows)) {
+    const info = rows[key]?.info;
+    if (!info || typeof info !== 'object' || Array.isArray(info)) throw Error('invalid model info');
+    if (info.hidden === true) continue;
+    projected.push({ id: info.id, label: info.name || info.id, efforts: info.supports_reasoning_effort === true && Array.isArray(info.reasoning_efforts)
+      ? info.reasoning_efforts.map(option => option?.value || option?.id) : [] });
+  }
+  const models = cleanModels(projected);
+  if (!models.length) throw Error('empty model cache');
   return models;
 }
 
@@ -196,20 +218,25 @@ class AiTools {
     this.busy = opts.busy || (() => 0);
     this.dry = Boolean(opts.dry);
     this.nativeUpdater = this.platform==='win32' && this.root ? opts.nativeUpdater || new (require('./native-cli-update').NativeCliUpdater)({root:this.root}) : null;
-    if(this.nativeUpdater&&!this.dry){this.nativeUpdater.useActive();foundAt.delete('codex');}
+    this.nativeUpdateError=null;
+    if(this.nativeUpdater&&!this.dry){try{this.nativeUpdater.useActive();}catch(e){this.nativeUpdateError=/^[A-Z][A-Z0-9_]+$/.test(e.code||'')?e.code:'ACTIVE_STATE_REJECTED';process.env.PATH=typeof this.nativeUpdater.basePath==='string'?this.nativeUpdater.basePath:process.env.PATH;}foundAt.delete('codex');}
     this.refreshClaude = opts.refreshClaude || (file=>claudeInitialize(file,12000,{platform:this.platform}));
     this.operation = null;
     this.latest = opts.latest || latestVersion;
     this.updateChecks = {};
     this.checking = new Map();
+    this.checkingVersions = new Map();
     this.updateEpoch = {};
+    this.codexRefresh = null;
+    this.codexBinary = { file: '', key: '', sha256: '' };
     this.catalogs = Object.fromEntries(AIS.map(ai => [ai, { models: [], known: [], refreshedAt: '', source: '' }]));
     try {
       const saved = JSON.parse(fs.readFileSync(this.file, 'utf8'));
       for (const ai of AIS) if (saved[ai]) {
         const models = cleanModels(saved[ai].models).filter(x => ai !== 'agy' || x.id === AGY_MODEL.id);
         this.catalogs[ai] = { models, known: mergeKnown(cleanModels(saved[ai].known || []).filter(x => ai !== 'agy' || x.id === AGY_MODEL.id), models),
-          refreshedAt: String(saved[ai].refreshedAt || ''), source: String(saved[ai].source || 'saved') };
+          refreshedAt: String(saved[ai].refreshedAt || ''), source: String(saved[ai].source || 'saved'),
+          ...(ai === 'codex' ? { binarySha256: String(saved[ai].binarySha256 || '') } : {}) };
       }
     } catch (e) { /* 保存が無ければ CLI のローカルキャッシュを読む */ }
     this.syncCaches();
@@ -217,7 +244,7 @@ class AiTools {
 
   syncCaches() {
     const codex = path.join(this.home, '.codex', 'models_cache.json');
-    if (!this.catalogs.codex.models.length) try {
+    if (this.platform !== 'win32' && !this.catalogs.codex.models.length) try {
       const mtime = fs.statSync(codex).mtimeMs;
       if (mtime) {
         const models = uniqueLabels(this.catalogs.codex.known, codexModels(fs.readFileSync(codex, 'utf8')));
@@ -233,8 +260,69 @@ class AiTools {
     } catch (e) { /* キャッシュが無い・壊れている時は保存済みを使う */ }
   }
 
+  // Local model metadata only; never invoke a CLI or read authentication files.
+  refreshClaudeCatalogFromCache(options = {}) {
+    return this.refreshNativeCatalogFromCache('claude', options);
+  }
+
+  refreshGrokCatalogFromCache(options = {}) {
+    return this.refreshNativeCatalogFromCache('grok', options);
+  }
+
+  refreshNativeCatalogFromCache(ai, { ifChanged = false } = {}) {
+    if (!['claude', 'grok'].includes(ai)) throw toolError(400, 'models', '不支援此模型目錄');
+    try {
+      const file = path.join(this.home, '.grok', 'models_cache.json');
+      const latest = ai === 'claude' ? latestClaudeCache(this.home) : { file, mtime: fs.statSync(file).mtimeMs };
+      if (!latest) throw Error('missing cache');
+      const key = `${latest.file}:${latest.mtime}`, cacheKey = `${ai}CacheKey`;
+      if (ifChanged && this[cacheKey] === key) {
+        const { models, source, refreshedAt } = this.catalogs[ai];
+        return { models, source, refreshedAt };
+      }
+      const models = uniqueLabels(this.catalogs[ai].known, (ai === 'claude' ? claudeModels : grokModels)(fs.readFileSync(latest.file, 'utf8')));
+      const known = mergeKnown(this.catalogs[ai].known, models).map(row => ({ ...row,
+        ...models.find(current => current.id === row.id && current.label === row.label) }));
+      const refreshedAt = new Date(latest.mtime).toISOString();
+      this.catalogs[ai] = { models, known, refreshedAt, source: 'local-cache' };
+      this[cacheKey] = key;
+      return { models, source: 'local-cache', refreshedAt };
+    } catch { throw toolError(502, 'models', `無法讀取 ${ai === 'claude' ? 'Claude Code' : 'Grok CLI'} 的本機模型目錄`); }
+  }
+
   catalog() {
     return this.catalogs;
+  }
+
+  setCodexBinary(file) {
+    try {
+      const resolved = path.resolve(file), stat = fs.statSync(resolved,{bigint:true});
+      if (!stat.isFile()) throw Error('not a file');
+      const key = `${resolved.toLowerCase()}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      if (this.codexBinary.key === key) return this.codexBinary.sha256;
+      const sha256 = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
+      this.codexBinary = { file: resolved, key, sha256 };
+      return sha256;
+    } catch { throw toolError(502, 'models', 'Codex 執行檔無法核對'); }
+  }
+
+  codexAvailability(labelOrId) {
+    const catalog = this.catalogs.codex;
+    if (!this.codexBinary.sha256 || catalog.source !== 'codex-app-server' || !catalog.binarySha256 || catalog.binarySha256 !== this.codexBinary.sha256) return 'unknown';
+    if (labelOrId === CLI_DEFAULT_LABEL) return 'available';
+    const value = String(labelOrId || ''), id = launch.flagFor('codex', value) || catalog.models.find(row=>row.label===value)?.id || value;
+    return catalog.models.some(row => row.id === id) ? 'available' : 'unavailable';
+  }
+
+  async refreshCodexCatalog({ file } = {}) {
+    if (this.codexRefresh) return this.codexRefresh;
+    const pending = (async () => {
+      const binarySha256 = this.setCodexBinary(file);
+      const models = await this.refreshCodex(file);
+      return this.saveCatalog('codex', { models, source: 'codex-app-server', binarySha256 }).models;
+    })();
+    this.codexRefresh = pending;
+    try { return await pending; } finally { if (this.codexRefresh === pending) this.codexRefresh = null; }
   }
 
   staleModel(ai, label) {
@@ -256,6 +344,12 @@ class AiTools {
     return '';
   }
 
+  nativeUpdateStatus() {
+    if(!this.nativeUpdater)return null;
+    let active=null;try{active=this.nativeUpdater.active?.()||null;this.nativeUpdateError=null;}catch(e){this.nativeUpdateError=/^[A-Z][A-Z0-9_]+$/.test(e.code||'')?e.code:'ACTIVE_STATE_REJECTED';}
+    return {versions:Object.keys(require('./codex-versions').REVIEWED),active:active?{slot:active.slot,version:active.version}:null,previous:active?.previous||null,error:this.nativeUpdateError};
+  }
+
   async status() {
     if (!this.operation) this.syncCaches();
     const entries = await Promise.all(AIS.map(async ai => {
@@ -263,35 +357,37 @@ class AiTools {
       const method = this.methods[ai] || methodFor(ai, file);
       const readiness=registry.status(ai,{platform:this.platform});
       return [ai, {
+        ...(ai==='codex'&&this.nativeUpdater?{nativeUpdate:this.nativeUpdateStatus()}:{}),
         installed: Boolean(file), version: readiness.ready?await this.version(ai, file):'', method,
         readiness, ready:readiness.ready&&Boolean(file), reasonCode:readiness.reasonCode||(!file?'CLI_MISSING':''),
         updating: Boolean(this.operation && this.operation.ai === ai),
         checking: this.checking.has(ai), updateCheck: this.updateChecks[ai] || null,
         models: this.catalogs[ai].models, refreshedAt: this.catalogs[ai].refreshedAt, source: this.catalogs[ai].source,
-        modelRefreshAvailable: readiness.ready,
+        modelRefreshAvailable: readiness.ready || this.platform === 'win32' && ['claude', 'grok'].includes(ai),
       }];
     }));
     return { tools: Object.fromEntries(entries), operation: this.operation, busyCount: this.busy() };
   }
 
-  async checkUpdate(ai) {
+  async checkUpdate(ai, options = {}) {
     ai=registry.assertCapability(ai,'update',{platform:this.platform}).id;
     if (!AIS.includes(ai)) throw toolError(400, 'input', 'AI の指定が正しくありません');
     if (this.operation?.ai === ai && this.operation.kind === 'update') throw toolError(409, 'busy', 'このAIの更新適用が終わってから確認してください');
-    if (this.checking.has(ai)) return this.checking.get(ai);
+    if(!options||typeof options!=='object'||Array.isArray(options)||Object.keys(options).some(key=>key!=='version')||Object.hasOwn(options,'version')&&!(ai==='codex'&&this.platform==='win32'&&require('./codex-versions').reviewed(options.version)))throw toolError(400,'input','請選擇已審核的 Codex 版本（0.154.0 或 0.164.0）');
+    if (this.checking.has(ai)) {if(this.checkingVersions.get(ai)!==options.version)throw toolError(409,'busy','另一個版本正在核對，請稍後重試');return this.checking.get(ai);}
     const file = this.find(ai);
-    if (!file) throw toolError(400, 'detect', `${AI_LABEL[ai]} が見つかりません`);
+    if (!file&&!options.version) throw toolError(400, 'detect', `${AI_LABEL[ai]} が見つかりません`);
     const pending = (async () => {
       const epoch = this.updateEpoch[ai] || 0;
       try {
         const currentVersion = await this.version(ai, file);
-        if (!currentVersion && !this.dry) throw Error('現在版が不明');
+        if (!currentVersion && !this.dry && !options.version) throw Error('現在版が不明');
         const method = this.methods[ai] || methodFor(ai, file);
-        const latest = this.dry ? { version: currentVersion || '0.0.0', source: 'dry-run' } : await this.latest(ai, method, this.home);
+        const latest = options.version ? {version:options.version,source:'reviewed-allow-list'} : this.dry ? { version: currentVersion || '0.0.0', source: 'dry-run' } : await this.latest(ai, method, this.home);
         if (epoch !== (this.updateEpoch[ai] || 0) || this.operation?.ai === ai && this.operation.kind === 'update') throw toolError(409, 'busy', '確認中に更新が適用されました。適用後に確認してください');
         const nativePreview=this.platform==='win32'&&ai==='codex'&&!this.dry&&this.nativeUpdater?await this.nativeUpdater.preview(latest.version):null;
         const result = { ok: true, ai, currentVersion, latestVersion: latest.version, source: latest.source,
-          available: newer(latest.version, currentVersion), checkedAt: new Date().toISOString(), applicable: Boolean(nativePreview)||['standalone', 'native', 'homebrew-cask'].includes(method),...(nativePreview?{nativePreview,scope:'Hub-private-slot'}:{}) };
+          available: Boolean(options.version)||newer(latest.version, currentVersion), checkedAt: new Date().toISOString(), applicable: Boolean(nativePreview)||['standalone', 'native', 'homebrew-cask'].includes(method),...(nativePreview?{nativePreview,scope:'Hub-private-slot'}:{}) };
         this.updateChecks[ai] = result; return result;
       } catch (e) {
         if (e.status === 409) throw e;
@@ -300,17 +396,18 @@ class AiTools {
       }
     })();
     this.checking.set(ai, pending);
-    try { return await pending; } finally { this.checking.delete(ai); }
+    this.checkingVersions.set(ai, options.version);
+    try { return await pending; } finally { this.checking.delete(ai); this.checkingVersions.delete(ai); }
   }
 
-  check(ai) {
+  check(ai, allowMissing = false) {
     ai=registry.assertCapability(ai,'models',{platform:this.platform}).id;
     if (!AIS.includes(ai)) throw toolError(400, 'input', 'AI の指定が正しくありません');
     if (this.operation) throw toolError(409, 'busy', '別の更新・モデル再取得が進行中です');
     const n = this.busy();
     if (n) throw toolError(409, 'busy', `動いている AI が ${n} つあります。止めてから更新してください`);
     const file = this.find(ai);
-    if (!file) throw toolError(400, 'detect', `${AI_LABEL[ai]} が見つかりません`);
+    if (!file&&!allowMissing) throw toolError(400, 'detect', `${AI_LABEL[ai]} が見つかりません`);
     if (ai === 'agy') { const error = agyAccountError(this.home); if (error) throw toolError(409, 'auth', error); }
     return { file, method: this.methods[ai] || methodFor(ai, file) };
   }
@@ -321,7 +418,8 @@ class AiTools {
     if (!clean.length && !(ai === 'agy' && found.unavailable)) throw toolError(502, 'models', '取得したモデル一覧が空のため、以前の候補を残しました');
     const known = mergeKnown(this.catalogs[ai].known, clean);
     const refreshedAt = new Date().toISOString();
-    const next = { ...this.catalogs, [ai]: { models: clean, known, refreshedAt, source: found.source } };
+    const next = { ...this.catalogs, [ai]: { models: clean, known, refreshedAt, source: found.source,
+      ...(ai === 'codex' && found.binarySha256 ? { binarySha256: found.binarySha256 } : {}) } };
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = `${this.file}.${process.pid}.tmp`;
     try {
@@ -375,6 +473,10 @@ class AiTools {
     if (this.dry) return { ok: true, dry: true, ai, models: this.catalogs[ai].models, added: 0, refreshedAt: this.catalogs[ai].refreshedAt };
     this.operation = { ai, kind: 'models', startedAt: new Date().toISOString() };
     try {
+      if (ai === 'codex' && this.platform === 'win32') {
+        const previous=new Set(this.catalogs.codex.models.map(row=>row.id)),models = await this.refreshCodexCatalog({ file }), catalog = this.catalogs.codex;
+        return { ai, ok: true, models, added: models.filter(row=>!previous.has(row.id)).length, refreshedAt: catalog.refreshedAt, source: catalog.source };
+      }
       const found = await this.fetchModels(ai, file);
       const result = found.unchanged
         ? { ok: true, models: this.catalogs[ai].models, added: 0, refreshedAt: this.catalogs[ai].refreshedAt,
@@ -389,12 +491,13 @@ class AiTools {
     ai=registry.assertCapability(ai,'update',{platform:this.platform}).id;
     if(this.platform==='win32'){
       if(ai!=='codex'||!this.nativeUpdater)throw toolError(409,'unsupported','本輪僅支援原生 Codex 的 Hub 私有版本槽更新');
-      const {file}=this.check(ai);if(this.dry)return{ok:true,dry:true,ai,scope:'Hub-private-slot',globalCliChanged:false};
+      const {file}=this.check(ai,true);if(this.dry)return{ok:true,dry:true,ai,scope:'Hub-private-slot',globalCliChanged:false};
       this.operation={ai,kind:'update',startedAt:new Date().toISOString()};this.updateEpoch[ai]=(this.updateEpoch[ai]||0)+1;
       try{const beforeVersion=await this.version(ai,file),result=await this.nativeUpdater.apply(approval);foundAt.delete('codex');delete this.updateChecks[ai];
         if(!result.ok)return{...result,ai,beforeVersion,afterVersion:beforeVersion,changed:false,verified:false};
         const active=this.nativeUpdater.active();let afterVersion;try{afterVersion=await this.version(ai,active.file,true);if(afterVersion!==result.version)throw Error('version mismatch');}catch{this.nativeUpdater.rollback(result.slot);foundAt.delete('codex');throw toolError(502,'verify','私有版本槽版號驗證失敗，已回復原版本；未宣稱更新完成');}
-        let models;try{const found=await this.fetchModels(ai,active.file);models=this.saveCatalog(ai,found);}catch{models={ok:false,error:'CLI 已驗證，但模型列表未能重新驗證；保留原候選'};}
+        this.nativeUpdateError=null;
+        let models;try{const rows=await this.refreshCodexCatalog({file:active.file}),catalog=this.catalogs.codex;models={ok:true,models:rows,refreshedAt:catalog.refreshedAt,source:catalog.source};}catch{models={ok:false,error:'CLI 已驗證，但模型列表未能重新驗證；保留原候選'};}
         return{...result,ai,beforeVersion,afterVersion,changed:beforeVersion!==afterVersion,verified:true,models};
       }catch(e){throw e.status?e:failure('update',e);}finally{this.operation=null;}
     }

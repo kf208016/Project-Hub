@@ -7,8 +7,10 @@
 - 程式：`%LOCALAPPDATA%\ProjectHub\versions\4.68.2-windows-codex-<commit前12碼>`。
 - 當前版本：`%LOCALAPPDATA%\ProjectHub\current.json`；切換前保留 `history` 備份與變更紀錄。
 - 資料：使用者 Documents 下的 `AI-Workspace`。拒絕 Codex 目錄及存在 `.git` 的祖先，避免把 Codex 的空 Git 祖先當成專案 repo。
-- 僅建立缺少的 `_hub`、`Product`、`Work`、`_hub/roles.yaml` 與私有圖片依賴設定；既有 roles.yaml、roles.json、專案、對話、憑證與其他資料不覆蓋，不匯入範例專案。
+- 僅建立缺少的 `_hub`、`Product`、`Work`、`_hub/roles.yaml` ；私有圖片依賴設定會在安裝、回復、恢復指標與停止狀態的啟動時綁至選定版本，更新前保留 `_hub/history`；既有 roles.yaml、roles.json、專案、對話、憑證與其他資料不覆蓋，不匯入範例專案。
 - 不改 PATH、全域 Codex 設定、WSL、防火牆、排程或永久 PowerShell 執行原則。
+
+同機使用與原版 Project Hub 一樣不需登入；啟動器只開瀏覽器網址，不再開本機登入確認視窗。任何通過 Host／Origin／X-Hub 檢查的本機程式都能操作 Hub，包括核准命令與讀寫檔案；能連到此入口的 AI 命令也能自行核准。服務仍綁 `127.0.0.1` 並拒絕中繼標頭；遠端 HTTPS 預設關閉，通關密語登入與 MCP Bearer 限制不變。啟動器 token、HMAC proof 與相容登入 API 繼續用於停止／重啟的實例核對。
 
 ## 套件來源門檻
 
@@ -40,3 +42,11 @@ PowerShell 入口是 `hub\windows\install-windows.ps1`。`ManifestSha256` 必須
 若 pointer 寫入中斷，先人工確認 history、目前檔案 SHA-256 與同一 FileID，再使用 `Recover-Current -Backup 'history/current-<id>.json' -ExpectedHash '<目前 SHA-256>'`。僅接受對應 journal、已知備份與同一 pointer FileID，未知 hash／換檔不能自動復原。這會再保留當前內容，不刪任何使用者資料。
 
 正式執行本機安裝需由工具的 `auto_review` 對精確 LocalAppData／Documents 路徑核准 `require_escalated`。使用者已授權安裝；此為環境寫入門檻，不重新要求產品範圍核准。
+
+## Windows 安裝安全限制
+
+- `InstallBase` 必須位於 Windows 系統碟；`DataRoot` 仍可位於其他已接受的本機 NTFS 磁碟。
+- 請從一般 PowerShell 視窗執行安裝。若任一安裝控制路徑被重新導向，或封裝（MSIX）行程操作位於使用者 AppData 且不在暫存區的安裝位置，Preview、Install、Start、Stop、Rollback 與 Recover-Current 均以 `INSTALL_BASE_VIRTUALIZED` 拒絕。Status 僅回報封裝環境與不可信警告。
+- PowerShell wrapper 會把 UTF-8（無 BOM）請求寫入 `%TEMP%` 的隨機檔案，交給 Node 讀取後在 `finally` 刪除，不再透過文字管線傳送 JSON。
+- 已失效的 `desktop-state.json` 會先封存為同目錄的 `desktop-state.stale-*.json`；仍存活且身分吻合的執行個體仍會阻擋切換版本。
+- 安裝或回復版本成功後，安裝根目錄會產生 `Start-Project-Hub.cmd` 與 `Stop-Project-Hub.cmd`。安裝器只會更新帶有產生器標記的檔案，不會覆寫使用者自建的同名檔案。

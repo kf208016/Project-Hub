@@ -23,8 +23,7 @@ const post = (url, body = {}) => fetch(base + url, { method: 'POST',
   headers: { 'Content-Type': 'application/json', 'X-Hub': '1' }, body: JSON.stringify({ ...key, ...body }) });
 const rows = () => chat.read(taskDir, key.task);
 async function reply(n) {
-  for (let i = 0; i < 100 && rows().filter(x => x.role === 'assistant').length < n; i++)
-    await new Promise(resolve => setTimeout(resolve, 30));
+  await require('./helpers/wait-hub').waitFor(()=>rows().filter(x=>x.role==='assistant').length>=n,{deadlineMs:30000});
   assert.equal(rows().filter(x => x.role === 'assistant').length, n);
   return rows().filter(x => x.role === 'assistant').at(-1);
 }

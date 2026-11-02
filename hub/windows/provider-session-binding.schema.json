@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "project-hub/provider-session-binding/v1",
+  "title": "Optional native provider binding map",
+  "description": "Local metadata extension. Runtime validation additionally requires sessions[actor] equality and distinct native IDs. Account profile is opaque; it does not prove account identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "claude": {"allOf": [{"$ref": "#/$defs/record"}, {"properties": {"actor": {"const": "claude"}}}]},
+    "grok": {"allOf": [{"$ref": "#/$defs/record"}, {"properties": {"actor": {"const": "grok"}}}]}
+  },
+  "$defs": {
+    "label": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\u0000]*$"},
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "project", "task", "actor", "runtimeProfileId", "accountProfileId", "rootFingerprint", "providerSessionId"],
+      "properties": {
+        "version": {"const": 1}, "project": {"$ref": "#/$defs/label"}, "task": {"$ref": "#/$defs/label"},
+        "actor": {"enum": ["claude", "grok"]}, "runtimeProfileId": {"$ref": "#/$defs/label"},
+        "accountProfileId": {"$ref": "#/$defs/label"}, "rootFingerprint": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "providerSessionId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}
+      }
+    }
+  }
+}

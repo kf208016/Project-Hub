@@ -15,6 +15,28 @@ function Confirm-LocalPaths([string[]]$paths) {
     finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw 'The workspace and launcher files must be local paths without filesystem aliases.' }
 }
+function ConvertTo-WindowsArgument([string]$Value) {
+    $result = New-Object Text.StringBuilder
+    [void]$result.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes++
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$result.Append(('\' * (($backslashes * 2) + 1)))
+            [void]$result.Append('"')
+        } else {
+            if ($backslashes -gt 0) { [void]$result.Append(('\' * $backslashes)) }
+            [void]$result.Append($character)
+        }
+        $backslashes = 0
+    }
+    if ($backslashes -gt 0) { [void]$result.Append(('\' * ($backslashes * 2))) }
+    [void]$result.Append('"')
+    return $result.ToString()
+}
 if ([int]((& $node --version).TrimStart('v').Split('.')[0]) -lt 22) { throw 'Node.js 22 or newer is required.' }
 if (-not $RecoveryOnly -and -not $Stop) { Get-Command git.exe -ErrorAction Stop | Out-Null }
 if (-not $RecoveryOnly -and -not $Stop) {
@@ -63,13 +85,31 @@ try {
         $stateFile = Get-Item -LiteralPath $statePath
         if ($stateFile.PSIsContainer -or $stateFile.Length -gt 16384) { throw 'The saved launcher state is not a bounded regular file.' }
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-        if ($null -ne $state.recoveryOnly -and $state.recoveryOnly -isnot [bool]) { throw 'The saved launcher recovery mode is invalid.' }
-        if ($state.version -isnot [int] -or $state.version -ne 1 -or $state.root -isnot [string] -or $state.hubDir -isnot [string] -or $state.root -cne $root -or $state.hubDir -cne $hubDir) { throw 'The saved launcher state belongs to a different workspace/version directory.' }
-        if ($state.pid -isnot [int] -or $state.pid -le 0 -or $state.port -isnot [int] -or $state.port -lt 1024 -or $state.port -gt 65535 -or
-            $state.createdTicks -isnot [string] -or $state.createdTicks -notmatch '^[0-9]{1,19}$' -or
-            $state.protectedToken -isnot [string] -or $state.protectedToken.Length -gt 8192 -or $state.protectedToken -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'The saved launcher state has invalid process or credential fields.' }
+        if ($state.version -isnot [int] -or $state.version -ne 1 -or $state.pid -isnot [int] -or $state.pid -le 0 -or
+            $state.createdTicks -isnot [string] -or $state.createdTicks -notmatch '^[0-9]{1,19}$') { throw 'The saved launcher state has invalid process identity fields.' }
+        $stateNode = $node
+        if ($state.PSObject.Properties.Name -contains 'node') {
+            if ($state.node -isnot [string] -or -not [IO.Path]::IsPathRooted($state.node)) { throw 'The saved launcher node path is invalid.' }
+            $stateNode = [IO.Path]::GetFullPath($state.node)
+        }
         $savedProcess = Get-Process -Id ([int]$state.pid) -ErrorAction SilentlyContinue
-        if ($savedProcess -and $savedProcess.StartTime.ToUniversalTime().Ticks.ToString() -eq $state.createdTicks -and $savedProcess.Path -ieq $node) {
+        $identityMatches = $false
+        if ($savedProcess) {
+            try { $identityMatches = $savedProcess.StartTime.ToUniversalTime().Ticks.ToString() -eq $state.createdTicks -and $savedProcess.Path -ieq $stateNode }
+            catch { throw 'The saved launcher process identity could not be verified.' }
+        }
+        if (-not $identityMatches) {
+            $stalePath = Join-Path $logDir ('desktop-state.stale-' + $state.createdTicks + '-' + [Guid]::NewGuid().ToString('N').Substring(0,8) + '.json')
+            Confirm-LocalPaths @($stalePath)
+            Move-Item -LiteralPath $statePath -Destination $stalePath
+            Write-Host 'Cleared stale launcher state.'
+            $state = $null
+            if ($Stop) { $completed = $true; return }
+        } else {
+            if ($null -ne $state.recoveryOnly -and $state.recoveryOnly -isnot [bool]) { throw 'The saved launcher recovery mode is invalid.' }
+            if ($state.root -isnot [string] -or $state.hubDir -isnot [string] -or $state.root -cne $root -or $state.hubDir -cne $hubDir) { throw 'The saved launcher state belongs to a different workspace/version directory.' }
+            if ($state.port -isnot [int] -or $state.port -lt 1024 -or $state.port -gt 65535 -or
+                $state.protectedToken -isnot [string] -or $state.protectedToken.Length -gt 8192 -or $state.protectedToken -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'The saved launcher state has invalid credential fields.' }
             $port = [int]$state.port
             $token = [Text.Encoding]::UTF8.GetString([Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($state.protectedToken), $entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser))
             if ($token -cnotmatch '^[A-Za-z0-9_-]{43}$') { throw 'The saved launcher credential is invalid.' }
@@ -130,7 +170,7 @@ try {
         }
         if (-not $ready) { throw "Hub did not pass instance verification. Check $logDir." }
         $protected = [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect([Text.Encoding]::UTF8.GetBytes($token), $entropy, [Security.Cryptography.DataProtectionScope]::CurrentUser))
-        $state = @{version=1;root=$root;hubDir=$hubDir;pid=$ownedProcess.Id;createdTicks=$ownedProcess.StartTime.ToUniversalTime().Ticks.ToString();port=$port;protectedToken=$protected;recoveryOnly=[bool]$RecoveryOnly}
+        $state = @{version=1;root=$root;hubDir=$hubDir;node=$node;pid=$ownedProcess.Id;createdTicks=$ownedProcess.StartTime.ToUniversalTime().Ticks.ToString();port=$port;protectedToken=$protected;recoveryOnly=[bool]$RecoveryOnly}
         $tempState = $statePath + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
         Confirm-LocalPaths @($statePath, $tempState)
         [IO.File]::WriteAllText($tempState, ($state|ConvertTo-Json), [Text.UTF8Encoding]::new($false))
@@ -138,7 +178,7 @@ try {
     }
     $completed = $true
     if (-not $NoBrowser -and $env:HUB_NO_BROWSER -ne '1') {
-        $url = "http://127.0.0.1:$port/#auth=$token"
+        $url = "http://127.0.0.1:$port/"
         $edge = Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'
         if (Test-Path -LiteralPath $edge) { Start-Process -FilePath $edge -ArgumentList @('--no-first-run', '--no-default-browser-check', "--app=$url") | Out-Null }
         else { Start-Process -FilePath 'explorer.exe' -ArgumentList @($url) | Out-Null }

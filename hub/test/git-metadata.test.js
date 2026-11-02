@@ -79,6 +79,6 @@ test('metadata rejects junctions in control trees and unsafe ambient roots befor
 test('drive classification rejects remote/unknown roots, malformed maps and stale classification',()=>{
  const map=Object.fromEntries(Array.from({length:26},(_,n)=>[String.fromCharCode(65+n),1]));map.C=3;map.D=4;let time=1000,calls=0;
  const check=drives.createChecker({platform:'win32',now:()=>time,query:()=>{calls++;return {...map};}});
- assert.doesNotThrow(()=>check('C:\\local'));assert.throws(()=>check('D:\\remote'),/remote/);assert.throws(()=>check('Z:\\absent'),/remote/);assert.equal(calls,1);
- time+=1000;map.C=4;assert.throws(()=>check('C:\\now-remote'),/remote/);assert.equal(calls,2);assert.throws(()=>check('\\\\uncontacted-server\\share'),/invalid/);assert.throws(()=>drives.parseTypes({C:3}),/invalid/);
+ assert.doesNotThrow(()=>check('C:\\local'));assert.equal(calls,1);assert.throws(()=>check('D:\\remote'),/remote/);assert.throws(()=>check('Z:\\absent'),/remote/);assert.equal(calls,3,'a rejected letter is re-queried instead of trusting the snapshot');
+ time+=4999;map.C=4;assert.doesNotThrow(()=>check('C:\\still-cached'));assert.equal(calls,3);time+=1;assert.throws(()=>check('C:\\now-remote'),/remote/);assert.equal(calls,4);assert.throws(()=>check('\\\\uncontacted-server\\share'),/invalid/);assert.throws(()=>drives.parseTypes({C:3}),/invalid/);
 });

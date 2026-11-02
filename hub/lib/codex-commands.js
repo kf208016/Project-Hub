@@ -8,10 +8,12 @@ const os=require('node:os');
 const cli=require('./cli-platform'),managed=require('./managed-process');
 const {localPath}=require('./safe-path');
 const failure=code=>Object.assign(Error('Codex command broker: '+code),{code,status:409});
+const {reviewed}=require('./codex-versions');
 const MAX=1024*1024;
 function run(file,options) {
   if(process.platform!=='win32'||process.arch!=='x64'||os.release()!=='10.0.26200')throw failure('UNSUPPORTED_PLATFORM');
   if(!options || !Array.isArray(options.argv)||!options.argv.length||options.argv.some(x=>typeof x!=='string'||x.includes('\0'))||!path.isAbsolute(options.argv[0])||options.cwd!==options.root||!/^[a-f0-9]{64}$/.test(options.rootFingerprint||''))throw failure('INVALID_REQUEST');
+  if(!reviewed(options.expectedVersion))throw failure('UNSUPPORTED_CODEX_VERSION');
   const timeoutMs=options.timeoutMs===undefined?30000:options.timeoutMs;
   if(!Number.isSafeInteger(timeoutMs)||timeoutMs<100||timeoutMs>120000)throw failure('INVALID_TIMEOUT');
   localPath(options.argv[0]);localPath(file);
@@ -28,6 +30,8 @@ function run(file,options) {
     if(finished||canceled)return;canceled=true;
     if(phase==='command'){
       // The supervisor retains root pins until its entire Job is empty.
+      // Keep the 0.154.0 lifetime contract for both reviewed versions.
+      // 0.164.0 must be re-verified on the real machine.
       // Codex 0.154.0 Windows buffered commands do not register protocol
       // terminate sessions. Closing the connection requests cleanup, followed
       // by the supervisor's owned Job termination if shutdown has not finished.
@@ -56,7 +60,7 @@ function run(file,options) {
     }
     if(message.id===1&&phase==='starting'){
       if(message.error||!message.result||typeof message.result!=='object'||Array.isArray(message.result))throw failure('INITIALIZE_FAILED');
-      if(message.result.platformOs!=='windows'||message.result.platformFamily!=='windows'||typeof message.result.userAgent!=='string'||! /\/0\.154\.0(?: |$)/.test(message.result.userAgent))throw failure('UNSUPPORTED_CODEX_VERSION');
+      if(message.result.platformOs!=='windows'||message.result.platformFamily!=='windows'||typeof message.result.userAgent!=='string'||!message.result.userAgent.split(' ').some(part=>part.endsWith('/'+options.expectedVersion)))throw failure('UNSUPPORTED_CODEX_VERSION');
       if(canceled)return child.kill();
       send({method:'initialized',params:{}});phase='command';
       // Codex 0.154.0's Windows sandbox rejects custom outputBytesCap. Keep
@@ -67,7 +71,7 @@ function run(file,options) {
     if(message.error)throw failure('EXECUTION_REJECTED');
     const row=message.result;
     if(!row||!Number.isSafeInteger(row.exitCode)||typeof row.stdout!=='string'||typeof row.stderr!=='string'||Buffer.byteLength(row.stdout)+Buffer.byteLength(row.stderr)>400*1024+4096)throw failure('INVALID_RESULT');
-    result={exitCode:row.exitCode,stdout:row.stdout,stderr:row.stderr,canceled,modelCalled:false,readBoundary:'broader-than-task',networkBoundary:'networkAccess=false is not a complete network boundary'};
+    result={codexVersion:options.expectedVersion,exitCode:row.exitCode,stdout:row.stdout,stderr:row.stderr,canceled,modelCalled:false,readBoundary:'broader-than-task',networkBoundary:'networkAccess=false is not a complete network boundary'};
     phase='closing';close();
   };
   child.stdout.on('data',chunk=>{

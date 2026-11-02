@@ -32,6 +32,7 @@ function available() {
 }
 
 function repoTop(dir) { return fs.existsSync(dir) ? tryGit(dir, ['rev-parse', '--show-toplevel']) : null; }
+function repoTopChain(){const seen=new Map(),k=d=>WINDOWS?path.resolve(d).toLowerCase():path.resolve(d);return dir=>{const key=k(dir);if(seen.has(key))return seen.get(key);const top=repoTop(dir);if(typeof top==='string'&&k(top)===key)seen.set(key,top);return top;};}
 
 // 作業用コピーなら、本体のフォルダを返す
 function mainOf(dir) {
@@ -103,28 +104,31 @@ const real = p => { try { return fs.realpathSync(p); } catch (e) { return path.r
 // ブランチ名に使えない文字だけ置き換える（日本語はそのまま）
 const branchName = s => 'hub/' + (String(s).replace(/[\s~^:?*[\\\x00-\x1f\x7f]+|\.\.|@\{/g, '-').replace(/^[-.]+|[-.]+$|\.lock$/g, '') || 'task');
 
-function validateWindowsRepo(dir) {
+function validateWindowsRepo(dir,rt=repoTop) {
   if(!WINDOWS)return;
   localPath(dir);
-  const top=repoTop(dir);if(!top)throw Error('無法確認 Git 儲存庫');
+  const top=rt(dir);if(!top)throw Error('無法確認 Git 儲存庫');
   localPath(top);
-  for(const flag of ['--git-dir','--git-common-dir'])localPath(git(dir,['rev-parse','--path-format=absolute',flag]));
-  localPath(path.join(top,'.git'));
+  const dirs=[];for(const flag of ['--git-dir','--git-common-dir']){const value=git(dir,['rev-parse','--path-format=absolute',flag]);localPath(value);dirs.push(value);}
+  localPath(path.join(top,'.git'));return {gitDir:dirs[0],commonDir:dirs[1]};
 }
-function validateWindowsWorktree(top,wt) {
+function validateWindowsWorktree(top,wt,rt=repoTop) {
   if(!WINDOWS)return;
-  validateWindowsRepo(top);validateWindowsRepo(wt);
+  const {commonDir}=validateWindowsRepo(top,rt),own=validateWindowsRepo(wt,rt).gitDir;
   const common=d=>git(d,['rev-parse','--path-format=absolute','--git-common-dir']).toLowerCase();
   if(common(top)!==common(wt)||path.resolve(top).toLowerCase()===path.resolve(wt).toLowerCase())throw Error('既有作業目錄不屬於此 Git 儲存庫的工作複本');
   const sourceBranch=git(wt,['rev-parse','--abbrev-ref','HEAD']),targetBranch=git(top,['rev-parse','--abbrev-ref','HEAD']);
   if(sourceBranch!=='HEAD'&&sourceBranch===targetBranch)throw Error('來源工作複本與目標共用同一個 branch；請用獨立分支工作複本');
   const registered=git(top,['worktree','list','--porcelain','-z']).split('\0').filter(x=>x.startsWith('worktree ')).map(x=>path.resolve(x.slice(9)).toLowerCase());
   if(!registered.includes(path.resolve(wt).toLowerCase()))throw Error('工作複本未登錄在此 Git 儲存庫');
+  const rel=path.relative(path.join(commonDir,'worktrees'),own);if(!rel||rel==='..'||path.isAbsolute(rel)||rel.includes(path.sep))throw Error('工作複本的 Git 目錄不是此儲存庫登錄的 linked worktree');
+  const back=path.join(own,'gitdir');localPath(back);const st=fs.lstatSync(back);if(!st.isFile()||st.size>4096)throw Error('工作複本 Git 反向指標無效');
+  if(path.resolve(own,fs.readFileSync(back,'utf8').trim()).toLowerCase()!==path.resolve(wt,'.git').toLowerCase())throw Error('工作複本 Git 目錄的反向指標不屬於此作業目錄');
 }
 
 // 作業を始める前の準備。作業する場所と、何をしたかを返す
 //   base: 本体のフォルダ / workRoot: AI-Workspace/Work/<プロジェクト>
-function prepare({ base, workRoot, taskId, direct, secretApproval }) {
+function prepare({ base, workRoot, taskId, direct, secretApproval, repoTop:rt=repoTop }) {
   if(WINDOWS) {
     localPath(base);localPath(workRoot,{allowMissing:true});
     if(typeof taskId!=='string'||!taskId||taskId==='.'||taskId==='..'||/[\\/]/.test(taskId))throw Error('工作複本識別不能包含路徑');
@@ -135,13 +139,13 @@ function prepare({ base, workRoot, taskId, direct, secretApproval }) {
     return { dir: base, note: 'Git が無いため、本体で作業します' };
   }
   if (process.platform === 'win32' && direct) throw new Error('Windows 版不允許 AI 直接修改專案本體');
-  let top = repoTop(base);
+  let top = rt(base);
   if(top)gitPolicy.assertExecution(top);
   if(WINDOWS&&top&&tryGit(top,['rev-parse','--verify','HEAD'])) {
     const secrets=git(top,['ls-tree','-rz','--name-only','HEAD']).split('\0').filter(Boolean).filter(isSensitivePath);
     if(secrets.length){const permit=secretApprovals.get(secretApproval);secretApprovals.delete(secretApproval);if(!permit||permit.base!==path.resolve(top).toLowerCase()||Date.now()<permit.at||Date.now()-permit.at>600000||secrets.some(x=>!permit.paths.has(x))||rawContent(top)!==permit.snapshotHash)throw Error('Git HEAD 已追蹤可能機密檔案；需要使用者明確核准完整檔名及 Git 歷史可讀範圍：'+secrets.join(' / '));}
   }
-  if(top)validateWindowsRepo(top);
+  if(top)validateWindowsRepo(top,rt);
   // 台帳のフォルダが別の Git の中にある時は、台帳だけの保存を始める
   if (top && direct && real(top) !== real(base)) top = null;
   if (!top) {
@@ -163,13 +167,13 @@ function prepare({ base, workRoot, taskId, direct, secretApproval }) {
   }
   const wt = path.join(workRoot, taskId);
   const rel = path.relative(top, base);
-  if (fs.existsSync(wt)) {validateWindowsWorktree(top,wt);return { dir: path.join(wt, rel), worktree: wt };}
+  if (fs.existsSync(wt)) {validateWindowsWorktree(top,wt,rt);return { dir: path.join(wt, rel), worktree: wt };}
   fs.mkdirSync(workRoot, { recursive: true });
   let branch = branchName(taskId);
   let exists = tryGit(top, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
   if(WINDOWS&&exists){const stem=branch+'-'+require('node:crypto').createHash('sha256').update(path.resolve(workRoot).toLowerCase()).digest('hex').slice(0,10);let count=0;do{branch=stem+(count?'-'+count:'');exists=tryGit(top,['rev-parse','--verify','--quiet',`refs/heads/${branch}`]);if(++count>128)throw Error('同名工作分支過多，請先覆核保留的工作複本');}while(exists);}
   git(top, exists ? ['worktree', 'add', '-q', wt, branch] : ['worktree', 'add', '-q', '-b', branch, wt, 'HEAD']);
-  validateWindowsWorktree(top,wt);
+  validateWindowsWorktree(top,wt,rt);
   const copied = copyLocalFiles(top, wt);
   return { dir: path.join(wt, rel), worktree: wt, created: true, branch, copied, note: `この作業専用の作業用コピーを作りました${copied.length ? `（${copied.join('・')} も写しました）` : ''}` };
 }
@@ -290,16 +294,17 @@ function merge({ dir, workRoot, title, target, cleanup = true }) {
 function isAncestor(dir, commit) { return /^[a-f0-9]{40,64}$/.test(commit || '') && tryGit(dir, ['merge-base', '--is-ancestor', commit, 'HEAD']) !== null; }
 // Hash actual bytes rather than Git's filtered/normalized representation. The
 // same bounded tree hash is used before saving and after reversible cleanup.
-function rawContent(dir) {
-  localPath(dir);const digest=createHash('sha256');let count=0,bytes=0;
+function contentDigests(dir,{exclude=null}={}) {
+  const localPath=require('./safe-path').localPathPass();localPath(dir);const digest=createHash('sha256'),baseDigest=createHash('sha256');let count=0,bytes=0;
   const walk=(file,rel)=>{
     if(++count>MAX_FILES)throw Error('來源內容超過確認項目上限');localPath(file);
     const st=fs.lstatSync(file);if(!st.isDirectory()&&!st.isFile())throw Error('來源含連結或特殊檔案');
-    digest.update(JSON.stringify([rel,st.isDirectory()?'d':'f']));
+    const omit=st.isFile()&&exclude?.has(rel),entry=JSON.stringify([rel,st.isDirectory()?'d':'f']);digest.update(entry);if(!omit)baseDigest.update(entry);
     if(st.isDirectory()){for(const n of fs.readdirSync(file).sort()){if(!rel&&n==='.git')continue;walk(path.join(file,n),rel?rel+'/'+n:n);}}
-    else {if((bytes+=st.size)>256*1024*1024)throw Error('來源內容超過確認大小上限');digest.update(String(st.size)+':').update(fs.readFileSync(file));}
-  };walk(dir,'');return digest.digest('hex');
+    else {if((bytes+=st.size)>256*1024*1024)throw Error('來源內容超過確認大小上限');const data=fs.readFileSync(file),size=String(st.size)+':';digest.update(size).update(data);if(!omit)baseDigest.update(size).update(data);}
+  };walk(dir,'');return {allContent:digest.digest('hex'),baseContent:baseDigest.digest('hex')};
 }
+function rawContent(dir) { return contentDigests(dir).allContent; }
 function inspect(dir) {
   if(WINDOWS) {
     // Each invocation still has fresh local metadata preflight. Combine the
@@ -417,4 +422,4 @@ function integrationReceipt(dir, record, task) {
   if (tryGit(dir, ['merge-base', '--is-ancestor', record.commit, 'HEAD']) === null) return null;
   return {dir, commit:record.commit, files:record.files, github:remoteInfo(dir)};
 }
-module.exports = { readSummary, reviewedSecretApproval, isSensitivePath, assertTrackedSecrets, hasOrigin, tooBig, integrationReceipt, available, repoTop, mainOf, save, init, prepare, merge, preview, toTrash, cleanupCopy, finishCleanupCopy, inspect, rawContent, isAncestor, countCopies, dirty, copyLocalFiles, remoteInfo, remoteInfoCache, webUrl };
+module.exports = { readSummary, reviewedSecretApproval, isSensitivePath, assertTrackedSecrets, hasOrigin, tooBig, integrationReceipt, available, repoTop, repoTopChain, validateWindowsWorktree, contentDigests, mainOf, save, init, prepare, merge, preview, toTrash, cleanupCopy, finishCleanupCopy, inspect, rawContent, isAncestor, countCopies, dirty, copyLocalFiles, remoteInfo, remoteInfoCache, webUrl };

@@ -1,8 +1,9 @@
 'use strict';
+const {waitForHub,waitFor}=require('./helpers/wait-hub');
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net'),crypto=require('node:crypto');
 const {execFileSync}=require('node:child_process'),{spawn}=require('../lib/managed-process'),{Store}=require('../lib/store');
 const win=process.platform==='win32'?test:test.skip;
-win('Native command HTTP requires browser approval, binds the live grant and returns a real no-model execution',{timeout:120000},async t=>{
+win('Native command HTTP requires local approval without a login cookie, binds the live grant and returns a real no-model execution',{timeout:120000},async t=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'hub-command-http-')),root=path.join(dir,'workspace'),body=path.join(dir,'body'),project='サンプルアプリ',task='sample-app-01';
   fs.mkdirSync(body);fs.writeFileSync(path.join(body,'body.txt'),'synthetic body');
   const pdir=path.join(root,'Product',project);fs.cpSync(path.join(__dirname,'../seed/サンプルアプリ'),pdir,{recursive:true});
@@ -14,11 +15,11 @@ win('Native command HTTP requires browser approval, binds the live grant and ret
   git(['init','--template='+hooks]);git(['add','body.txt']);git(['commit','-m','synthetic']);
   const tree=path.join(root,'Work',project,task);fs.mkdirSync(path.dirname(tree),{recursive:true});git(['worktree','add','--detach',tree,'HEAD']);store.updateTask(project,task,{workdir:tree});
   const listener=net.createServer();await new Promise(resolve=>listener.listen(0,'127.0.0.1',resolve));const port=listener.address().port;await new Promise(resolve=>listener.close(resolve));
-  const secret=crypto.randomBytes(32).toString('base64url'),child=spawn(process.execPath,[path.join(__dirname,'../server.js')],{cwd:path.join(__dirname,'..'),env:{...gitEnv,HUB_ROOT:root,HUB_AI_HOME:path.join(dir,'empty-home'),HUB_PORT:String(port),HUB_LOCAL_TOKEN:secret},stdio:['ignore','ignore','pipe'],windowsHide:true});
+  const secret=crypto.randomBytes(32).toString('base64url'),child=spawn(process.execPath,[path.join(__dirname,'../server.js')],{cwd:path.join(__dirname,'..'),env:{...gitEnv,HUB_ROOT:root,HUB_AI_HOME:path.join(dir,'empty-home'),PROJECT_HUB_GROK_ACL_REVOKE:'0',PROJECT_HUB_GROK_AUTO_REFRESH:'0',USERPROFILE:path.join(dir,'empty-home'),HOME:path.join(dir,'empty-home'),HUB_PORT:String(port),HUB_LOCAL_TOKEN:secret},stdio:['ignore','pipe','pipe'],windowsHide:true});
   let stderr='';child.stderr.on('data',chunk=>{stderr+=chunk.toString();});t.after(async()=>{if(child.exitCode===null){child.kill();await new Promise(resolve=>child.once('close',resolve));}fs.rmSync(dir,{recursive:true,force:true});});
   const base='http://127.0.0.1:'+port,post=(route,value,headers={})=>fetch(base+route,{method:'POST',headers:{'Content-Type':'application/json','X-Hub':'1',...headers},body:JSON.stringify(value)});
-  let ready=false;for(let i=0;i<100;i++){if(child.exitCode!==null)throw Error('Synthetic server startup failed');try{if((await fetch(base+'/api/state')).status===401){ready=true;break;}}catch{}await new Promise(resolve=>setTimeout(resolve,30));}assert.equal(ready,true,stderr);
-  const login=await post('/api/local/login',{token:secret});assert.equal(login.status,200);const browser={Cookie:login.headers.get('set-cookie').split(';')[0]};
+  await waitForHub(base,child,()=>stderr);
+  const login=await post('/api/local/login',{token:secret});assert.equal(login.status,200);const browser={};
   assert.equal((await post('/api/chatgpt',{work:true},browser)).status,200);
   const hash=store.readProject(project).tasks.find(row=>row.id===task).completionHash;
   const issue=await post('/api/mcp/capability',{project,task,tools:['hub_get_task','hub_mark_step','hub_request_command','hub_get_command_result'],expectedHash:hash,confirm:true},browser);assert.equal(issue.status,200,await issue.clone().text());const grant=await issue.json();
@@ -26,7 +27,7 @@ win('Native command HTTP requires browser approval, binds the live grant and ret
   const output=path.join(tree,'command-output.txt'),argv=[process.execPath,'-e',"require('node:fs').writeFileSync('command-output.txt','actual no-model 臺灣');process.stdout.write('COMMAND_HTTP_OK')"];
   const requested=await call('hub_request_command',{argv,cwd:tree,expectedHash:hash,timeoutMs:30000});assert.equal(requested.status,200,await requested.clone().text());const intent=JSON.parse((await requested.json()).text);assert.equal(intent.state,'pending');assert.equal(fs.existsSync(output),false);
   const approval={id:intent.id,decision:'approve',confirm:true,ackBroaderRead:true,ackNetworkLimits:true,argv,cwd:tree,expectedHash:hash,rootFingerprint:intent.rootFingerprint};
-  assert.equal((await post('/api/commands/decide',approval,auth)).status,401,'MCP bearer cannot approve');
+  assert.equal((await post('/api/commands/decide',approval,auth)).status,403,'MCP bearer cannot approve');
   assert.equal((await post('/api/commands/decide',{...approval,ackBroaderRead:false},browser)).status,400);
   assert.equal((await post('/api/commands/decide',{...approval,argv:[process.execPath,'-e','process.exit(1)']},browser)).status,400);assert.equal(fs.existsSync(output),false);
   const approved=await post('/api/commands/decide',approval,browser);assert.equal(approved.status,200,await approved.clone().text());assert.equal((await post('/api/commands/decide',approval,browser)).status,409,'approval cannot replay');
@@ -35,7 +36,7 @@ win('Native command HTTP requires browser approval, binds the live grant and ret
   assert.equal(result.state,'completed',JSON.stringify(result));assert.equal(result.outcome,'success');assert.equal(result.result.exitCode,0);assert.equal(result.result.modelCalled,false);assert.equal(result.result.stdout,'COMMAND_HTTP_OK');assert.equal(fs.readFileSync(output,'utf8'),'actual no-model 臺灣');
   assert.equal(JSON.parse(fs.readFileSync(path.join(root,'_hub','commands',intent.id+'.approved.json'),'utf8')).state,'approved');
   const changing=await call('hub_request_command',{argv,cwd:tree,expectedHash:hash});assert.equal(changing.status,200);const changingIntent=JSON.parse((await changing.json()).text);
-  assert.equal((await call('hub_mark_step',{index:0,done:true})).status,200);const changedHash=store.readProject(project).tasks.find(row=>row.id===task).completionHash;assert.notEqual(changedHash,hash);
+  assert.equal((await call('hub_mark_step',{index:1,done:true})).status,200);const changedHash=store.readProject(project).tasks.find(row=>row.id===task).completionHash;assert.notEqual(changedHash,hash);
   assert.equal((await post('/api/commands/decide',{...approval,id:changingIntent.id},browser)).status,409,'metadata changed after the intent cannot be approved');
   const freshRequest=await call('hub_request_command',{argv,cwd:tree,expectedHash:changedHash});assert.equal(freshRequest.status,200,'a new intent can bind an authorized step update within the same grant');const freshIntent=JSON.parse((await freshRequest.json()).text);assert.equal((await post('/api/commands/decide',{id:freshIntent.id,decision:'decline',confirm:true},browser)).status,200);
   const revokedRequest=await call('hub_request_command',{argv,cwd:tree,expectedHash:changedHash});assert.equal(revokedRequest.status,200);const revokedIntent=JSON.parse((await revokedRequest.json()).text);assert.equal((await post('/api/mcp/capability/revoke',{id:grant.capability.id,confirm:true},browser)).status,200);

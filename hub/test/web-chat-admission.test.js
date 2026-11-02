@@ -22,7 +22,8 @@ win('unknown marker, orphan private drafts and malformed receipts never become l
   const inspected=admission.check(root,{release:release(),recoveryOnly:true});assert.equal(inspected.inspection.length,1);assert.equal(inspected.inspection[0].repairable,false);assert.equal(inspected.pending.length,0);
 });
 test('recovery route allowlist permits owner reconciliation and denies new handoff, execution and metadata mutations',()=>{
-  for(const [route,method]of [['/api/local/proof','GET'],['/api/local/login','POST'],['/api/state','GET'],['/api/web-chat/status','GET'],['/api/web-chat/status','POST'],['/api/web-chat/inspection','GET'],['/api/web-chat/recover/preview','POST'],['/api/web-chat/recover','POST'],['/api/quit','POST']])assert.equal(admission.restrictRoutes(route,method),true);
+  for(const [route,method]of [['/api/local/proof','GET'],['/api/local/login','POST'],['/api/local/browser/begin','POST'],['/api/local/browser/poll','POST'],['/api/local/browser/approve','POST'],['/api/state','GET'],['/api/web-chat/status','GET'],['/api/web-chat/status','POST'],['/api/web-chat/inspection','GET'],['/api/web-chat/recover/preview','POST'],['/api/web-chat/recover','POST'],['/api/quit','POST']])assert.equal(admission.restrictRoutes(route,method),true);
+  assert.deepEqual(['/api/local/browser/begin','/api/local/browser/poll','/api/local/browser/approve'].map(route=>admission.restrictRoutes(route,'GET')),[false,false,false]);
   assert.equal(admission.restrictRoutes('/api/web-chat/recover/preview','GET'),false);
   for(const route of ['/api/web-chat/preview','/api/web-chat/confirm','/api/web-chat/result','/api/chat/send','/api/start','/api/task','/api/term/start','/api/mcp'])assert.equal(admission.restrictRoutes(route,'POST'),false);
   assert.equal(admission.restrictRoutes('/api/chat/stream','GET'),false);assert.equal(admission.restrictRoutes('/../secret','GET'),false);assert.equal(admission.restrictRoutes('/assets/app.js','GET'),true);

@@ -25,7 +25,8 @@ test('Chat empty guidance resolves the language at render time after asynchronou
   assert.match(text,/選擇 AI，寫下要完成的事。/);
   assert.match(text,/Codex 可在此執行；網頁 AI 會先開啟手動交接。/);
   assert.doesNotMatch(text,/ここで|ください|⌘/);
-  assert.match(a.context.chatHtml(a.p,a.p.tasks[0]),/從一個清楚的需求開始/);
+  // R15: the chat area shows a loading block until the first rows frame; empty guidance comes only after rows:[].
+  assert.match(a.context.chatHtml(a.p,a.p.tasks[0]),/<div class="chat-loading">正在讀取對話…<\/div>/);
   // The existing non-Windows guidance still resolves the selected language.
   vm.runInContext('state.windowsBrowser=false',a.context);locale.setLocale('ja');
   assert.match(vm.runInContext('EMPTY_CHAT()',a.context),/ここで AI と話します/);

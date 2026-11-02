@@ -35,7 +35,7 @@ async function run(){
   return merge[q.method==='preview'?'previewAsync':q.method==='receipt'?'receiptAsync':q.method](project,task);
 }
 process.stdin.on('end',async()=>{
-  let result;try{result={version:1,ok:true,value:await run()};}catch(error){result={version:1,ok:false,error:String(error.message).slice(0,2000)};}
+  let result;try{result={version:1,ok:true,value:await run()};}catch(error){result={version:1,ok:false,error:String(error.message).slice(0,2000),...(require('./rooted-move').messageFor(error.code)?{code:error.code}:{})};}
   const output=JSON.stringify(result)+'\n';if(Buffer.byteLength(output)>LIMIT){process.stdout.write(JSON.stringify({version:1,ok:false,error:'Git worker 結果超過大小上限；請重新預覽持久交易狀態'})+'\n');return;}
   process.stdout.write(output);
 });

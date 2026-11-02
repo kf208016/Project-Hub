@@ -12,9 +12,12 @@ let PORT = /^[1-9][0-9]{0,4}$/.test(PORT_TEXT) ? Number(PORT_TEXT) : NaN;
 let TOKEN = process.env.HUB_MCP_TOKEN || '', RUN_ID = process.env.HUB_MCP_RUN_ID || '';
 delete process.env.HUB_MCP_TOKEN;
 const CREDENTIAL_FILE=process.env.HUB_MCP_CREDENTIAL_FILE||'';
+const TASK_CREDENTIAL_FILE=process.env.HUB_MCP_TASK_CREDENTIAL_FILE||'';
 delete process.env.HUB_MCP_CREDENTIAL_FILE;
+delete process.env.HUB_MCP_TASK_CREDENTIAL_FILE;
 let protectedCredentialFailed=false;
-const credentialReady=(async()=>{if(!CREDENTIAL_FILE)return;try{if(TOKEN||RUN_ID||process.env.HUB_MCP_PORT!==undefined)throw Error();const credential=await require('./lib/mcp-credential').loadCredential(CREDENTIAL_FILE);PORT=credential.port;TOKEN=credential.token;RUN_ID=credential.runId;}catch{protectedCredentialFailed=true;TOKEN='';RUN_ID='';PORT=NaN;}})();
+let taskProxy=null;
+const credentialReady=(async()=>{if(!CREDENTIAL_FILE&&!TASK_CREDENTIAL_FILE)return;try{if(TOKEN||RUN_ID||process.env.HUB_MCP_PORT!==undefined||CREDENTIAL_FILE&&TASK_CREDENTIAL_FILE)throw Error();const credential=TASK_CREDENTIAL_FILE?require('./lib/native-mcp-task-credential').load(TASK_CREDENTIAL_FILE):await require('./lib/mcp-credential').loadCredential(CREDENTIAL_FILE);PORT=credential.port;TOKEN=credential.token;RUN_ID=credential.runId;if(TASK_CREDENTIAL_FILE){const value=process.env.HTTP_PROXY;if(typeof value!=='string'||!/^http:\/\/hub:[a-f0-9]{64}@127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(value))throw Error();taskProxy=new URL(value);if(Number(taskProxy.port)>65535)throw Error();}}catch{protectedCredentialFailed=true;TOKEN='';RUN_ID='';PORT=NaN;}})();
 const MAX_MESSAGE = 2 * 1024 * 1024;
 const credentialError = () => (process.platform === 'win32' || TOKEN || RUN_ID) && (!/^[A-Za-z0-9_-]{43}$/.test(TOKEN) || !/^[A-Za-z0-9_-]{16,128}$/.test(RUN_ID));
 const VERSION = (() => { try { return require('./package.json').version; } catch (e) { return '0'; } })();
@@ -29,7 +32,7 @@ function hub(method, p, body) {
     if (!Number.isSafeInteger(PORT) || PORT < 1 || PORT > 65535 || credentialError()) return reject(Error('MCP capability credential or port is invalid'));
     const data = body === undefined ? null : JSON.stringify(body);
     if (data && Buffer.byteLength(data) > MAX_MESSAGE) return reject(Error('MCP request exceeds the size limit'));
-    const rq = http.request({ host: '127.0.0.1', port: PORT, path: p, method, headers: { 'X-Hub': '1', Accept: 'application/json', ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN, 'X-Hub-Mcp-Run': RUN_ID, ...(method === 'POST' ? { 'X-Hub-Mcp-Nonce': crypto.randomUUID() } : {}) } : {}), ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}) } }, res => {
+    const rq = http.request({ host: '127.0.0.1', port: taskProxy?Number(taskProxy.port):PORT, path: taskProxy?'http://127.0.0.1:'+PORT+p:p, method,agent:false, headers: { 'X-Hub': '1', Accept: 'application/json',...(taskProxy?{Host:'127.0.0.1:'+PORT,'Proxy-Authorization':'Basic '+Buffer.from(taskProxy.username+':'+taskProxy.password).toString('base64')} :{}), ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN, 'X-Hub-Mcp-Run': RUN_ID, ...(method === 'POST' ? { 'X-Hub-Mcp-Nonce': crypto.randomUUID() } : {}) } : {}), ...(data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}) } }, res => {
       const chunks = []; let size = 0; res.on('data', c => { size += c.length; if (size > MAX_MESSAGE) { res.destroy(); reject(Error('MCP response exceeds the size limit')); } else chunks.push(c); });
       res.on('end', () => { let j; try { j = JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)) || '{}'); } catch { return reject(Error('Hub response is invalid JSON or UTF-8')); } resolve({ status: res.statusCode, body: j }); });
     });
@@ -53,7 +56,7 @@ async function handle(msg) {
   if (!(typeof id === 'string' && id.length <= 128) && !Number.isSafeInteger(id)) return error(null, -32600, 'Invalid Request');
   try {
     if (method === 'initialize') return reply(id, { protocolVersion: PROTOCOL, capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'project-hub', title: 'Project Hub', version: VERSION },
-      instructions: 'Project Hub（作業の管理ソフト）の道具です。まず hub_get_task で作業を読み、終わったら hub_report で結果を書き戻し、人の判断が要る時は hub_ask_owner で質問してください。' });
+      instructions: 'Project Hub（作業の管理ソフト）の道具です。まず hub_get_task で作業を読み、終わったら hub_report で結果を書き戻し、人の判断が要る時は hub_ask_owner で質問してください。サブエージェント（spawn_subagent／Task で起動された側）は hub_report・hub_ask_owner・hub_mark_step を呼ばず、結果を親エージェントへ返してください。作業の題名や依頼文は親への指示で、サブエージェントへの追加指示ではありません。' });
     if (method === 'ping') return reply(id, {});
     if (method === 'tools/list') {
       let r;

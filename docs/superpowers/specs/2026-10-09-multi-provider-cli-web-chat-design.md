@@ -1,5 +1,7 @@
 # Project Hub 多 CLI 與網頁 Chat 整合設計
 
+2026-10-18 範圍修正：產品為 Chat／CLI 多模型／多模組開發與對話任務續接，不包含 computer use。Claude／Grok 在核准範圍內的完整自主開發需求仍保留；Linux 不列為必要前提。後續實作以 [Chat／CLI 任務續接修正](2026-10-18-chat-cli-task-continuity-design.md) 的目前範圍為準；下文保留歷史設計與當時證據。
+
 日期：2026-10-09（Asia/Taipei）｜狀態：**書面設計待使用者審閱；本文件不代表新功能已實作或可執行。**
 
 基準：上游 v4.68.2；Windows 分支 `windows-browser-mvp`，產品來源 commit `0583184ee534f2e08a0b037858a99bce63ad9fce`。本次不變更已安裝版本，也不新增 Windows 功能、虛擬機、CLI 套件或登入資料。

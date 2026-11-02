@@ -34,7 +34,7 @@ const TOOLS = [
   { name: 'hub_get_task', description: '作業ファイル（依頼・手順・やったこと・メモ）を返す。task限定の能力ではそのファイルだけ。project単位の能力・従来の連携では台帳PROJECT.md全文も返す。作業を始める前に必ず読む', inputSchema: S({ project: P, task: T }, ['project', 'task']), read: true },
   { name: 'hub_get_chat', description: 'その作業の会話画面の記録（新しい方から limit 件。文字だけ）を返す', inputSchema: S({ project: P, task: T, limit: { type: 'integer', minimum: 1, maximum: 200, description: '何件まで（既定 20）' } }, ['project', 'task']), read: true },
   { name: 'hub_read_file', description: process.platform==='win32'?'授権済み作業フォルダのUTF-8ファイルを読む（先頭200KBまで。フォルダは名前の一覧だけ）':'プロジェクトの台帳フォルダ・本体フォルダ・作業の場所の中のファイルを読む（200KB まで。フォルダなら中身の一覧）', inputSchema: S({ project: P, path: str('読む場所（本体フォルダからの相対、または絶対パス）'), task: T }, ['project', 'path',...(process.platform==='win32'?['task']:[])]), read: true },
-  { name: 'hub_report', description: '結果を作業ファイルの「## やったこと」に書き、会話画面に ChatGPT の報告として出す。done=true なら完了の報告（人が確認して完了にする）', inputSchema: S({ project: P, task: T, text: str(process.platform==='win32'?'供使用者閱讀的報告，預設台灣繁體中文；保留使用者指定的語言':'報告の文（人が読む日本語で）'), done: { type: 'boolean', description: '作業が終わったら true' } }, ['project', 'task', 'text']) },
+  { name: 'hub_report', description: '結果を作業ファイルの「## やったこと」に書き、会話画面に ChatGPT の報告として出す。done=true なら完了の報告（人が確認して完了にする）。サブエージェントはこの道具を呼ばず、結果を親エージェントへ返す', inputSchema: S({ project: P, task: T, text: str(process.platform==='win32'?'供使用者閱讀的報告，預設台灣繁體中文；保留使用者指定的語言':'報告の文（人が読む日本語で）'), done: { type: 'boolean', description: '作業が終わったら true' } }, ['project', 'task', 'text']) },
   { name: 'hub_ask_owner', description: '人に質問する（作業を「返事待ち」にして、Hub の「あなたの番」に出す）', inputSchema: S({ project: P, task: T, question: str('人への質問（選択肢があれば文に書く）') }, ['project', 'task', 'question']) },
   { name: 'hub_mark_step', description: '作業ファイルの「## 手順」の index 番目（0から）に印を付ける・外す', inputSchema: S({ project: P, task: T, index: { type: 'integer', minimum: 0, description: '手順の番号（0から）' }, done: { type: 'boolean', description: '終わったら true' } }, ['project', 'task', 'index', 'done']) },
   { name: 'hub_propose_task', description: '新しい作業を提案する（担当 ChatGPT・未着手で作る。中身は「## 次にやること」に入る）', inputSchema: S({ project: P, title: str('作業の題名（40文字くらいまで）'), text: str('やること・理由') }, ['project', 'title', 'text']) },
@@ -42,7 +42,7 @@ const TOOLS = [
   ...(process.platform==='win32' ? [
     {name:'hub_request_command',description:'提出 argv 命令核准要求；此工具不執行。須等待使用者於 Hub 確認精確參數及讀取／網路限制。讀取範圍較工作區廣；networkAccess=false 不是完整斷網。',inputSchema:S({project:P,task:T,argv:{type:'array',minItems:1,maxItems:128,items:{type:'string',maxLength:8192}},cwd:{...str('授權作業根目錄的完整路徑'),maxLength:32768},timeoutMs:{type:'integer',minimum:100,maximum:120000},expectedHash:{type:'string',pattern:'^[a-f0-9]{64}$'}},['project','task','argv','cwd','expectedHash']),work:true},
     {name:'hub_get_command_result',description:'讀取同一授權回合的命令核准狀態及執行結果；不批准、不執行。',inputSchema:S({project:P,task:T,id:{type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'}},['project','task','id']),read:true},
-    {name:'hub_delegate',description:'僅在此作業有有效工作區執行授權時，委派使用者指定的 Codex 模型一次，沿用同作業及對話。可能啟動或排隊一次模型請求並計入帳戶用量；無法自選模型、其他 AI、新作業或更大權限。排隊後結束目前回合。',inputSchema:S({project:P,task:T,model:{type:'string',minLength:1,maxLength:100,pattern:'^[a-z0-9][a-z0-9._-]{0,99}$'},title:{...str('短標題'),maxLength:60},text:{...str('交接差分、目標與條件'),maxLength:8000},effort:{type:'string',pattern:'^(中|高|極高|MAX|Ultra)$'}},['project','task','model','title','text']),work:true}
+    {name:'hub_delegate',description:'僅在此作業有有效工作區執行授權時，委派使用者核准的 CLI 與模型一次，沿用同作業及對話。先讀 hub_get_task 核對本回合授權模型。可能啟動或排隊一次模型請求並計入帳戶用量；無法自選其他 AI、模型、新作業或更大權限。排隊後結束目前回合。',inputSchema:S({project:P,task:T,model:{type:'string',description:'已授權的明確模型 ID；Claude／Grok 可使用 CLI預設，仍須符合 issuer 的 actor 與 model。',minLength:1,maxLength:100,pattern:'^(CLI預設|[a-z0-9][a-z0-9._-]{0,99})$'},title:{...str('短標題'),maxLength:60},text:{...str('交接差分、目標與條件'),maxLength:8000},effort:{type:'string',pattern:'^(中|高|極高|MAX|Ultra)$'}},['project','task','model','title','text']),work:true}
   ] : []),
   { name: 'hub_run_command', description: process.platform === 'win32' ? 'Windows MCP command sandbox 未対応。実行は拒否されます' : '【実作業】プロジェクトの本体フォルダ（または作業の場所）でコマンドを実行する（120秒・出力 64KB まで）', inputSchema: S({ project: P, ...commandProperties, cwd: str('実行する場所（本体フォルダからの相対。省略で本体）'), timeoutSec: { type: 'integer', minimum: 1, maximum: CMD_MAX_SEC, description: '待つ秒数（既定 60）' }, task: T }, ['project', ...(process.platform === 'win32' ? ['file', 'args'] : ['command'])]), work: true },
 ];
@@ -124,7 +124,7 @@ class Chatgpt {
     if(process.platform==='win32'&&scope?.workspaceRun){if(typeof this.validateWorkspaceScope!=='function')fail(403,'工作區授權不可驗證');await this.validateWorkspaceScope(scope);}
     if (def.work && !this.settings().work) fail(403, WORK_OFF);
     if(name==='hub_delegate') {
-      if(!scope?.task||!scope.rootFingerprint||scope.delegationModel!==a.model||typeof this.delegate!=='function')fail(403,'此作業未授權該 Codex 模型委派');
+      if(!scope?.task||!scope.rootFingerprint||scope.delegationModel!==a.model||typeof this.delegate!=='function')fail(403,'此作業未授權該 CLI 模型委派');
       return this.delegate(scope,a);
     }
     if(process.platform==='win32' && ['hub_request_command','hub_get_command_result'].includes(name)) {
@@ -135,7 +135,9 @@ class Chatgpt {
       const commandScope={...scope,taskHash:currentTask.completionHash,run:scope.runId};
       return name==='hub_request_command' ? this.commandIntents.request(commandScope,{argv:a.argv,cwd:a.cwd,expectedHash:a.expectedHash,...(a.timeoutMs===undefined?{}:{timeoutMs:a.timeoutMs})}) : this.commandIntents.get(commandScope,a.id);
     }
-    const log = extra => this.record('chatgpt', { project: a.project, task: a.task, ai: 'chatgpt' }, { tool: name, ...extra });
+    const ai = ['hub_report','hub_ask_owner'].includes(name)&&['grok','claude'].includes(scope?.actor)?scope.actor:'chatgpt';
+    const label = ai==='grok'?'Grok':ai==='claude'?'Claude Code':'ChatGPT';
+    const log = extra => this.record('chatgpt', { project: a.project, task: a.task, ai }, { tool: name, ...extra });
     if (name === 'hub_list_projects') return this.store.listProjects().filter(p => !scope || p.id === scope.project).map(p => {
       const tasks = p.tasks.filter(t => !scope?.task || t.id === scope.task), counts = { all: tasks.length };
       for (const t of tasks) counts[t.state] = (counts[t.state] || 0) + 1;
@@ -171,17 +173,18 @@ class Chatgpt {
       const { t } = this.task(p, a.task), text = String(a.text || '').trim();
       if (!text) fail(400, '報告の文を書いてください');
       const [first, ...rest] = text.split(/\r?\n/);
-      this.store.appendSection(p.id, t.id, 'やったこと', [`- ${stamp()} ChatGPT：${first}`, ...rest.map(l => (l.trim() ? '  ' + l : ''))].join('\n'));
-      if (a.done === true) this.store.updateTask(p.id, t.id, { state: '完了', question: '' });
-      this.emitRow(p.id, t.id, this.chat.append(p.dir, t.id, { role: 'assistant', ai: 'chatgpt', text }));
-      this.ended(p.id, t.id); log({ done: a.done === true });
-      return { ok: true, state: this.task(p, t.id).t.state };
+      this.store.appendSection(p.id, t.id, 'やったこと', [`- ${stamp()} ${label}：${first}`, ...rest.map(l => (l.trim() ? '  ' + l : ''))].join('\n'));
+      const held = a.done === true && this.holdNativeDone?.(scope, p.id, t.id) === true;
+      if (a.done === true && !held) this.store.updateTask(p.id, t.id, { state: '完了', question: '' });
+      this.emitRow(p.id, t.id, this.chat.append(p.dir, t.id, { role: 'assistant', ai, text }));
+      this.ended(p.id, t.id); log({ done: a.done === true, ...(held ? { held: true } : {}) });
+      return { ok: true, state: this.task(p, t.id).t.state, ...(held ? { note: '完了は、この回合が正常に終わった時に反映されます' } : {}) };
     }
     if (name === 'hub_ask_owner') {
       const { t } = this.task(p, a.task), q = String(a.question || '').trim();
       if (!q) fail(400, '質問を書いてください');
       this.store.updateTask(p.id, t.id, { state: '返事待ち', question: q.replace(/\s+/g, ' ').slice(0, 300) });
-      this.emitRow(p.id, t.id, this.chat.append(p.dir, t.id, { role: 'assistant', ai: 'chatgpt', text: `【質問】${q}` }));
+      this.emitRow(p.id, t.id, this.chat.append(p.dir, t.id, { role: 'assistant', ai, text: `【質問】${q}` }));
       this.ended(p.id, t.id); log({});
       return { ok: true, state: '返事待ち', note: '人の返事は ChatGPT のこの会話か、Hub の作業ファイルのメモに来ます' };
     }

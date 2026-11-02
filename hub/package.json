@@ -10,6 +10,7 @@
   "description": "プロジェクトと作業を一覧にし、画面の中で Claude Code / Codex を動かす管理ソフト",
   "main": "server.js",
   "scripts": {
+    "test:serial": "node --test --test-force-exit --test-concurrency=1 test/*.test.js",
     "start": "node server.js",
     "test": "node --test --test-force-exit test/*.test.js"
   },

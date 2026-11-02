@@ -4,6 +4,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -68,17 +69,21 @@ class HubJobRunner {
   static int Main() {
     IntPtr job=IntPtr.Zero, attributes=IntPtr.Zero, handles=IntPtr.Zero;
     IntPtr[] std = new IntPtr[3]; PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-    NamedPipeClientStream owner = null; ManualResetEvent gone = new ManualResetEvent(false);HubPinnedRoot pin=null;
+    NamedPipeClientStream owner = null; string ownerNonce=null; ManualResetEvent gone = new ManualResetEvent(false);HubPinnedRoot pin=null;
     try {
       string encoded = Environment.GetEnvironmentVariable("HUB_PROCESS_SPEC");
       Environment.SetEnvironmentVariable("HUB_PROCESS_SPEC", null);
       Dictionary<string,object> spec = new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(encoded);
+      ownerNonce=(string)spec["nonce"];
       owner = new NamedPipeClientStream(".", (string)spec["pipe"], PipeDirection.InOut, PipeOptions.Asynchronous);
       owner.Connect(10000);
       byte[] handshake = Encoding.UTF8.GetBytes((string)spec["nonce"] + "\n"); owner.Write(handshake,0,handshake.Length); owner.Flush();
       // The owner socket closes even if Node crashes; no PID lookup or PID reuse race.
       NamedPipeClientStream channel = owner;
-      Thread monitor = new Thread(delegate() { try { while(channel.ReadByte() != -1) {} } catch {} finally { gone.Set(); } });
+      // STOP is a half-duplex command: keep the authenticated return channel
+      // alive so the owner can receive the post-cleanup receipt. EOF still
+      // cancels the Job when the owner disappears.
+      Thread monitor = new Thread(delegate() { try { while(channel.ReadByte() == 0) {} } catch {} finally { gone.Set(); } });
       monitor.IsBackground = true; monitor.Start();
       if(spec.ContainsKey("dirPin")) {Dictionary<string,object> binding=(Dictionary<string,object>)spec["dirPin"];pin=new HubPinnedRoot((string)binding["root"],(string)binding["rootFingerprint"]);}
       job = CreateJobObject(IntPtr.Zero, null); Check(job != IntPtr.Zero);
@@ -116,8 +121,16 @@ class HubJobRunner {
       Console.Error.WriteLine("HUB_JOB_ERROR:" + (native != null ? native.NativeErrorCode.ToString() : e.GetType().Name));
       return 125;
     } finally {
-      if(job!=IntPtr.Zero) { TerminateJobObject(job,125); try {WaitEmpty(job);} finally {CloseHandle(job);} }
-      if(pi.process!=IntPtr.Zero) {TerminateProcess(pi.process,125);WaitForSingleObject(pi.process,0xffffffff);}
+      bool empty=false, rootExited=false; uint rootCode=125;
+      if(job!=IntPtr.Zero) { TerminateJobObject(job,125); try {WaitEmpty(job);empty=true;} finally {CloseHandle(job);} }
+      if(pi.process!=IntPtr.Zero) {TerminateProcess(pi.process,125);rootExited=WaitForSingleObject(pi.process,0xffffffff)==0; if(rootExited)Check(GetExitCodeProcess(pi.process,out rootCode));}
+      if(empty && rootExited && owner!=null && owner.IsConnected) {
+        try {
+          var receipt=new Dictionary<string,object>{{"nonce",ownerNonce},{"rootExited",true},{"ownedTreeEmpty",true},{"cleanupVerified",true},{"exitCode",rootCode}};
+          byte[] message=Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(receipt)+"\n");
+          owner.Write(message,0,message.Length);owner.Flush();
+        } catch(IOException) { /* Owner disappeared: no receipt is claimed. */ }
+      }
       if(pin!=null)pin.Dispose();
       if(pi.thread!=IntPtr.Zero) CloseHandle(pi.thread); if(pi.process!=IntPtr.Zero) CloseHandle(pi.process);
       foreach(IntPtr h in std) if(h!=IntPtr.Zero) CloseHandle(h);

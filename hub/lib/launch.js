@@ -8,6 +8,7 @@ const registry = require('./provider-registry');
 const AIS = registry.cliIds;
 const AI_KEY = Object.freeze(Object.fromEntries(registry.actorIds.map(id=>[id,registry.resolveActor(id).ownerKey])));
 const AI_LABEL = Object.freeze(Object.fromEntries(registry.actorIds.map(id=>[id,registry.resolveActor(id).label])));
+const CLI_DEFAULT_LABEL = 'CLI預設';
 const AGY_MODEL = Object.freeze({ id: 'gemini-3.1-pro-high', label: 'Gemini 3.1 Pro (High)' });
 const API_ENV = ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_GENAI_USE_VERTEXAI', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY'];
 let agyCache = null; // { key, result }：一覧のたびに設定ファイルを読まないため
@@ -54,19 +55,20 @@ const CONTEXT_RULE = '# 長い会話の決まり\n文字数とトークン数は
 // ※ 実際の CLI が受け付ける名前と違えば、ここを直すだけでよい
 const MODEL_FLAG = {
   // Claude Code は本当のモデル名が分かっているので、それを渡す
-  claude: { 'Opus 5.5': 'claude-opus-5-5', 'Fable 5.1': 'claude-fable-5-1' },
+  claude: { Sonnet:'sonnet', 'Opus 5.5': 'claude-opus-5-5', 'Fable 5.1': 'claude-fable-5-1' },
   // Codex の /model の一覧（v0.157）に合わせた名前。GPT-6 に Terra は無いので 6terra は GPT-5.6-Terra
   codex: { 'GPT-6.1-Sol': 'gpt-6.1-sol', Astra: 'gpt-6-astra', '6sol': 'gpt-6-sol', '6luna': 'gpt-6-luna', '6terra': 'gpt-5.6-terra' },
   agy: { [AGY_MODEL.label]: AGY_MODEL.id, [AGY_MODEL.id]: AGY_MODEL.id },
+  grok: {'Grok 4.6':'grok-4.6'},
 };
 // 設定画面で直した名前（_hub/cli-models.json）。空の文字＝モデルを指定しない（CLI の既定を使う）
-let overrides = { claude: {}, codex: {} };
-let discovered = { claude: {}, codex: {} };
-function setOverrides(o) { overrides = { claude: { ...((o && o.claude) || {}) }, codex: { ...((o && o.codex) || {}) } }; }
+let overrides = { claude: {}, codex: {},grok:{} };
+let discovered = { claude: {}, codex: {},grok:{} };
+function setOverrides(o) { overrides = { claude: { ...((o && o.claude) || {}) }, codex: { ...((o && o.codex) || {}) },grok:{...o?.grok} }; }
 function getOverrides() { return overrides; }
 function setDiscoveredModels(catalog) {
-  discovered = { claude: {}, codex: {} };
-  for (const ai of ['claude', 'codex']) {
+  discovered = { claude: {}, codex: {},grok:{} };
+  for (const ai of ['claude', 'codex','grok']) {
     for (const row of catalog[ai]?.known || catalog[ai]?.models || []) discovered[ai][row.label] = row.id;
   }
 }
@@ -76,6 +78,7 @@ function modelNames(ai) {
   return { ...(discovered[ai] || {}), ...(MODEL_FLAG[ai] || {}), ...(overrides[ai] || {}) };
 }
 function modelLabel(ai, model) {
+  if (model === CLI_DEFAULT_LABEL) return CLI_DEFAULT_LABEL;
   const names = modelNames(ai);
   if (Object.prototype.hasOwnProperty.call(names, model)) return model;
   return Object.keys(names).find(label => names[label] && names[label] === model) || model;
@@ -83,7 +86,7 @@ function modelLabel(ai, model) {
 // 画面の呼び名・正式 ID → CLI に渡す名前（無ければ ''）
 function flagFor(ai, model) {
   ai = registry.cliActor(ai).id;
-  if (!model) return '';
+  if (!model || model === CLI_DEFAULT_LABEL) return '';
   const names = modelNames(ai), label = modelLabel(ai, model);
   return Object.prototype.hasOwnProperty.call(names, label) ? String(names[label] || '') : '';
 }
@@ -99,6 +102,7 @@ const EFFORT_FLAG = {
   claude: { '中': 'medium', '高': 'high', '極高': 'xhigh', 'MAX': 'max', 'Ultra': 'ultra' },
   codex: { '中': 'medium', '高': 'high', '極高': 'xhigh', 'MAX': 'max', 'Ultra': 'ultra' },
   agy: {}, // High はモデル ID に含まれる。別の思考指定で変えない。
+  grok: {'中':'medium','高':'high','極高':'xhigh'},
 };
 
 // 動いている AI に途中で切り替えを伝える時のコマンド（画面の中で打つのと同じ）
@@ -137,7 +141,7 @@ function buildCommand({ ai, dir, prompt, cmd, model, effort }) {
 }
 
 // 画面の中の作業画面用：実行ファイルと引数に分ける（シェルを通さない）
-function buildArgv({ ai, prompt, cmd, model, effort }) {
+function buildArgv({ ai, prompt, cmd, model, effort, codexVersion }) {
   ai = registry.cliActor(ai).id;
   if (ai === 'agy') {
     if (model && !flagFor(ai, model)) throw new Error('Agy で承認されているモデルは Gemini 3.1 Pro (High) だけです');
@@ -147,6 +151,10 @@ function buildArgv({ ai, prompt, cmd, model, effort }) {
   if (!base.length || !['claude', 'codex'].includes(ai)) throw new Error('unknown ai');
   const args = base.slice(1);
   if (ai === 'codex' && process.platform === 'win32') args.push('-a', 'on-request', '-s', 'workspace-write', '-c', 'windows.sandbox="elevated"', '-c', 'approvals_reviewer="user"', '-c', 'sandbox_workspace_write.writable_roots=[]', '-c', 'sandbox_workspace_write.network_access=false', '-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true', '-c', 'sandbox_workspace_write.exclude_slash_tmp=true');
+  if (ai === 'codex' && process.platform === 'win32') {
+    args.push('-c', 'features.daemon_auto_start=false');
+    if (codexVersion === '0.164.0') args.push('--no-daemon');
+  }
   const m = flagFor(ai, model);
   const e = effort && EFFORT_FLAG[ai][effort];
   if (ai === 'claude') {
@@ -192,4 +200,4 @@ function openUrl(u, dry) {
   return run('open', [u], dry);
 }
 
-module.exports = { AIS, AI_KEY, AI_LABEL, AGY_MODEL, agyAccountError, childEnv, buildCommand, buildArgv, openTerminal, openFolder, revealFile, openUrl, sq, DEFAULT_CMD, CODEX_CONTEXT_ARGS, CONTEXT_RULE, MODEL_FLAG, EFFORT_FLAG, SWITCH_CMD, switchCommand, flagFor, modelLabel, startupInfo, setOverrides, getOverrides, setDiscoveredModels };
+module.exports = { AIS, AI_KEY, AI_LABEL, CLI_DEFAULT_LABEL, AGY_MODEL, agyAccountError, childEnv, buildCommand, buildArgv, openTerminal, openFolder, revealFile, openUrl, sq, DEFAULT_CMD, CODEX_CONTEXT_ARGS, CONTEXT_RULE, MODEL_FLAG, EFFORT_FLAG, SWITCH_CMD, switchCommand, flagFor, modelLabel, startupInfo, setOverrides, getOverrides, setDiscoveredModels };

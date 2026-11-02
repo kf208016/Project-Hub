@@ -42,8 +42,8 @@ function raw(dir, args, { encoding='utf8', identity=false, skipHooks=false, inpu
   return execFileSync(metadata.gitExe,[...fixed,'-C',dir,...actual],{env,encoding,input,maxBuffer:256*1024*1024,timeout:30000,stdio:[input===undefined?'ignore':'pipe','pipe','pipe']});
 }
 function config(dir,key) { try {return raw(dir,['config','--get',key]).trim();}catch(e){if(e.status===1)return '';throw e;} }
-function indexSnapshot(dir) {
-  const data=raw(dir,['ls-files','--stage','-v','-z'],{encoding:null});
+const fresh=new WeakMap(),key=d=>process.platform==='win32'?path.resolve(d).toLowerCase():path.resolve(d);
+function validateIndex(data) {
   const entries=data.toString('utf8').split('\0');if(entries.at(-1)!=='')throw Error('Git index 記錄不完整');entries.pop();
   if(entries.length>20000||data.length>8*1024*1024)throw Error('Git index 超過審查上限');
   for(const entry of entries){
@@ -52,14 +52,16 @@ function indexSnapshot(dir) {
     if(!/^[HSMRCKU?hsmrcku] [0-7]{6} [a-f0-9]{40,64} [0-3]\t.+$/s.test(entry))throw Error('Git index 記錄格式無效');
     if(/[a-z]/.test(entry[0])||entry[0]==='S')throw Error('Git index 含 assume-unchanged／skip-worktree；可能隱藏實際修改，需先以人工可信 Git 流程處理：'+JSON.stringify(entry.slice(entry.indexOf('\t')+1)).slice(0,300));
   }
-  return data;
+}
+function indexSnapshot(dir) {
+  const data=raw(dir,['ls-files','--stage','-v','-z'],{encoding:null});validateIndex(data);fresh.set(data,key(dir));queueMicrotask(()=>fresh.delete(data));return data;
 }
 function assertIndexVisible(dir,index) {
   // hash-object may apply attributes. Admit helpers before invoking it; never
   // pass -w, clear flags, refresh the index, or alter the user's Git settings.
-  assertExecution(dir,{mutating:false});index=index||indexSnapshot(dir);
+  assertExecution(dir,{mutating:false,index});index=index||indexSnapshot(dir);
   const records=index.toString('utf8').split('\0').filter(Boolean).map(x=>{const m=x.match(/^. ([0-7]{6}) ([a-f0-9]{40,64}) ([0-3])\t(.+)$/s);if(!m)throw Error('Git index 記錄格式無效');return {mode:m[1],oid:m[2],stage:m[3],name:m[4]};}).filter(x=>x.stage==='0');
-  const files=[],changed=[];let bytes=0;
+  const files=[],changed=[],localPath=require('./safe-path').localPathPass();let bytes=0;
   for(const record of records){
     const file=path.resolve(dir,record.name),rel=path.relative(dir,file);if(!rel||path.isAbsolute(rel)||rel.startsWith('..'+path.sep)||rel==='..')throw Error('Git index path 超出工作區');localPath(file,{allowMissing:true});
     if(!fs.existsSync(file)){changed.push(record.name);continue;}const st=fs.lstatSync(file);if(!st.isFile()||!['100644','100755'].includes(record.mode))throw Error('Git tracked 路徑不是允許的一般檔案');if((bytes+=st.size)>256*1024*1024)throw Error('Git tracked bytes 超過確認上限');files.push(record);
@@ -71,7 +73,7 @@ function assertIndexVisible(dir,index) {
   }
   if(changed.length){const visible=new Set(raw(dir,['diff-files','--no-ext-diff','--no-textconv','--name-only','-z']).split('\0').filter(Boolean)),hidden=changed.filter(x=>!visible.has(x));if(hidden.length)throw Error('Git index cache 隱藏實際 tracked 修改；請先人工重新保存並重新預覽：'+hidden.slice(0,10).map(x=>JSON.stringify(x)).join(' / '));}
 }
-function execution(dir) {
+function execution(dir,{index}={}) {
   localPath(dir);
   let rows=[];
   try { rows=raw(dir,['config','--null','--get-regexp','^(filter\\..*\\.(clean|smudge|process)|merge\\..*\\.driver|merge\\.default|merge\\.verifysignatures|commit\\.gpgsign|core\\.hookspath|core\\.fsmonitor|core\\.attributesfile|diff\\..*\\.textconv)$']).split('\0').filter(Boolean).map(x=>{const n=x.indexOf('\n'),key=x.slice(0,n),first=key.indexOf('.'),last=key.lastIndexOf('.');return [key.slice(0,first).toLowerCase()+key.slice(first,last)+key.slice(last).toLowerCase(),x.slice(n+1)];}); }
@@ -80,7 +82,8 @@ function execution(dir) {
   // files. Subsection names remain case sensitive.
   rows=[...new Map(rows).entries()];
   const blockers=[];
-  if(process.platform==='win32')try{indexSnapshot(dir);}catch(e){blockers.push(e.message);}
+  // Reuse bytes only within the same synchronous snapshot that just read them.
+  if(process.platform==='win32')try{const own=Buffer.isBuffer(index)&&fresh.get(index)===key(dir)?index:undefined;if(own)validateIndex(own);else indexSnapshot(dir);}catch(e){blockers.push(e.message);}
   const activeFilters=new Set(),activeDrivers=new Set();let attributesHash='';
   const helpers=rows.filter(([k,v])=>v&&/^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/.test(k));
   if(helpers.length)try{
@@ -151,8 +154,8 @@ function assertMergeExecution(source,target) {
   };
   for(const name of definitions.keys())if(visit(name))throw Error('Git 屬性宏 '+name+' 包含外部 helper；合併後的屬性組合尚未驗證，請用人工可信 Git 流程處理');
 }
-function assertExecution(dir,{skipHooks=false,mutating=true}={}) {
-  const review=execution(dir);
+function assertExecution(dir,{skipHooks=false,mutating=true,index}={}) {
+  const review=execution(dir,{index});
   if(review.blockers.length)throw Error(review.blockers.join(' / '));
   if(mutating&&review.hooks.length&&!skipHooks)throw Error('Git 有有效 hooks；請先由人工可信 Git 流程操作，或在合併預覽明確核准本次 skipHooks');
   return review;
@@ -179,6 +182,7 @@ function initialize(dir,{skipHooks=false}={}){
 }
 function run(dir,args,{skipHooks=false,identity=true,encoding='utf8',check=true}={}) {
   const mutating=MUTATIONS.has(args[0]) && !(args[0]==='worktree'&&args[1]==='list') && !(args[0]==='branch'&&args.includes('--list'));
+  // Every mutation, status, diff and merge-tree re-reads; never pass index bytes here.
   if(check && (mutating||['status','diff','merge-tree'].includes(args[0])))assertExecution(dir,{skipHooks,mutating});
   return raw(dir,args,{skipHooks:true,identity,encoding});
 }

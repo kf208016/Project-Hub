@@ -1,4 +1,5 @@
 'use strict';
+const {waitForHub,waitFor}=require('./helpers/wait-hub');
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),net=require('node:net');
 const {spawn}=require('../lib/managed-process');
 const win=process.platform==='win32'?test:test.skip;
@@ -8,14 +9,13 @@ win('Native terminal HTTP enforces one controller, stale leases and explicit tak
  const listener=net.createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
  fs.writeFileSync(preload,`const moduleRef=require(${JSON.stringify(path.join(hub,'lib/sessions'))});const Original=moduleRef.Sessions;
 moduleRef.Sessions=class extends Original{constructor(){super();this.start({project:'p',task:'t',ai:'codex',dir:${JSON.stringify(root)},command:process.execPath,args:[${JSON.stringify(program)}]});}};
-const {server}=require(${JSON.stringify(path.join(hub,'server.js'))});server.listen(${port},'127.0.0.1');`);
+const {server}=require(${JSON.stringify(path.join(hub,'server.js'))});server.listen(${port},'127.0.0.1',()=>console.log('HUB_LISTENING'));`);
  const token='V'.repeat(43),child=spawn(process.execPath,[preload],{cwd:hub,env:{...process.env,HUB_ROOT:root,HUB_PORT:String(port),HUB_LOCAL_TOKEN:token,HUB_DRY_RUN:'1',HUB_AI_HOME:path.join(root,'home'),HUB_TRASH:path.join(root,'trash')}});child.stdin.end();child.stdout.resume();let diagnostics='';child.stderr.on('data',d=>diagnostics+=d.toString().slice(0,1000));
  t.after(async()=>{if(child.exitCode===null){child.kill();await new Promise(r=>child.once('close',r));}assert.ok(root.startsWith(os.tmpdir()+path.sep));fs.rmSync(root,{recursive:true,force:true,maxRetries:20,retryDelay:50});});
- const base=`http://127.0.0.1:${port}`;let ready=false;for(let n=0;n<100;n++){if(child.exitCode!==null)throw Error(diagnostics);try{if((await fetch(base+'/api/state')).status===401){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,30));}assert.equal(ready,true,diagnostics);
+ const base=`http://127.0.0.1:${port}`;await waitForHub(base,child,()=>diagnostics);
  let cookie='';const scope={project:'p',task:'t',ai:'codex'},post=(route,data,headers={})=>fetch(base+route,{method:'POST',headers:{'X-Hub':'1','Content-Type':'application/json',Cookie:cookie,...headers},body:JSON.stringify(data)});
- assert.equal((await post('/api/term/view/register',scope)).status,401);
- const login=await post('/api/local/login',{token});assert.equal(login.status,200);cookie=login.headers.get('set-cookie').split(';')[0];
- const first=await (await post('/api/term/view/register',scope)).json(),second=await (await post('/api/term/view/register',scope)).json();assert.equal(first.role,'owner');assert.equal(second.role,'watcher');assert.ok(first.lease);assert.notEqual(first.lease,second.lease);
+ const login=await post('/api/local/login',{token});assert.equal(login.status,200);assert.ok(login.headers.get('set-cookie'));
+ const registered=await post('/api/term/view/register',scope);assert.equal(registered.status,200);const first=await registered.json(),second=await (await post('/api/term/view/register',scope)).json();assert.equal(first.role,'owner');assert.equal(second.role,'watcher');assert.ok(first.lease);assert.notEqual(first.lease,second.lease);
  const credentials=x=>({viewId:x.viewId,lease:x.lease});
  assert.equal((await post('/api/term/input',{...scope,data:'bad'})).status,400);
  assert.equal((await post('/api/term/input',{...scope,...credentials(second),data:'watcher'})).status,409);

@@ -1,6 +1,10 @@
-# Windows 原生 Codex 分支
+# Windows 原生 Codex／Claude／Grok 分支
 
-日期：2026-10-09；以 Project Hub v4.68.2 為基礎。本輪範圍為原生 Windows Codex 的 Hub 功能；Claude／Agy 的 Windows 隔離執行與真實互動留待後續處理，不從 Codex 的結果推論其他 AI 的安全性。
+2026-10-19：產品範圍為 **Chat／CLI 開發與同任務對話續接**，不包含 computer use。Claude／Sonnet 與 Grok 4.6 已各完成本機合成三回合正式驗收，涵蓋一般命令、原生子代理、Hub MCP／委派、原生 session 續接、越界寫入拒絕與 owned 程序清理。這是核准範圍內的實測，不代表所有模型、工具或任意專案均已驗收。Linux／Hyper-V 不是此前提；正式安裝與安裝後 smoke 結果另列交付報告。見 [原生 CLI 整合](windows/NATIVE-PROVIDER-INTEGRATION.md)、[目前範圍與續接契約](../docs/superpowers/specs/2026-10-18-chat-cli-task-continuity-design.md) 及 [對話狀態讀取修正](windows/CHAT-CONTINUITY.md)。
+
+接續移植的上游規格已改以v4.90.0 Beta為對照，原碼第一批加入Markdown表格；來源版本／安裝版並未因此自動升級。逐項狀態見 [版本差異與進度](../docs/superpowers/specs/2026-10-18-upstream-4.90.0-windows-parity.md)。
+
+基底：Project Hub v4.68.2；2026-10-19 擴充 Claude／Grok 原生 Chat／CLI。Codex 既有流程保留；Agy 與 Claude／Grok 互動 PTY 入口仍延後。上游 v4.90.0 Beta 的待移植項目保留獨立對照，不從本次結果推論整套上游規格已完成。
 
 下表描述本分支的實作及已驗證路徑，不代表所有平台、所有模型工具或每份 checkout 都已完成正式安裝。確切 source commit、套件 manifest SHA-256、各測試成功／失敗／跳過／逾時、正式安裝位置及實際啟停結果，以隨交付提供的驗證／安裝報告為準。
 
@@ -10,7 +14,8 @@
 
 | 項目 | 實作與已測界線 |
 |---|---|
-| 原生 Codex 會話與模型 | CLI 0.154.0 stdio app-server、模型清單分頁與失敗保留、指定模型、同作業委派、待執行指示、取消／追加／恢復。真實模型只測固定合成回覆且未呼叫工具；其他流程使用明示 provider fixture，不當成全部模型工具驗收 |
+| 原生 Codex 會話與模型 | CLI 0.154.0／0.164.0 白名單 stdio app-server（0.164.0 真機驗收待辦）、模型清單分頁與失敗保留、指定模型、同作業委派、待執行指示、取消／追加／恢復。真實模型只測固定合成回覆且未呼叫工具；其他流程使用明示 provider fixture，不當成全部模型工具驗收 |
+| 原生 Claude／Grok Chat／CLI | 固定 CLI 與指定模型、核准範圍內的檔案與一般命令、原生子代理、已註冊 Hub MCP、同作業排隊委派及同一原生 session 續接。三回合合成驗收含命令實際結果、越界寫入拒絕與 owned Job 清理；互動 PTY、Agy、其他工具／模型及任意真實專案不在此成功宣稱內 |
 | 終端機 | node-pty 1.1.0 ConPTY、內嵌／獨立視窗、輸入／resize、Unicode、觀看／控制租約、明確接管與停止。實際 managed PTY 及 Codex TUI 啟停已測；TUI 啟動測試未送模型回合，PTY 本身不是額外沙箱 |
 | 審批與命令 | 綁定 thread／turn／item 或 capability run、task hash、argv／cwd、root FileID，一次性核准、到期、拒絕／取消、問題回答及重放拒絕。瀏覽器核准前保存意圖；實際 command/exec 可在零模型呼叫下驗證，不代表所有模型提權分支皆已實測 |
 | 工作區與機密供應 | 非 Git／首次提交、registered isolated worktree、direct 基線與互斥鎖；每次開始須人工預覽及私有 permit。逐檔選取秘密、10 分鐘 lease、原目的 baseline 備份／復原；hash 或 FileID 改變則保留待覆核。已追蹤 HEAD 秘密與 Git 歷史可讀範圍須明確核准，不宣稱偵測所有歷史秘密 |
@@ -35,7 +40,11 @@
 
 ## 環境與操作
 
-前置：Windows AMD64、本機 NTFS、Node.js 22 以上、Git、已登入且相容的 Codex CLI 0.154.0，以及 Windows .NET Framework C# 編譯器。原生 helper 從本分支原始碼建置。未驗證的版本、架構、檔案系統或 vendor inventory 不會靜默替換已核准環境。
+Grok 狀態列顯示 Hub 使用版本、私有副本是否建立及登入檔最後更新時間；Hub 不讀取登入內容，無法判斷登入是否仍有效。需要登入時請在一般終端機執行 `grok login`（無法開瀏覽器時使用 `grok login --device-auth`），不可在 Hub 內執行，完成後回到 Hub 重新送出。
+
+Claude／Grok 使用各自固定的 Windows sandbox plan、供應商出口 broker 與回合 scope。**同一 CLI 程序內的一般命令仍能讀取自身唯讀登入檔**，controller 不讀取或複製其內容；網域白名單不等於檢查 TLS 內容。未知工具、未核准模型及 TaskOutput／WaitTasks／KillTask 不自動放行；細節見 [原生 CLI 資安邊界](windows/NATIVE-PROVIDER-INTEGRATION.md#資安邊界)。
+
+前置：Windows AMD64、本機 NTFS、Node.js 22 以上、Git、已登入且白名單中的 Codex CLI 0.154.0 或 0.164.0（精確版本雜湊），以及 Windows .NET Framework C# 編譯器。原生 helper 從本分支原始碼建置。未驗證的版本、架構、檔案系統或 vendor inventory 不會靜默替換已核准環境。
 
 版本化安裝使用 [INSTALL.md](windows/INSTALL.md) 的已審閱套件與 manifest SHA-256。開發／測試 checkout 可明確指定資料 Root：
 
@@ -46,9 +55,9 @@ $env:HUB_ROOT = 'C:\path\to\AI-Workspace'
 & .\hub\start-windows.ps1 -Stop
 ```
 
-啟動器建立缺少的 `_hub`、`Product`、`Work`；既有 roles.yaml 不覆蓋。關閉瀏覽器保留背景服務，再次啟動可重開同一服務。`-NoBrowser` 供無視窗驗證；`-Stop` 透過已核對服務呼叫停止 API，活動作業存在時不強制終止。PowerShell 政策受管控時先檢查有效來源；本分支不永久修改執行原則，也沒有宣稱提供正式程式簽章。
+啟動器建立缺少的 `_hub`、`Product`、`Work`；既有 roles.yaml 不覆蓋。關閉瀏覽器保留背景服務，再次啟動可重開同一服務。啟動器只開乾淨網址（不含 token），不再開啟本機登入確認視窗。同機使用與原版 Project Hub 一樣不需登入；任何本機程式只要通過 Host／Origin／X-Hub 檢查，都能操作 Hub，包括核准命令與讀寫檔案。能連到此入口的 AI 命令也能自行核准。`-NoBrowser` 供無視窗驗證，不開瀏覽器也不開確認視窗；`-Stop` 透過已核對服務呼叫停止 API，活動作業存在時不強制終止。PowerShell 政策受管控時先檢查有效來源；本分支不永久修改執行原則，也沒有宣稱提供正式程式簽章。
 
-本機控制服務只綁 loopback，cookie 為 HttpOnly／SameSite=Strict，Host／Origin 檢查及操作標頭保持生效；遠端 HTTPS 是另行核准的入口。AI 子程序不繼承 Hub 登入、MCP 或 owner 控制環境。launcher token 以 DPAPI CurrentUser 保存，重開先核對 PID、建立時間與 HMAC；DPAPI、瀏覽器 fragment 與本機 journal 不隔離同一登入使用者，也不是簽章、WORM 或外部 attestation。
+本機控制服務只綁 `127.0.0.1`，不要求登入 cookie；Host／Origin 檢查、X-Hub 操作標頭及中繼標頭拒絕保持生效。遠端 HTTPS 預設關閉，仍須另行核准並以通關密語登入；MCP Bearer 不能操作 owner-only API。AI 子程序不繼承 Hub 登入、MCP 或 owner 控制環境。launcher token 以 DPAPI CurrentUser 保存，重開先核對 PID、建立時間與 HMAC；啟動器 token、實例 proof 與相容登入 API 保留供停止／重啟使用；DPAPI 與本機 journal 不隔離同一登入使用者，也不是簽章、WORM 或外部 attestation。
 
 清理失敗保留紀錄及互斥鎖，即使 chat idle 也有［重試停止／清理工作區］。冷啟動沒有當前 controller owned flow 時，不能由 metadata 重建 permit；舊 secret lease 無程序退出證據仍需人工覆核，未知／存活 PID 不自動解鎖或刪除。
 
@@ -56,10 +65,30 @@ $env:HUB_ROOT = 'C:\path\to\AI-Workspace'
 
 ## 依賴與驗證
 
+2026-10-19 validation-23 指定離線回歸：Node 861／861、Python 103／103，586 個來源檔案在測試前後一致。另有 Claude 正式17、Grok 正式15 各三回合的本機真實模型合成驗收，兩份程式來源清單皆逐 SHA-256 綁定相同凍結來源。正式來源驗收與正式安裝／安裝後 smoke 分別報告；不能由 fixture、CLI ready 或模型清單推論登入可用或安裝完成。
+
 node-pty 固定 1.1.0，使用 `npm ci --ignore-scripts` 與已審閱 Windows prebuild；未執行套件安裝 hooks。2026-10-08 官方 npm lockfile 弱點查詢為 0 筆已知弱點，這不等於應用或原生二進位無風險。PTY adapter 的 worker disposal 依賴該固定版本內部欄位，升級需重驗。
 
-FFmpeg 9.0.2 為固定 SHA-256 的私有 GPLv3 依賴，版本化套件保留 LICENSE、README 與來源 metadata；source-only archive 不包含二進位。Codex 更新目前僅已驗證的 0.154.0 native inventory 可啟用，其他版本保留候選而不自動選取。
+FFmpeg 9.0.2 為固定 SHA-256 的私有 GPLv3 依賴，版本化套件保留 LICENSE、README 與來源 metadata；source-only archive 不包含二進位。Codex 更新使用 0.154.0／0.164.0 已審核版本清單，各自核對 binary 與完整 vendor inventory；未知版本禁止啟用，失敗或封鎖候選會清除，作用中及上一個槽位保留。0.164.0 尚待真機驗收，0.154.0 保留回滾用途。
 
-Node 測試入口為 `npm --prefix hub test`。正式交付報告逐組列出成功、拒絕、失敗修復與重跑證據；不能把合成 fixture、分組重跑或平台 skip 合稱所有平台單次完整套件通過。使用者指定的 Python unittest 命令曾執行，但本專案沒有 Python `tests` 目錄，ImportError 不列為通過。
+Node 測試入口為 `npm --prefix hub test`。正式交付報告逐組列出成功、拒絕、失敗修復與重跑證據；不能把合成 fixture、分組重跑或平台 skip 合稱所有平台單次完整套件通過。早期尚無Python tests時曾有ImportError；目前已有`tests/`，2026-10-18依`$env:PYTHONPATH="src"; python -m unittest discover -s tests -v`執行103項通過。這些是既有離線worker／契約測試，不代表provider live驗收。
 
 模型清單查詢不送推論提示，帳號可用模型仍會變動；Hub 不因重新整理清單自行替換使用者所選模型。未安裝 WSL、未改全域 Codex 設定或防火牆；原生沙箱依 Codex 自身的 Windows 設定，其專用沙箱帳號不是 Hub 自建身分隔離保證。歷史設計與本輪範圍見 [已核准計畫](../docs/superpowers/plans/2026-10-08-windows-feature-parity-implementation.md)。
+
+## Codex 雙版本審核邊界（R10）
+
+Codex helper 只接受 `lib/codex-versions.js` 的 0.154.0／0.164.0 與各自精確
+SHA-256；原生沙箱使用作用中槽位的雜湊，沒有槽位時仍須核對解析到的全域檔案。
+未知版本回報 `NATIVE_CODEX_VERSION_UNREVIEWED`，引導至「設定 → AI 的更新」。
+
+0.164.0 將 elevated 稱為 legacy。本輪仍固定 `windows.sandbox="elevated"`，
+另外使用 `-c features.windows_sandbox_service=false`、`-c windows.allow_mxc=false`、
+`-c features.prefer_mxc=false`，不使用舊版不接受的 `--disable`。
+Windows Codex 終端機一律加上 `-c features.daemon_auto_start=false`，僅作用中
+槽位為 0.164.0 時再加 `--no-daemon`。CODEX_HOME 仍共用，分離決策尚未執行。
+
+這是程式與離線 fixture 的相容支援，不代表 0.164.0 沙箱已通過真機驗收。
+仍須檢查首次 UAC／佈建、service 與登錄狀態、檔案／網路隔離、Job 清空、
+取消／EOF、daemon、舊對話續接與 MCP 實際工具握手，並演練回滾 0.154.0。
+
+重型測試（reviewed-workspace、windows-merge-api、app-ui、start）必須以 `--test-concurrency=1` 依序執行；完整序列入口為 `npm run test:serial`。

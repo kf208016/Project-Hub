@@ -44,3 +44,40 @@ test('Windows base-path mapping errors keep otherwise readable external cwd unkn
  const w=pw.create({platform:'win32',selfPid:900,log:()=>{},exec:async()=>JSON.stringify([row(1,0,'system'),row(101,1,'codex.exe')]),projects:()=>[{id:'p',dir:'C:\\ledger',tasks:[]}],baseOf:()=>{throw Error('unavailable');},windowsCwds:async wanted=>wanted.map(({pid,since})=>({pid,creationTime:since,cwd:'C:\\elsewhere',status:'ok'}))});
  await w.scan();assert.equal(w.list()[0].cwdStatus,'ok');assert.equal(w.list()[0].attribution,'unknown');assert.throws(()=>w.assertKnown(),/未歸屬/);
 });
+
+
+test('Windows query explicitly selects UTF-8 and 15 seconds; diagnostics classify and preserve last failure',async()=>{
+  assert.ok(pw.WINDOWS_QUERY.startsWith('[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;'));assert.ok(pw.WINDOWS_QUERY.includes('$ErrorActionPreference="Stop"'));
+  const logs=[],failures=[];let error=null,text=JSON.stringify([row(1,0,'system')]);
+  const w=pw.create({platform:'win32',log:m=>logs.push(m),onFailure:d=>failures.push(d),exec:async(cmd,args,opts)=>{assert.equal(opts.timeoutMs,15000);assert.equal(args.at(-1),pw.WINDOWS_QUERY);if(error)throw error;return text;}});
+  assert.throws(()=>w.assertKnown(),{code:'PROCWATCH_NOT_READY'});await w.scan();const checked=w.status().checkedAt;
+  const cases=[['ENOENT',{},'PROCWATCH_SPAWN_FAILED'],['EACCES',{},'PROCWATCH_SPAWN_FAILED'],['EPERM',{},'PROCWATCH_SPAWN_FAILED'],[null,{killed:true},'PROCWATCH_TIMEOUT'],[null,{signal:'SIGTERM'},'PROCWATCH_TIMEOUT'],['ERR_CHILD_PROCESS_STDIO_MAXBUFFER',{killed:true},'PROCWATCH_OUTPUT_LIMIT'],[7,{},'PROCWATCH_EXIT_FAILED']];
+  for(const [code,extra,expected]of cases){error=Object.assign(Error('Command failed: PRIVATE_COMMAND'),{code,stderr:'\u0001TOKEN=fixture-secret Bearer private-token\n診斷',stdout:'PRIVATE_STDOUT',stdoutBytes:123,elapsedMs:42,...extra});await w.scan();const status=w.status(),d=status.detail;
+    assert.equal(status.code,expected);assert.equal(status.checkedAt,checked);assert.equal(d.code,expected);assert.equal(d.stage,'query');assert.equal(d.platform,'win32');assert.equal(d.elapsedMs,42);assert.ok(Number.isFinite(Date.parse(d.at)));assert.match(status.error,new RegExp(expected));
+    assert.throws(()=>w.assertKnown(),e=>e.code===expected&&e.message.includes(expected));assert.doesNotMatch(JSON.stringify(status),/fixture-secret|private-token|PRIVATE_STDOUT|PRIVATE_COMMAND|\\u0001/);
+    if(expected==='PROCWATCH_TIMEOUT')assert.equal(d.timeoutMs,15000);if(expected==='PROCWATCH_SPAWN_FAILED')assert.equal(d.errno,code);if(expected==='PROCWATCH_EXIT_FAILED')assert.equal(d.exitCode,7);
+  }
+  const count=logs.length;await w.scan();assert.equal(logs.length,count);assert.equal(failures.length,count);const last=w.status().detail;
+  error=null;await w.scan();assert.equal(w.status().state,'ok');assert.deepEqual(w.status().lastFailure,last);assert.doesNotThrow(()=>w.assertKnown());
+  error=Object.assign(Error('again'),{code:7});await w.scan();assert.equal(logs.length,count+1);
+});
+test('JSON diagnostics expose only bounded parser metadata and code points, never stdout or commands',async()=>{
+  let text='[{"pid":1,"command":"PRIVATE_STDOUT\\q"}]';
+  const w=pw.create({platform:'win32',log:()=>{},exec:async()=>text});await w.scan();let d=w.status().detail;
+  assert.equal(d.code,'PROCWATCH_OUTPUT_INVALID');assert.equal(d.parseStage,'json');assert.equal(d.stdoutBytes,Buffer.byteLength(text));assert.ok(d.parseError.length<=200);assert.ok(d.around.length<=16);assert.ok(d.around.every(x=>/^U\+[0-9A-F]{4,6}$/.test(x)));assert.equal(typeof d.position,'number');assert.doesNotMatch(JSON.stringify(w.status()),/PRIVATE_STDOUT|command/);
+  for(text of ['PRIVATE_STDOUT_NOT_JSON','{"PRIVATE_STDOUT":true}',JSON.stringify([null]),JSON.stringify([{pid:'1',command:'PRIVATE_STDOUT'}]),'[]']){await w.scan();d=w.status().detail;assert.equal(d.code,text==='[]'?'PROCWATCH_EMPTY':'PROCWATCH_OUTPUT_INVALID');assert.doesNotMatch(JSON.stringify(w.status()),/PRIVATE_STDOUT/);}
+  text=JSON.stringify([row(1,0,'許功中文 🧪')]);await w.scan();assert.equal(w.status().state,'ok');
+});
+test('stale and unassigned guards keep fixed codes; observer exceptions stay contained',async t=>{
+  let text=JSON.stringify([row(1,0,'system')]);const w=pw.create({platform:'win32',log:()=>{throw Error('logger');},onFailure:()=>{throw Error('callback');},exec:async()=>text,windowsCwds:unreadable});await w.scan();
+  const now=Date.now;t.mock.method(Date,'now',()=>now()+21000);assert.throws(()=>w.assertKnown(),{code:'PROCWATCH_STALE'});Date.now.mock.restore();
+  text=JSON.stringify([row(101,1,'codex.exe')]);await w.scan();assert.throws(()=>w.assertKnown(),{code:'PROCWATCH_UNASSIGNED_AI'});
+  text='broken';await assert.doesNotReject(w.scan());assert.equal(w.status().code,'PROCWATCH_OUTPUT_INVALID');
+});
+
+test('unassigned process notice is bounded to actor and PID and never includes command or cwd',async()=>{
+ const rows=Array.from({length:7},(_,i)=>row(101+i,1,'grok.exe --PRIVATE_TOKEN'));
+ const w=pw.create({platform:'win32',selfPid:900,log:()=>{},windowsCwds:unreadable,exec:async()=>JSON.stringify(rows)});await w.scan();
+ assert.deepEqual(w.status().unassignedProcesses,rows.slice(0,5).map(x=>({pid:x.pid,ai:'grok'})));assert.ok(Object.isFrozen(w.status().unassignedProcesses));
+ assert.throws(()=>w.assertKnown(),e=>e.code==='PROCWATCH_UNASSIGNED_AI'&&e.message.includes('grok（PID 101）')&&e.message.includes('…另 2 件')&&e.message.includes('Hub 不會結束不是由它啟動的程序')&&!e.message.includes('PRIVATE_TOKEN'));
+});

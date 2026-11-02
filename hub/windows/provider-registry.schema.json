@@ -39,7 +39,7 @@
       {"if": {"properties": {"id": {"const": "claude"}}}, "then": {"properties": {"provider": {"const": "anthropic"}, "ownerKey": {"const": "claude-code"}, "kind": {"const": "cli"}}}},
       {"if": {"properties": {"id": {"const": "codex"}}}, "then": {"properties": {"provider": {"const": "openai"}, "ownerKey": {"const": "codex"}, "transport": {"const": "native-codex"}, "isolationProfile": {"const": "native-codex"}}}},
       {"if": {"properties": {"id": {"const": "agy"}}}, "then": {"properties": {"provider": {"const": "google"}, "ownerKey": {"const": "agy"}, "kind": {"const": "cli"}}}},
-      {"if": {"properties": {"id": {"const": "grok"}}}, "then": {"properties": {"provider": {"const": "xai"}, "ownerKey": {"const": "grok"}, "kind": {"const": "cli"}, "readiness": {"properties": {"ready": {"const": false}, "state": {"const": "blocked"}, "reasonCode": {"const": "PROVIDER_ADAPTER_UNVERIFIED"}}}}}}
+      {"if": {"properties": {"id": {"const": "grok"}}}, "then": {"properties": {"provider": {"const": "xai"}, "ownerKey": {"const": "grok"}, "kind": {"const": "cli"}}}}
     ]
   },
   "allOf": [

@@ -5,6 +5,7 @@ const http=require('node:http'),fs=require('node:fs'),path=require('node:path'),
 const {localPath}=require('./safe-path'),{parseDoc}=require('./frontmatter');
 const {WebChat}=require('./web-chat'),locks=require('./task-write-lock');
 const admissionTool=require('./web-chat-admission');
+const {readSmallJson}=require('./small-json-body'),{BrowserLoginFSM}=require('./browser-login'),{isRemote}=require('./remote');
 const scalarName=value=>typeof value==='string'&&value.length>0&&value.length<=4096&&value.isWellFormed()&&!/[\\/\0<>:"|?*\x00-\x1f]/.test(value)&&!['.','..'].includes(value)&&!/[. ]$/.test(value);
 function readonlyStore(root){
  const checked=(file,max=4*1024*1024)=>{localPath(file);const stat=fs.lstatSync(file);if(!stat.isFile()||stat.nlink!==1||stat.size>max)throw Error('RECOVERY_SOURCE_INVALID');return new TextDecoder('utf-8',{fatal:true}).decode(fs.readFileSync(file));};
@@ -33,18 +34,24 @@ function create({root,hubDir,port,secret,admission}){
   busy:async(project,task,authority)=>{descriptors=store.listProjects();if(authority?.receiptId){const record=(await service.receipts.read(authority.receiptId)).value;if(record.transaction){const before=await service.receipts.readBlob(record.transaction.taskBeforeBlob,4*1024*1024),meta=parseDoc(before).data,p=descriptors.find(item=>item.id===project),t=p?.tasks.find(item=>item.id===task);if(t&&typeof meta.workdir==='string'&&meta.workdir)t.workdir=meta.workdir;}}await watcher.scan();watcher.assertKnown();return watcher.list().some(row=>row.project===project&&(!row.task||row.task===task));}
  });
  const scopeKeys=['actor','project','task','receiptId'];
- const write=(res,status,value,type='application/json; charset=utf-8')=>{res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'});res.end(typeof value==='string'?value:JSON.stringify(value));};
+ const write=(res,status,value,type='application/json; charset=utf-8')=>{res.writeHead(status,{'Content-Type':type,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'});res.end(typeof value==='string'||Buffer.isBuffer(value)?value:JSON.stringify(value));};
  const body=req=>new Promise((resolve,reject)=>{const chunks=[];let count=0;req.on('data',chunk=>{count+=chunk.length;if(count>1024*1024){reject(Error('RECOVERY_REQUEST_TOO_LARGE'));req.destroy();}else chunks.push(chunk);});req.on('error',reject);req.on('end',()=>{try{const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));if(!value||typeof value!=='object'||Array.isArray(value))throw Error();resolve(value);}catch{reject(Error('RECOVERY_REQUEST_INVALID'));}});});
+ let browserLogin;
+ const browserLoginRoutes=new Set(['/api/local/browser/begin','/api/local/browser/poll','/api/local/browser/approve']);
  const server=http.createServer(async(req,res)=>{
   try{
    const actualPort=server.address()?.port||port,hosts=[`127.0.0.1:${actualPort}`,`localhost:${actualPort}`];
-   if(!hosts.includes(req.headers.host)||req.headers['x-forwarded-host']||req.headers.authorization)return write(res,403,{error:'復原入口僅限本機 owner session'});
+   if(!hosts.includes(req.headers.host)||isRemote(req)||req.headers.authorization!==undefined)return write(res,403,{error:'復原入口僅限本機使用者'});
    const url=new URL(req.url,'http://127.0.0.1:'+actualPort),route=url.pathname;
    if(!admissionTool.restrictRoutes(route,req.method))return write(res,409,{error:'復原模式只允許查詢及復原已接受的交接；一般作業未啟動',code:'RECOVERY_ONLY'});
    if(req.method==='POST'&&(req.headers['x-hub']!=='1'||req.headers.origin&&!hosts.map(host=>'http://'+host).includes(req.headers.origin)))return write(res,403,{error:'復原操作來源無效'});
+   if(browserLoginRoutes.has(route)){
+    if(!browserLogin)browserLogin=require('./browser-login-http').create({auth,port:actualPort,readBody:readSmallJson,send:(response,status,value)=>write(response,status,value),fsm:new BrowserLoginFSM()});
+    if(await browserLogin.handle(req,res,url))return;
+   }
+   if(req.method==='GET'&&route==='/local-auth.js'&&!url.search)return write(res,200,fs.readFileSync(path.join(hubDir,'public/local-auth.js')),'text/javascript; charset=utf-8');
    if(req.method==='GET'&&route==='/api/local/proof'){try{return write(res,200,{proof:auth.proof(url.searchParams.get('challenge'))});}catch{return write(res,400,{error:'復原身分挑戰格式無效'});}}
    if(req.method==='POST'&&route==='/api/local/login'){const input=await body(req);if(Object.keys(input).length!==1||!auth.login(input.token))return write(res,403,{error:'復原登入失敗'});res.setHeader('Set-Cookie',auth.cookie);return write(res,200,{ok:true});}
-   if(route.startsWith('/api/')&&!auth.check(req))return write(res,401,{error:'請從已核對版本的復原啟動器開啟'});
    if(req.method==='GET'&&route==='/')return write(res,200,fs.readFileSync(path.join(hubDir,'public/web-chat-recovery.html'),'utf8'),'text/html; charset=utf-8');
    if(req.method==='GET'&&route==='/api/state')return write(res,200,{recoveryOnly:true,mode:'recovery-only',format:admission.format,transactionsAtStartup:admission.pending.length,inspectionCount:admission.inspection?.length||0});
    if(req.method==='GET'&&route==='/api/web-chat/inspection'){

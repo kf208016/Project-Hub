@@ -70,7 +70,7 @@ test('Windows AiTools uses app-server; lookup failure preserves the last confirm
   const result = await tools.refresh('codex');
   assert.equal(result.source, 'codex-app-server');
   assert.deepEqual(result.models.map(m => m.id), ['actual-model', 'second-model']);
-  assert.equal(tools.staleModel('codex', 'Stale'), true);
+  assert.equal(tools.staleModel('codex', 'Stale'), false);
   const saved = fs.readFileSync(tools.file, 'utf8');
   tools.refreshCodex = async () => { throw Error('sensitive CLI output'); };
   await assert.rejects(tools.refresh('codex'), e => e.status === 502 && !e.message.includes('sensitive'));

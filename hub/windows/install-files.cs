@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 using Microsoft.Win32.SafeHandles;
 
 class InstallFiles {
- const uint READ=0x80000000,WRITE=0x40000000,ATTR=0x80,SHARE_READ=1,OPEN=3,CREATE_NEW=1,OPEN_REPARSE=0x200000,BACKUP=0x2000000;
+ const uint READ=0x80000000,WRITE=0x40000000,ATTR=0x80,DELETE=0x10000,SHARE_READ=1,OPEN=3,CREATE_NEW=1,OPEN_REPARSE=0x200000,BACKUP=0x2000000,PROCESS_QUERY_LIMITED_INFORMATION=0x1000;
  [StructLayout(LayoutKind.Sequential)] struct Info {public uint Attributes;public System.Runtime.InteropServices.ComTypes.FILETIME Created,Accessed,Written;public uint Volume,SizeHigh,SizeLow,Links,IndexHigh,IndexLow;}
  [DllImport("kernel32.dll",EntryPoint="CreateFileW",ExactSpelling=true,CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFileW(string p,uint a,uint s,IntPtr security,uint mode,uint flags,IntPtr template);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle h,out Info info);
@@ -19,6 +19,11 @@ class InstallFiles {
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool DeviceIoControl(SafeFileHandle h,uint code,IntPtr i,int n,byte[] o,int m,out int returned,IntPtr overlapped);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern uint GetDriveType(string root);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool GetVolumeInformation(string root,StringBuilder volume,int capacity,out uint serial,out uint max,out uint flags,StringBuilder fs,int fsCapacity);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern SafeFileHandle OpenProcess(uint access,bool inherit,int processId);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(SafeFileHandle process,out System.Runtime.InteropServices.ComTypes.FILETIME created,out System.Runtime.InteropServices.ComTypes.FILETIME exited,out System.Runtime.InteropServices.ComTypes.FILETIME kernel,out System.Runtime.InteropServices.ComTypes.FILETIME user);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool QueryFullProcessImageNameW(SafeFileHandle process,uint flags,StringBuilder path,ref int size);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,ExactSpelling=true)] static extern int GetCurrentPackageFullName(ref uint length,StringBuilder name);
+ static object PackageContext(){uint length=0;int code=GetCurrentPackageFullName(ref length,null);if(code==15700)return new{ok=true,packaged=false,packageFullName=(string)null};if(code!=122||length==0||length>32768)Fail("PACKAGE_CONTEXT_UNKNOWN");var name=new StringBuilder((int)length);if(GetCurrentPackageFullName(ref length,name)!=0||name.Length==0)Fail("PACKAGE_CONTEXT_UNKNOWN");return new{ok=true,packaged=true,packageFullName=name.ToString()};}
  static JavaScriptSerializer json;
  static InstallFiles(){
   // Configure .NET Framework before its path handling is initialized. Authority
@@ -126,9 +131,48 @@ class InstallFiles {
    }
   }
  }
+ static object Rename(Dictionary<string,object> request) {
+  using(var pin=new Pins(S(request,"root"),false)) {
+   string source=Relative(pin.Root,S(request,"source")),destination=Relative(pin.Root,S(request,"destination"));
+   if(String.Equals(source,destination,StringComparison.OrdinalIgnoreCase))Fail("PATH_REJECTED");
+   pin.Parent(source,false);pin.Parent(destination,true);
+   var sourceHandle=CreateFile(source,READ|DELETE,0,IntPtr.Zero,OPEN,OPEN_REPARSE,IntPtr.Zero);
+   using(var input=new FileStream(sourceHandle,FileAccess.Read)) {
+    var info=Check(sourceHandle,false);var data=Bytes(input,1024*1024);
+    if(Fingerprint(info)!=S(request,"fileFingerprint")||Hash(data)!=S(request,"expectedHash"))Fail("CURRENT_CHANGED");
+    var destinationHandle=CreateFile(destination,READ|WRITE|DELETE,0,IntPtr.Zero,CREATE_NEW,OPEN_REPARSE,IntPtr.Zero);
+    if(destinationHandle.IsInvalid)Fail("OPEN_FAILED");
+    using(var output=new FileStream(destinationHandle,FileAccess.ReadWrite)) {
+     bool committed=false;
+     try {
+      Check(destinationHandle,false);output.Write(data,0,data.Length);output.Flush(true);
+      int delete=1;if(!SetFileInformationByHandle(sourceHandle,4,ref delete,4))Fail("RENAME_FAILED");committed=true;
+     } finally {
+      if(!committed){int cleanup=1;SetFileInformationByHandle(destinationHandle,4,ref cleanup,4);}
+     }
+    }
+   }
+   return new{ok=true};
+  }
+ }
+ static object ProcessAlive(Dictionary<string,object> request) {
+  int pid;try{pid=Convert.ToInt32(request["pid"]);}catch{Fail("INPUT_REJECTED");return null;}
+  long ticks=0;string tickText=S(request,"createdTicks");if(pid<=0||!Int64.TryParse(tickText,System.Globalization.NumberStyles.None,System.Globalization.CultureInfo.InvariantCulture,out ticks)||ticks<=0)Fail("INPUT_REJECTED");
+  string expected=Full(S(request,"imagePath"));
+  using(var process=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,false,pid)) {
+   if(process.IsInvalid){if(Marshal.GetLastWin32Error()==5)return new{ok=true,alive=true};return new{ok=true,alive=false};}
+   System.Runtime.InteropServices.ComTypes.FILETIME created,exited,kernel,user;
+   if(!GetProcessTimes(process,out created,out exited,out kernel,out user)){if(Marshal.GetLastWin32Error()==5)return new{ok=true,alive=true};return new{ok=true,alive=false};}
+   long fileTime=((long)(uint)created.dwHighDateTime<<32)|(uint)created.dwLowDateTime;
+   var image=new StringBuilder(32768);int size=image.Capacity;
+   if(!QueryFullProcessImageNameW(process,0,image,ref size)){if(Marshal.GetLastWin32Error()==5)return new{ok=true,alive=true};return new{ok=true,alive=false};}
+   bool alive=DateTime.FromFileTimeUtc(fileTime).Ticks==ticks&&String.Equals(image.ToString(),expected,StringComparison.OrdinalIgnoreCase);
+   return new{ok=true,alive=alive};
+  }
+ }
  static object Init(Dictionary<string,object> request){using(var pin=new Pins(S(request,"root"),true)){foreach(var name in new[]{"_hub/placeholder","Product/placeholder","Work/placeholder"})pin.Parent(Relative(pin.Root,name),true);return new{ok=true,rootFingerprint=pin.Fingerprint};}}
  static object Remove(Dictionary<string,object> request){using(var pin=new Pins(S(request,"root"),false)){var file=Relative(pin.Root,S(request,"path"));pin.Parent(file,false);var h=CreateFile(file,READ|0x10000,0,IntPtr.Zero,OPEN,OPEN_REPARSE,IntPtr.Zero);using(var f=new FileStream(h,FileAccess.Read)){var info=Check(h,false);if(Fingerprint(info)!=S(request,"fileFingerprint")||Hash(f)!=S(request,"expectedHash"))Fail("CURRENT_CHANGED");int delete=1;if(!SetFileInformationByHandle(h,4,ref delete,4))Fail("REMOVE_FAILED");}return new{ok=true};}}
  static object Identity(Dictionary<string,object> request){object create;using(var pin=new Pins(S(request,"root"),request.TryGetValue("create",out create)&&create is bool&&(bool)create)){Bound(pin,request,"rootFingerprint");return new{ok=true,rootFingerprint=pin.Fingerprint,webRootFingerprint=pin.WebRootFingerprint};}}
  static object Port(Dictionary<string,object> request,bool free){int port=free?0:Convert.ToInt32(request["port"]);if(!free&&(port<1024||port>65535))Fail("PORT_REJECTED");var listener=new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback,port);try{listener.Start();return new{ok=true,port=((System.Net.IPEndPoint)listener.LocalEndpoint).Port};}catch(System.Net.Sockets.SocketException){Fail("PORT_IN_USE");return null;}finally{listener.Stop();}}
- static int Main(){Console.InputEncoding=new UTF8Encoding(false,true);Console.OutputEncoding=new UTF8Encoding(false);try{var input=Console.In.ReadToEnd();if(input.Length>8*1024*1024)Fail("REQUEST_TOO_LARGE");var request=json.Deserialize<Dictionary<string,object>>(input);var mode=S(request,"mode");object result=null;if(mode=="inspect")result=Inspect(request);else if(mode=="copy")result=Copy(request);else if(mode=="write")result=Write(request);else if(mode=="init")result=Init(request);else if(mode=="remove")result=Remove(request);else if(mode=="identity")result=Identity(request);else if(mode=="verify")result=Verify(request);else if(mode=="materialize")result=Materialize(request);else if(mode=="port-check")result=Port(request,false);else if(mode=="free-port")result=Port(request,true);else Fail("MODE_REJECTED");Console.Write(json.Serialize(result));return 0;}catch(Exception e){string code=e is InvalidOperationException?e.Message:"INSTALL_OPERATION_FAILED";Console.Write(json.Serialize(new{ok=false,code=code}));return 1;}}
+ static int Main(){Console.InputEncoding=new UTF8Encoding(false,true);Console.OutputEncoding=new UTF8Encoding(false);try{var input=Console.In.ReadToEnd();if(input.Length>8*1024*1024)Fail("REQUEST_TOO_LARGE");var request=json.Deserialize<Dictionary<string,object>>(input);var mode=S(request,"mode");object result=null;if(mode=="package-context")result=PackageContext();else if(mode=="inspect")result=Inspect(request);else if(mode=="copy")result=Copy(request);else if(mode=="write")result=Write(request);else if(mode=="rename")result=Rename(request);else if(mode=="process-alive")result=ProcessAlive(request);else if(mode=="init")result=Init(request);else if(mode=="remove")result=Remove(request);else if(mode=="identity")result=Identity(request);else if(mode=="verify")result=Verify(request);else if(mode=="materialize")result=Materialize(request);else if(mode=="port-check")result=Port(request,false);else if(mode=="free-port")result=Port(request,true);else Fail("MODE_REJECTED");Console.Write(json.Serialize(result));return 0;}catch(Exception e){string code=e is InvalidOperationException?e.Message:"INSTALL_OPERATION_FAILED";Console.Write(json.Serialize(new{ok=false,code=code}));return 1;}}
 }

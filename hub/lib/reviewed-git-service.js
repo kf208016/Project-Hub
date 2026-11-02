@@ -69,7 +69,7 @@ class ReviewedGitService {
       child.on('error',error=>{protocolError=Error('Git worker 啟動／通道失敗；交易是否已部分完成需重新預覽');child.kill();});
       child.on('close',(code)=>{
         if(protocolError)return finish(protocolError);
-        try{if(code!==0)throw Error('Git worker 未正常結束；請重新預覽持久交易狀態');message=JSON.parse(stdout);if(!message||message.version!==1||typeof message.ok!=='boolean'||Object.keys(message).some(k=>!['version','ok','value','error'].includes(k)))throw Error('Git worker 協定無效');if(!message.ok)throw Error(typeof message.error==='string'?message.error:'Git worker 拒絕請求');if(!Object.hasOwn(message,'value'))throw Error('Git worker 缺少結果');finish();}catch(error){finish(error);}
+        try{if(code!==0)throw Error('Git worker 未正常結束；請重新預覽持久交易狀態');message=JSON.parse(stdout);if(!message||message.version!==1||typeof message.ok!=='boolean'||Object.keys(message).some(k=>!['version','ok','value','error','code'].includes(k)))throw Error('Git worker 協定無效');if(message.code!==undefined&&!require('./rooted-move').messageFor(message.code))throw Error('Git worker 協定無效');if(!message.ok)throw Object.assign(Error(typeof message.error==='string'?message.error:'Git worker 拒絕請求'),message.code?{code:message.code}:{});if(!Object.hasOwn(message,'value'))throw Error('Git worker 缺少結果');finish();}catch(error){finish(error);}
       });
       timer=setTimeout(()=>fail('Git worker 逾時；已停止此 Hub 擁有的程序樹，請重新預覽持久交易狀態'),this.timeoutMs);
       child.stdin.end(request);

@@ -23,8 +23,8 @@ test('未読整理：不正な保存キーで別フォルダを参照せず、�
   assert.equal(removeMissing(items,'/work/Product',file=>seen.push(file)),true);
   assert.deepEqual([...items],['日本の人物。\u0000作業-01']);
   assert.deepEqual(seen,[
-    '/work/Product/日本の人物。/PROJECT.md',
-    '/work/Product/日本の人物。/.ai/tasks/作業-01.md',
+    path.join('/work/Product','日本の人物。','PROJECT.md'),
+    path.join('/work/Product','日本の人物。','.ai','tasks','作業-01.md'),
   ]);
 });
 
@@ -72,6 +72,6 @@ test('引渡し後は子作業の未読を消し、本作業を未読にして�
   const p=await (await post('/api/task/integrate/preview','parent')).json();
   const r=await post('/api/task/absorb','parent',{token:p.token,selected:[{project:'通知の試験',task:'child',files:['project:資料.txt']}],confirm:true});assert.equal(r.status,200);
   assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')).items,[key('parent')]);assert.deepEqual((await state()).unread,[{project:'通知の試験',task:'parent'}]);
-  const receipt=new (require('../lib/task-transfer').TaskTransfer)({store:{root}}).read('通知の試験','child');assert.equal(fs.readFileSync(receipt.files[0].to,'utf8'),'原文');assert.equal(fs.readFileSync(document,'utf8'),'原文');assert.ok(require('../lib/chat').read(dir,'parent').some(r=>r.child==='child'&&r.text.includes('最終確認')));
+  const store=new (require('../lib/store').Store)(root);const receipt=new (require('../lib/task-transfer').TaskTransfer)({store,removal:new (require('../lib/remove').Removal)({store})}).read('通知の試験','child');assert.equal(fs.readFileSync(receipt.files[0].to,'utf8'),'原文');assert.equal(fs.readFileSync(document,'utf8'),'原文');assert.ok(require('../lib/chat').read(dir,'parent').some(r=>r.child==='child'&&r.text.includes('最終確認')));
   assert.equal((await post('/api/task/read','parent')).status,200);assert.deepEqual((await state()).unread,[]);
 });
